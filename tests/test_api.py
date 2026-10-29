@@ -427,7 +427,7 @@ def test_cue_synthesized_in_current_voice_and_cached(client, fakes):
     r = client.get("/api/cue/zai")
     assert r.status_code == 200 and r.headers["x-sample-rate"] == "24000" and len(r.content) > 0
     assert r.headers["x-voice"] == voices.DEFAULT
-    assert ("doubao.tts", voices.PRESETS[0][0], "在。") in fakes.calls
+    assert ("doubao.tts", voices.PRESETS[0][0], "我在的。") in fakes.calls
     n = len([c for c in fakes.calls if c[0] == "doubao.tts"])
     client.get("/api/cue/zai")
     assert len([c for c in fakes.calls if c[0] == "doubao.tts"]) == n  # 第二次读缓存
@@ -445,7 +445,9 @@ def test_cue_trims_silence():
 
     pcm = silence(0.5) + tone(0.3, rate=24000, amp=3000) + silence(0.5)
     out = _trim_pcm(pcm, 24000)
-    assert 0.3 <= len(out) / 48000 <= 0.4
+    assert 0.3 <= len(out) / 48000 <= 0.5  # 头留 30 ms、尾留 150 ms
+    import array
+    assert array.array("h", out)[-1] == 0  # 尾巴淡出到 0，不是一刀切
 
 
 def test_cue_unknown(client):

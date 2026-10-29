@@ -211,7 +211,7 @@ public class TalkActivity extends Activity {
         /** 网页点「自由对话」：wsUrl 是 https://…/api/talk?… 的页面地址，这里换成 wss 自己连。 */
         @JavascriptInterface
         public void start(String pageUrl) {
-            runOnUiThread(() -> openTalk(pageUrl, null));
+            runOnUiThread(() -> openTalk(pageUrl, null, null));
         }
 
         /**
@@ -377,8 +377,11 @@ public class TalkActivity extends Activity {
         });
     }
 
-    /** 开一通电话。wakeText 不空时是唤醒起来的：连上先把这句发过去（one-shot）。 */
-    private void openTalk(String pageUrl, String wakeText) {
+    /**
+     * 开一通电话。wakeText 不空时是唤醒起来的：连上先把这句发过去（one-shot）。
+     * cue 不空时通话一开就用通话的播放器说它（「我在的」），握手和开麦藏在这句话里。
+     */
+    private void openTalk(String pageUrl, String wakeText, byte[] cue) {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, 1);
             emit("{\"type\":\"native_closed\",\"reason\":\"要先允许麦克风\"}");
@@ -394,14 +397,14 @@ public class TalkActivity extends Activity {
                     emit("{\"type\":\"standby\",\"state\":\"error\",\"detail\":"
                             + JSONObject.quote("本机识别加载失败，退出词只能靠云端：" + e.getMessage()) + "}");
                 }
-                runOnUiThread(() -> openTalkNow(pageUrl, wakeText));
+                runOnUiThread(() -> openTalkNow(pageUrl, wakeText, cue));
             }, "asr-load").start();
             return;
         }
-        openTalkNow(pageUrl, wakeText);
+        openTalkNow(pageUrl, wakeText, cue);
     }
 
-    private void openTalkNow(String pageUrl, String wakeText) {
+    private void openTalkNow(String pageUrl, String wakeText, byte[] cue) {
         String url = pageUrl.replaceFirst("^http", "ws");
         stopTalk();
         // 待命在听的话先松开麦克风，不然和这通电话抢同一个麦克风（手动点「自由对话」时会这样）
@@ -447,7 +450,7 @@ public class TalkActivity extends Activity {
         new Thread(() -> {
             try {
                 if (wakeText != null) {
-                    t.startWoken(url, key(), wakeText, wakeAcked);
+                    t.startWoken(url, key(), wakeText, wakeAcked, cue);
                 } else {
                     t.start(url, key());
                 }
@@ -546,12 +549,12 @@ public class TalkActivity extends Activity {
                     @Override
                     public void onWake(String text) {
                         emit("{\"type\":\"standby\",\"state\":\"woken\",\"text\":" + JSONObject.quote(text) + "}");
-                        // 只喊了唤醒词：用本机缓存的当前音色说「在」。one-shot（唤醒词后面带着问题）不说，直接答
+                        // 只喊了唤醒词：用本机缓存的当前音色说「我在的」。one-shot（唤醒词后面带着问题）不说，直接答。
+                        // 马上开通话，这句由通话的播放器放：放的同时握手、开麦，放完就能接着说（放的时候麦克风送静音）
                         boolean oneShot = Keywords.restAfterWake(text, wakeWords) > 0;
-                        long ms = oneShot || cues == null ? 0 : cues.play(Cues.ZAI);
-                        wakeAcked = ms > 0;
-                        // 等「在」放完再开通话的麦克风，不然会把「在」录进去当成用户说话
-                        idle.postDelayed(() -> openTalk(talkUrl, text), ms > 0 ? ms + 120 : 0);
+                        byte[] cue = oneShot || cues == null ? null : cues.read(Cues.ZAI);
+                        wakeAcked = cue != null;
+                        openTalk(talkUrl, text, cue);
                     }
 
                     @Override

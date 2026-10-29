@@ -745,20 +745,24 @@ async def talk(ws: WebSocket) -> None:
 
 
 # 唤醒 / 主动退出时小新用当前音色说的一个字：pad 提前拉下来存着，唤醒或退出那一刻本机直接放，不等网络
-CUES = {"zai": "在。", "bye": "拜拜。"}
+CUES = {"zai": "我在的。", "bye": "拜拜。"}  # zai 是唤醒应答，名字留着不改（pad 按名字缓存）
 
 
-def _trim_pcm(pcm: bytes, rate: int, keep_ms: int = 30) -> bytes:
-    """去掉首尾静音，各留 keep_ms，让「在」一出来就是声音。"""
+def _trim_pcm(pcm: bytes, rate: int, lead_ms: int = 30, tail_ms: int = 150, fade_ms: int = 60) -> bytes:
+    """去掉首尾静音，让应答一出来就是声音。尾巴多留一点再淡出：之前尾部只留 30 ms，字的余音被一刀切掉，听着发闷发硬。"""
     import array
 
     s = array.array("h", pcm[:len(pcm) // 2 * 2])
     loud = [i for i in range(0, len(s), 48) if abs(s[i]) > 300]
     if not loud:
         return pcm
-    keep = rate * keep_ms // 1000
-    a, b = max(0, loud[0] - keep), min(len(s), loud[-1] + 48 + keep)
-    return s[a:b].tobytes()
+    a = max(0, loud[0] - rate * lead_ms // 1000)
+    b = min(len(s), loud[-1] + 48 + rate * tail_ms // 1000)
+    out = s[a:b]
+    n = min(len(out), rate * fade_ms // 1000)
+    for k in range(n):
+        out[len(out) - n + k] = int(out[len(out) - n + k] * (n - k) / n)
+    return out.tobytes()
 
 
 @app.get("/api/cue/{name}")

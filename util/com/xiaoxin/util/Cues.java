@@ -15,7 +15,7 @@ import java.net.URL;
 import java.nio.file.Files;
 
 /**
- * 小新用当前音色说的「在」（唤醒）和「拜拜」（主动退出）。服务端 /api/cue/{zai,bye} 合成，这里按音色存到私有目录，
+ * 小新用当前音色说的「我在的」（唤醒）和「拜拜」（主动退出）。服务端 /api/cue/{zai,bye} 合成，这里按音色存到私有目录，
  * 唤醒 / 退出那一刻本机直接放，不等网络。换了音色先 refresh()，旧音色的文件留着，切回来不用再下。
  * 下载不到（没网、服务端挂了）就不出声，不影响唤醒和挂断本身。
  */
@@ -35,8 +35,26 @@ public final class Cues {
         this.key = key;
     }
 
+    /** 服务端改了提示的字（「在」→「我在的」）就加一，旧缓存不再用 */
+    private static final int VERSION = 2;
+
     private File file(String name, String v) {
-        return new File(dir, (v.isEmpty() ? "default" : v.replaceAll("[^A-Za-z0-9_.-]", "_")) + "." + name + ".pcm");
+        return new File(dir, (v.isEmpty() ? "default" : v.replaceAll("[^A-Za-z0-9_.-]", "_")) + "." + name
+                + ".v" + VERSION + ".pcm");
+    }
+
+    /** 当前音色这句的 PCM（24 kHz s16le），没有返回 null。唤醒时交给通话自己的播放器放。 */
+    public byte[] read(String name) {
+        File f = file(name, voice);
+        if (!f.isFile()) {
+            f = file(name, "");
+        }
+        try {
+            byte[] pcm = f.isFile() ? Files.readAllBytes(f.toPath()) : null;
+            return pcm != null && pcm.length >= 2 ? pcm : null;
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     /** 后台线程调：音色变了就把这个音色的两句拉下来（已经有的不重下）。 */

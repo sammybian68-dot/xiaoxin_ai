@@ -79,23 +79,51 @@ public final class Talk {
     }
 
     /**
-     * 待命唤醒后用：连上就把端侧认出的那句发过去（服务端去掉唤醒词直接回答，one-shot），再开音频接着聊。
-     * 连接和录音都在这里开，所以从听到唤醒词到问题送到服务端只差一次握手。
+     * 待命唤醒后用：连上就把端侧认出的那句发过去（服务端去掉唤醒词直接回答，one-shot），再接着聊。
+     * cue 不空时（只喊了唤醒词）先用这通电话自己的播放器说「我在的」：音频通路先开、再连服务端，
+     * 握手、开麦、服务端学底噪都藏在这句话里，说完那一刻麦克风已经在送了。
      */
-    public void startWoken(String url, String key, String wakeText, boolean acked) throws IOException {
-        start(url, key);
+    public void startWoken(String url, String key, String wakeText, boolean acked, byte[] cue) throws IOException {
+        String hello;
         try {
-            sendText(new JSONObject().put("type", "wake").put("text", wakeText).put("acked", acked).toString());
+            hello = new JSONObject().put("type", "wake").put("text", wakeText).put("acked", acked).toString();
         } catch (JSONException e) {
             throw new IOException(e);
         }
+        open(url, key, hello, cue);
     }
 
-    /** 在后台线程调：连上服务端、开音频。url 形如 wss://host:8183/xiaoxin/api/talk?model=… */
+    /** 在后台线程调：开音频、连上服务端。url 形如 wss://host:8183/xiaoxin/api/talk?model=… */
     public void start(String url, String key) throws IOException {
+        open(url, key, null, null);
+    }
+
+    /** 说「我在的」时麦克风送静音，到这个时刻（nanoTime）为止：不然 AEC 还没收敛，自己的声音会被当成用户在说 */
+    private volatile long muteUntil;
+    /** 连上之前录到的帧先攒着，连上后补发（最多 10 秒） */
+    private final java.util.ArrayDeque<byte[]> pending = new java.util.ArrayDeque<>();
+    private static final int MAX_PENDING = 100;
+    private static final long CUE_TAIL_MS = 80;  // 播完再静音这么久，盖住喇叭到麦克风的尾音
+
+    private volatile boolean stopped;
+
+    private void open(String url, String key, String hello, byte[] cue) throws IOException {
+        startAudio();
+        if (stopped) {  // 开音频的时候已经被挂了
+            stopAudio();
+            return;
+        }
+        if (cue != null && cue.length > 0) {
+            long ms = cue.length / 2 * 1000L / PLAY_RATE;
+            muteUntil = System.nanoTime() + (ms + CUE_TAIL_MS) * 1_000_000;
+            AudioTrack t = track;
+            if (t != null) {
+                t.write(cue, 0, cue.length);
+            }
+        }
         Map<String, String> headers = new HashMap<>();
         headers.put("Authorization", "Bearer " + key);
-        ws = WebSocket.connect(URI.create(url), headers, 8000, new WebSocket.Listener() {
+        WebSocket w = WebSocket.connect(URI.create(url), headers, 8000, new WebSocket.Listener() {
             @Override
             public void onText(String text) {
                 try {
@@ -134,7 +162,14 @@ public final class Talk {
                 }
             }
         });
-        startAudio();
+        if (!running) {  // 连的时候已经挂了
+            w.close();
+            return;
+        }
+        if (hello != null) {
+            w.sendText(hello);  // 先于攒着的音频，服务端先处理唤醒再断句
+        }
+        ws = w;
     }
 
     private void startAudio() {
@@ -208,6 +243,9 @@ public final class Talk {
             if (n <= 0) {
                 continue;
             }
+            if (muteUntil != 0 && System.nanoTime() < muteUntil) {
+                java.util.Arrays.fill(frame, 0, n, (byte) 0);
+            }
             Pcm.Level level = Pcm.level(frame, n);
             listener.onLevel(Math.min(100, level.rms * 100 / 3000));
             Vad v = exitVad;
@@ -230,8 +268,19 @@ public final class Talk {
                     }
                 }));
             }
+            WebSocket w = ws;
+            if (w == null) {
+                if (pending.size() >= MAX_PENDING) {
+                    pending.poll();
+                }
+                pending.add(java.util.Arrays.copyOf(frame, n));
+                continue;
+            }
             try {
-                ws.sendBinary(frame, n);
+                for (byte[] b; (b = pending.poll()) != null; ) {
+                    w.sendBinary(b, b.length);
+                }
+                w.sendBinary(frame, n);
             } catch (IOException e) {
                 break;  // 断线由 onClosed 处理
             }
@@ -265,6 +314,7 @@ public final class Talk {
      * 「退出」和「不拾音」必须同一刻发生，不然会出现「看着退了还在听」「还在念半句」的怪感觉。连接留给 stop() 慢慢关。
      */
     public void stopNow() {
+        stopped = true;
         running = false;
         AudioTrack t = track;
         if (t != null) {
@@ -286,6 +336,7 @@ public final class Talk {
     }
 
     public void stop() {
+        stopped = true;
         WebSocket w = ws;
         if (w != null) {
             try {

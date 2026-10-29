@@ -344,7 +344,7 @@ def test_wake_word_only_replies_ack_without_llm(call, fakes):
     c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学。"}))
     c.until("idle")
     assert "llm" not in fakes.names() and "heard" not in c.kinds()
-    assert ("doubao.bidir.append", "在。") in fakes.calls
+    assert ("doubao.bidir.append", "我在的。") in fakes.calls
     assert c.audio > 0
     assert store.get(c.msgs[0]["conversation"])["messages"] == []  # 应答不进对话记录
 
