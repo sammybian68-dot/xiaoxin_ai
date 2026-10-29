@@ -5,8 +5,9 @@
         文本帧 {"type":"hello","conversation":"<id 可空>","model":"<可空>"}  连上后第一条，可省
         文本帧 {"type":"stop"}  挂断
         文本帧 {"type":"model","model":"<id>"}  换模型，下一句起生效
-        文本帧 {"type":"wake","text":"<端侧认出的整句>"}  pad 待命唤醒后发的第一句：端侧 Paraformer 已经认好了，
-                 服务端去掉开头的唤醒词，剩下有内容就直接当这一轮的问题（省掉云端识别）；只喊了唤醒词就回一句「我在」
+        文本帧 {"type":"wake","text":"<端侧认出的整句>","acked":true}  pad 待命唤醒后发的第一句：端侧 Paraformer 已经认好了，
+                 服务端去掉开头的唤醒词，剩下有内容就直接当这一轮的问题（省掉云端识别）；只喊了唤醒词：
+                 acked 表示 pad 已经用本机缓存说了「在」，这边就不再合成；没 acked 才合成一句「在」
   下行  文本帧 JSON：
         ready      {conversation, asr, tts, voice}           准备好了，可以说话
         listening  {}                                         用户开口了（VAD start）
@@ -19,8 +20,8 @@
         speaking   {sample_rate}                              下面开始有音频
         interrupt  {}                                         用户插话，端侧立刻清空播放队列
         idle       {timing}                                   这一轮念完了，等用户说。timing 见下
-        exit       {text}                                     用户说了退出词（整句精确匹配），下面念一句「有事再叫我」
-        bye        {}                                         退出应答念完了，端侧挂断（pad 唤醒的回待命）
+        exit       {text}                                     用户说了退出词（整句精确匹配；pad 一般本机已经先判了）
+        bye        {}                                         端侧挂断：说一声「拜拜」（/api/cue/bye，当前音色）回待命
         note / error {detail}
         二进制帧：24 kHz s16le PCM，约 100 ms 一块（服务端节流，最多领先播放 2 秒）
 
@@ -52,8 +53,7 @@ VOICE_HINT = ("现在是语音通话：用户的话是语音识别出来的文�
               "别说你听不到声音或者让用户打字。")
 
 
-WAKE_ACK = "我在。"
-EXIT_ACK = "好的，有事再叫我。"
+WAKE_ACK = "在。"  # 端侧没缓存时（浏览器）服务端合成；pad 用本机缓存的同一个字（/api/cue/zai）
 _PUNCT = "，。！？、；：,.!?;: 　"
 
 
@@ -160,7 +160,7 @@ class Talk:
                     self.model = cmd["model"]  # 下一轮起生效，正在答的这一轮不换
                     await self.send("model", model=self.model)
                 elif cmd.get("type") == "wake":
-                    await self.on_wake(str(cmd.get("text") or ""))
+                    await self.on_wake(str(cmd.get("text") or ""), quiet=bool(cmd.get("acked")))
         finally:
             self.closed = True
             await self.cancel_turn()
@@ -177,15 +177,18 @@ class Talk:
                 self.turn_id += 1
                 self.turn = asyncio.create_task(self.answer(self.turn_id, utt))
 
-    async def on_wake(self, text: str) -> None:
+    async def on_wake(self, text: str, quiet: bool = False) -> None:
+        """quiet：端侧已经用本机缓存的「在」应答过了（pad），只喊了唤醒词时这边不再合成应答。"""
         rest = strip_wake_word(text, voices.engines()["wake_words"])
         log.info("talk wake: %r -> %r", text, rest)
         await self.cancel_turn()
         self.turn_id += 1
         if rest:
             self.turn = asyncio.create_task(self.answer(self.turn_id, b"", text=rest))
-        else:
+        elif not quiet:
             self.turn = asyncio.create_task(self.answer(self.turn_id, b"", text=WAKE_ACK, ack=True))
+        else:
+            await self.send("idle")  # pad 已经在本机说了「在」，这边只等用户开口
 
     @property
     def busy(self) -> bool:
@@ -219,10 +222,9 @@ class Talk:
             await self.send("idle")
             return
         if is_exit(text, voices.engines()["exit_words"]):
-            # 退出词：不问模型、不进对话记录，回一句就让端侧挂断（pad 唤醒的回待命，手动开的就挂断）
+            # 退出词（本机没判到时的兜底）：不问模型、不进记录，告诉端侧挂断。「拜拜」由端侧用缓存的音色说
             log.info("talk turn %d exit word: %s", turn_id, text)
             await self.send("exit", text=text)
-            await self.speak_only(EXIT_ACK, idle=False)
             await self.send("bye")
             return
         await self.send("heard", text=text, t_asr=round(t_asr, 2))

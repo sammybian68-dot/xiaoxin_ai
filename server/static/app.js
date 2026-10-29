@@ -50,6 +50,7 @@ async function boot() {
   if (last && list.some((c) => c.id === last)) await openConv(last);
   else renderEmpty();
   if (location.hash.startsWith("#settings")) openSettings(location.hash.split("/")[1]);
+  if (native) api("api/voices").then(json).then((c) => syncVoiceToNative(c.current)).catch(() => {});
 }
 
 function localGet(k) { try { return localStorage.getItem("xiaoxin." + k); } catch (_) { return null; } }
@@ -854,7 +855,7 @@ function showCountdown(left) {
 
 function hangUp(fromNative = false) {
   showCountdown(-1);
-  if (!fromNative && talk.on && !native) playTone(voiceSettings?.hangup_tone || "down");
+  if (!fromNative && talk.on && !native) playCue("bye");
   if (!talk.on) return;
   talk.on = false;
   talkUi(false);
@@ -980,6 +981,7 @@ function onTalkEvent(ev) {
     case "exit": talkStatus("好的，退下了"); break;
     case "bye": if (!native) setTimeout(() => { if (talk.on) { toast("退下了，有事再叫我"); hangUp(); } }, 2500); break;
     case "wake_countdown": showCountdown(ev.left); break;
+    case "asr_debug": onAsrDebug(ev); break;
     default: break;
   }
 }
@@ -1013,6 +1015,7 @@ function openSettings(pane = "general") {
 function showPane(name) {
   for (const b of document.querySelectorAll(".settings-nav button")) b.setAttribute("aria-selected", String(b.dataset.pane === name));
   for (const p of document.querySelectorAll(".pane")) p.hidden = p.dataset.pane !== name;
+  if (name !== "wake" && typeof asrDebug !== "undefined" && asrDebug.on) $("asr-debug").click();
   if (name === "talk" || name === "wake") loadEngines();
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
@@ -1196,6 +1199,7 @@ async function voiceMenu(v) {
 }
 
 function renderVoices(cat) {
+  syncVoiceToNative(cat.current);
   const cur = cat.voices.find((v) => v.id === cat.current);
   const cosy = cat.engines?.tts === "cosyvoice";
   $("voice-current").innerHTML = `现在用：<b>${esc(cur?.name || "-")}</b>`
@@ -1329,6 +1333,58 @@ function renderTones(e) {
     box.appendChild(b);
   }
 }
+
+// 「在」「拜拜」：当前音色说的一个字。pad 上原生本机缓存着放；浏览器里现拉 /api/cue 放
+const cueCache = {};
+async function playCue(name) {
+  if (native?.playCue) { native.playCue(name); return; }
+  try {
+    const voice = voiceSettings?.current_voice || "";
+    const key = `${name}|${voice}`;
+    if (!cueCache[key]) cueCache[key] = await api(`api/cue/${name}`).then((r) => r.arrayBuffer());
+    const s = new PcmStream(24000);
+    s.pushBytes(cueCache[key].slice(0));
+    s.close();
+  } catch (err) { toast(err.message); }
+}
+// ---------------------------------------------------------------- 端侧模型调试（只在 pad 的「小新」里有）
+const asrDebug = { on: false };
+if (native?.debugAsr) {
+  $("asr-debug-box").hidden = false;
+  $("asr-debug-na").hidden = true;
+  $("asr-debug").addEventListener("click", () => {
+    asrDebug.on = !asrDebug.on;
+    $("asr-debug").textContent = asrDebug.on ? "停止" : "开始调试";
+    if (asrDebug.on) $("asr-debug-log").innerHTML = "";
+    native.debugAsr(asrDebug.on);
+  });
+  // 关掉设置或切到别的页就停，免得一直开着麦克风
+  $("settings").addEventListener("close", () => { if (asrDebug.on) $("asr-debug").click(); });
+}
+
+function onAsrDebug(ev) {
+  const set = (a, b = "") => { $("asr-debug-state").textContent = a; $("asr-debug-sub").textContent = b; };
+  if (ev.state === "loading") set("加载本机模型…");
+  else if (ev.state === "listening") set("在听，说吧", `停 ${ev.end_ms} 毫秒算一句说完`);
+  else if (ev.state === "off") set("没开");
+  else if (ev.state === "error") set("出错了", ev.detail);
+  else if (ev.state === "heard") {
+    const li = document.createElement("li");
+    const tags = [];
+    if (ev.wake) tags.push(`<span class="tag wake">${ev.one_shot ? "唤醒 · one-shot" : "唤醒 · 只喊名字（会说「在」）"}</span>`);
+    if (ev.exit) tags.push('<span class="tag exit">退出</span>');
+    if (!ev.wake && !ev.exit) tags.push('<span class="tag">都不算</span>');
+    li.innerHTML = `<span class="t">${esc(ev.text || "（没认出字）")}</span>${tags.join("")}`
+      + `<span class="m">${(ev.audio_ms / 1000).toFixed(1)} 秒的话 · 识别 ${ev.ms} ms</span>`;
+    $("asr-debug-log").prepend(li);
+  }
+}
+
+$("cue-zai").addEventListener("click", () => playCue("zai"));
+$("cue-bye").addEventListener("click", () => playCue("bye"));
+
+// 当前音色告诉 pad 原生，让它提前把这个音色的「在」「拜拜」存好
+function syncVoiceToNative(voiceId) { native?.setVoice?.(voiceId || ""); }
 
 // ---------------------------------------------------------------- 语音引擎
 

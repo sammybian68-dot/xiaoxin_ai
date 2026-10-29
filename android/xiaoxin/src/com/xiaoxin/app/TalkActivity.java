@@ -26,6 +26,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
 
+import com.xiaoxin.util.Cues;
 import com.xiaoxin.util.Earcon;
 import com.xiaoxin.util.Keywords;
 import com.xiaoxin.util.LocalAsr;
@@ -65,6 +66,8 @@ public class TalkActivity extends Activity {
     private String[] exitWords = {"小新退下", "没事了小新"};
     private volatile int vadEndMs = 800;
     private volatile String hangupTone = "down";
+    private Cues cues;
+    private volatile boolean wakeAcked;
     private String talkUrl = "";
     private long lastActivity;
     private final android.os.Handler idle = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -112,6 +115,7 @@ public class TalkActivity extends Activity {
         setContentView(web);
         // 免密链接：?k= 让服务端种 cookie 再跳回去，key 不留在地址栏
         web.loadUrl(base() + "?k=" + Uri.encode(key()));
+        cues = new Cues(this, base(), key());
     }
 
     @Override
@@ -153,6 +157,9 @@ public class TalkActivity extends Activity {
         // 切到后台就挂断、停待命：麦克风和通话模式不该在后台一直开着（熄屏待命要做成前台服务，还没做）
         boolean wasStandby = standbyOn;
         stopTalk();
+        if (debugListener != null) {
+            stopDebug();
+        }
         WakeListener w = wake;
         wake = null;
         if (w != null) {
@@ -237,6 +244,32 @@ public class TalkActivity extends Activity {
             Earcon.play(id);
         }
 
+        /** 网页告诉原生当前音色：把这个音色的「在」「拜拜」拉下来存好（换音色后再唤醒，就是新音色的声音）。 */
+        @JavascriptInterface
+        public void setVoice(String voiceId) {
+            refreshCues(voiceId);
+        }
+
+        /** 设置页「端侧模型调试」：开 / 关。开着时待命先停，结束后恢复。 */
+        @JavascriptInterface
+        public void debugAsr(boolean on) {
+            runOnUiThread(() -> {
+                if (on) {
+                    startDebug();
+                } else {
+                    stopDebug();
+                }
+            });
+        }
+
+        /** 设置页试听「在」「拜拜」。 */
+        @JavascriptInterface
+        public void playCue(String name) {
+            if (cues != null) {
+                cues.play(name);
+            }
+        }
+
         /** 网页发给服务端的控制消息（比如通话中换模型）。 */
         @JavascriptInterface
         public void send(String json) {
@@ -250,6 +283,22 @@ public class TalkActivity extends Activity {
         public void stop() {
             runOnUiThread(() -> hangUp("挂断了"));
         }
+    }
+
+    private String cueVoice = "";
+
+    /** 后台拉当前音色的「在」「拜拜」；同一个音色只拉一次，已经存在本机的不重下。 */
+    private void refreshCues(String voiceId) {
+        String v = voiceId == null ? "" : voiceId;
+        if (cues == null) {
+            cues = new Cues(this, base(), key());
+        }
+        if (v.equals(cueVoice)) {
+            return;
+        }
+        cueVoice = v;
+        Cues c = cues;
+        new Thread(() -> c.refresh(v), "cues-refresh").start();
     }
 
     private void applyWords(String wakes, String exits, int idleS, int endMs, String tone) {
@@ -271,6 +320,12 @@ public class TalkActivity extends Activity {
         WakeListener w = wake;
         if (w != null) {
             w.setWakeWords(wakeWords);
+            w.setEndMs(vadEndMs);
+        }
+        WakeListener d = debugListener;
+        if (d != null) {
+            d.setWakeWords(wakeWords);
+            d.setEndMs(vadEndMs);
         }
     }
 
@@ -278,7 +333,15 @@ public class TalkActivity extends Activity {
      * 挂断，所有路径都走这里（说了退出词、超时、点挂断、服务端说 bye、连接断了）：
      * 同一刻停掉麦克风、播放和连接（不再拾音和不再出声同步发生），放「挂断了」提示音，网页切回待命样子，再回去待命。
      */
+    private static final int BY_USER = 0;     // 说了退出词 / 点了挂断：小新说「拜拜」
+    private static final int BY_TIMEOUT = 1;  // 太久没说话：超时提示音
+    private static final int BY_ERROR = 2;    // 连接断了、连不上：不出声
+
     private void hangUp(String reason) {
+        hangUp(reason, BY_USER);
+    }
+
+    private void hangUp(String reason, int why) {
         boolean wasTalking = talk != null;
         idle.removeCallbacks(idleCheck);
         Talk t = talk;
@@ -288,12 +351,18 @@ public class TalkActivity extends Activity {
             t.stopNow();  // 同步：麦克风和播放器在这一行之后都已经停了
             new Thread(t::stop, "talk-stop").start();  // 关连接可以慢慢来
         }
+        long playMs = 0;
         if (wasTalking) {
-            Earcon.play(hangupTone);
+            if (why == BY_USER) {
+                playMs = cues == null ? 0 : cues.play(Cues.BYE);
+            } else if (why == BY_TIMEOUT) {
+                Earcon.play(hangupTone);
+                playMs = 400;
+            }
             emit("{\"type\":\"native_closed\",\"reason\":" + JSONObject.quote(reason) + "}");
         }
-        // 提示音放完再开待命的麦克风，免得把提示音自己听进去
-        idle.postDelayed(this::afterTalk, wasTalking ? 450 : 0);
+        // 「拜拜」/ 提示音放完再开待命的麦克风，免得把自己的声音听进去
+        idle.postDelayed(this::afterTalk, wasTalking ? playMs + 250 : 0);
     }
 
     private void emit(String json) {
@@ -361,7 +430,7 @@ public class TalkActivity extends Activity {
 
             @Override
             public void onClosed(String reason) {
-                runOnUiThread(() -> { if (talk == self[0]) hangUp(reason); });
+                runOnUiThread(() -> { if (talk == self[0]) hangUp(reason, BY_ERROR); });
             }
         });
         Talk t = talk;
@@ -374,12 +443,12 @@ public class TalkActivity extends Activity {
         new Thread(() -> {
             try {
                 if (wakeText != null) {
-                    t.startWoken(url, key(), wakeText);
+                    t.startWoken(url, key(), wakeText, wakeAcked);
                 } else {
                     t.start(url, key());
                 }
             } catch (Exception e) {
-                runOnUiThread(() -> { if (talk == t) hangUp("连不上：" + e.getMessage()); });
+                runOnUiThread(() -> { if (talk == t) hangUp("连不上：" + e.getMessage(), BY_ERROR); });
             }
         }, "talk-connect").start();
         // 唤醒的和手动开的同一套超时、同一套退出（用户要求两边逻辑完全一样）
@@ -406,7 +475,7 @@ public class TalkActivity extends Activity {
             int left = (int) Math.ceil((wakeIdleS * 1000L - quietMs) / 1000.0);
             if (left <= 0) {
                 emit("{\"type\":\"wake_countdown\",\"left\":-1}");
-                hangUp(wakeIdleS + " 秒没说话，挂断了");
+                hangUp(wakeIdleS + " 秒没说话，挂断了", BY_TIMEOUT);
                 return;
             }
             int show = left <= COUNTDOWN_S ? left : -1;
@@ -448,8 +517,8 @@ public class TalkActivity extends Activity {
     }
 
     private void startStandby() {
-        if (!standbyOn || talk != null) {
-            return;
+        if (!standbyOn || talk != null || debugListener != null) {
+            return;  // 通话中、调试中都不开待命
         }
         if (wake != null && wake.isRunning()) {
             return;
@@ -473,11 +542,16 @@ public class TalkActivity extends Activity {
                     @Override
                     public void onWake(String text) {
                         emit("{\"type\":\"standby\",\"state\":\"woken\",\"text\":" + JSONObject.quote(text) + "}");
-                        runOnUiThread(() -> openTalk(talkUrl, text));
+                        // 只喊了唤醒词：用本机缓存的当前音色说「在」。one-shot（唤醒词后面带着问题）不说，直接答
+                        boolean oneShot = Keywords.restAfterWake(text, wakeWords) > 0;
+                        long ms = oneShot || cues == null ? 0 : cues.play(Cues.ZAI);
+                        wakeAcked = ms > 0;
+                        // 等「在」放完再开通话的麦克风，不然会把「在」录进去当成用户说话
+                        idle.postDelayed(() -> openTalk(talkUrl, text), ms > 0 ? ms + 120 : 0);
                     }
 
                     @Override
-                    public void onHeard(String text, long millis) {
+                    public void onHeard(String text, long millis, long audioMs) {
                         emit("{\"type\":\"standby\",\"state\":\"heard\",\"text\":" + JSONObject.quote(text)
                                 + ",\"ms\":" + millis + "}");
                     }
@@ -493,11 +567,82 @@ public class TalkActivity extends Activity {
                         });
                     }
                 });
+                wake.setEndMs(vadEndMs);
                 wake.start();
                 emit("{\"type\":\"standby\",\"state\":\"listening\",\"wake_word\":" + JSONObject.quote(wakeWords[0])
                         + ",\"wake_words\":" + new org.json.JSONArray(java.util.Arrays.asList(wakeWords)) + "}");
             });
         }, "wake-load").start();
+    }
+
+    // ---------------------------------------------------------------- 端侧模型调试
+    // 和待命同一个模型、同一套断句（停多久算说完跟主设置），每句话报出：本机认成什么、算不算唤醒、算不算退出、
+    // 识别耗时。只听不连云端、不唤醒。调试期间待命停着，关掉后恢复。
+
+    private WakeListener debugListener;
+
+    private void startDebug() {
+        stopTalk();
+        WakeListener w = wake;
+        wake = null;
+        if (w != null) {
+            w.stop();
+        }
+        emit("{\"type\":\"asr_debug\",\"state\":\"loading\"}");
+        new Thread(() -> {
+            try {
+                if (localAsr == null) {
+                    localAsr = LocalAsr.load(this);
+                }
+            } catch (Exception e) {
+                emit("{\"type\":\"asr_debug\",\"state\":\"error\",\"detail\":" + JSONObject.quote(e.getMessage()) + "}");
+                return;
+            }
+            runOnUiThread(() -> {
+                if (debugListener != null) {
+                    debugListener.stop();
+                }
+                debugListener = new WakeListener(this, localAsr, wakeWords, new WakeListener.Listener() {
+                    @Override
+                    public void onWake(String text) {}
+
+                    @Override
+                    public void onHeard(String text, long millis, long audioMs) {
+                        int rest = Keywords.restAfterWake(text, wakeWords);
+                        try {
+                            JSONObject o = new JSONObject().put("type", "asr_debug").put("state", "heard")
+                                    .put("text", text).put("ms", millis).put("audio_ms", audioMs)
+                                    .put("wake", rest >= 0).put("one_shot", rest > 0)
+                                    .put("exit", Keywords.equalsAny(text, exitWords));
+                            emit(o.toString());
+                        } catch (Exception ignored) {
+                            // 拼 JSON 不会失败
+                        }
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        emit("{\"type\":\"asr_debug\",\"state\":\"error\",\"detail\":" + JSONObject.quote(message) + "}");
+                    }
+                });
+                debugListener.setEndMs(vadEndMs);
+                debugListener.setDebug(true);
+                debugListener.start();
+                emit("{\"type\":\"asr_debug\",\"state\":\"listening\",\"end_ms\":" + vadEndMs + "}");
+            });
+        }, "asr-debug-load").start();
+    }
+
+    private void stopDebug() {
+        WakeListener d = debugListener;
+        debugListener = null;
+        if (d != null) {
+            new Thread(() -> {
+                d.stop();
+                runOnUiThread(this::afterTalk);  // 开着待命的话恢复待命
+            }, "asr-debug-stop").start();
+        }
+        emit("{\"type\":\"asr_debug\",\"state\":\"off\"}");
     }
 
     private void stopStandby() {

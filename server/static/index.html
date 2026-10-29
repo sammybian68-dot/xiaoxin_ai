@@ -141,8 +141,12 @@
         <span class="vad-end"><input id="set-wake-idle" type="number" min="10" max="300" step="5" inputmode="numeric"><span>秒</span></span>
       </div>
       <div class="row">
-        <span><b>挂断提示音</b><small>每次挂断（退出词、超时、点挂断）都响一下，听到就知道要再叫才行。▶ 试听</small></span>
-        <span class="tone-pick" id="tone-pick" role="radiogroup" aria-label="挂断提示音"></span>
+        <span><b>超时退出提示音</b><small>太久没说话自动挂断时响一下，听到就知道要再叫才行。▶ 试听</small></span>
+        <span class="tone-pick" id="tone-pick" role="radiogroup" aria-label="超时退出提示音"></span>
+      </div>
+      <div class="row">
+        <span><b>唤醒和主动退出时小新说的话</b><small>叫醒时说「在」，说退出词或点挂断时说「拜拜」，用的是当前音色。换音色后自动跟着换</small></span>
+        <span class="tone-pick"><button type="button" class="tone" id="cue-zai">▶ 在</button><button type="button" class="tone" id="cue-bye">▶ 拜拜</button></span>
       </div>
     </section>
 
@@ -154,6 +158,17 @@
       <p class="voice-tip">通话中，一句话正好是其中任意一个（不能多一个字），就立刻挂断回待命，在 pad 本机判断，不等云端。「你先退下吧」这种不算。和唤醒词一样，「小新」被认成「小心」也算。</p>
       <div class="words" id="exit-list" data-kind="exit"></div>
       <p id="words-msg" class="voice-msg" role="status"></p>
+
+      <h3>端侧模型调试</h3>
+      <p class="voice-tip">点开始后对着 pad 说话，每句话显示本机模型认成了什么、算不算唤醒 / one-shot / 退出，和识别耗时。断句用「语音对话」里的「停多久算说完」。只在本机听，不连云端、不会真的唤醒；调试时待命暂停，停止后恢复。</p>
+      <div id="asr-debug-box" hidden>
+        <div class="row">
+          <span><b id="asr-debug-state">没开</b><small id="asr-debug-sub"></small></span>
+          <button id="asr-debug" type="button" class="primary-btn">开始调试</button>
+        </div>
+        <ol id="asr-debug-log" class="asr-log" aria-live="polite"></ol>
+      </div>
+      <p id="asr-debug-na" class="voice-tip">要在 pad 的「小新」里打开才能用（用的是 pad 本机的模型）。</p>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="voice" hidden>

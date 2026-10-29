@@ -41,6 +41,26 @@ public final class Keywords {
         return out;
     }
 
+    /**
+     * 唤醒词后面还剩多少字（去标点）：0 = 只喊了唤醒词，要说「在」；大于 0 = one-shot，带着问题，不说「在」直接答。
+     * 不是唤醒词开头返回 -1。
+     */
+    public static int restAfterWake(String text, String[] words) {
+        String b = bare(text);
+        int best = -1;
+        for (String word : words) {
+            for (String f : forms(word)) {
+                for (String lead : LEADS) {
+                    if (!f.isEmpty() && b.startsWith(lead + f)) {
+                        int rest = b.length() - (lead + f).length();
+                        best = best < 0 ? rest : Math.min(best, rest);
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
     /** 唤醒：去标点后以（语气词 +）某个唤醒词开头。 */
     public static boolean startsWithAny(String text, String[] words) {
         String b = bare(text);

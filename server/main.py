@@ -719,6 +719,52 @@ async def talk(ws: WebSocket) -> None:
             pass
 
 
+# 唤醒 / 主动退出时小新用当前音色说的一个字：pad 提前拉下来存着，唤醒或退出那一刻本机直接放，不等网络
+CUES = {"zai": "在。", "bye": "拜拜。"}
+
+
+def _trim_pcm(pcm: bytes, rate: int, keep_ms: int = 30) -> bytes:
+    """去掉首尾静音，各留 keep_ms，让「在」一出来就是声音。"""
+    import array
+
+    s = array.array("h", pcm[:len(pcm) // 2 * 2])
+    loud = [i for i in range(0, len(s), 48) if abs(s[i]) > 300]
+    if not loud:
+        return pcm
+    keep = rate * keep_ms // 1000
+    a, b = max(0, loud[0] - keep), min(len(s), loud[-1] + 48 + keep)
+    return s[a:b].tobytes()
+
+
+@app.get("/api/cue/{name}")
+def cue(name: str, voice: str = "") -> Response:
+    """当前音色（或 ?voice= 指定）说「在」/「拜拜」，24 kHz s16le 单声道裸 PCM。按音色缓存在数据目录，第二次直接读。"""
+    import hashlib
+
+    text = CUES.get(name)
+    if text is None:
+        raise HTTPException(404, "没有这个提示")
+    try:
+        v, engine, _ = voices.resolve(voice or None)
+    except voices.VoiceError as e:
+        raise HTTPException(400, str(e))
+    key = hashlib.sha1(f"{v['id']}|{engine}|{text}".encode()).hexdigest()[:16]
+    path = store.VOICE / "cues" / f"{key}.pcm"
+    if not path.is_file():
+        try:
+            speech, _, _ = voices.synth(text, v["id"])
+        except (voices.VoiceError, doubao.DoubaoError) as e:
+            raise HTTPException(502, f"合成失败：{e}")
+        if speech.sample_rate != 24000:
+            raise HTTPException(502, f"采样率不对：{speech.sample_rate}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(_trim_pcm(speech.pcm, 24000))
+        tmp.replace(path)
+    return Response(path.read_bytes(), media_type="application/octet-stream",
+                    headers={"X-Voice": v["id"], "X-Sample-Rate": "24000", "Cache-Control": "no-cache"})
+
+
 @app.post("/api/tts")
 def tts(body: dict = Body(...)) -> Response:
     """读一段话，用当前选中的音色；body 里给 voice 就临时换一个。"""

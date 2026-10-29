@@ -305,7 +305,7 @@ def test_exit_word_ends_talk_without_llm(call, fakes):
     assert c.until("exit")["text"] == "小新退下。"
     c.until("bye")
     assert "llm" not in fakes.names()
-    assert ("doubao.bidir.append", "好的，有事再叫我。") in fakes.calls
+    assert "doubao.bidir" not in fakes.names()  # 「拜拜」由端侧用缓存的音色说，服务端不合成
     assert "idle" not in c.kinds()  # bye 之前不发 idle，免得 pad 那边又开始计时
     assert store.get(c.msgs[0]["conversation"])["messages"] == []
 
@@ -339,13 +339,22 @@ def test_wake_with_question_skips_cloud_asr(call, fakes):
 
 
 def test_wake_word_only_replies_ack_without_llm(call, fakes):
+    """浏览器（没有本机缓存）：服务端合成「在」。"""
     c = call()
     c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学。"}))
     c.until("idle")
     assert "llm" not in fakes.names() and "heard" not in c.kinds()
-    assert ("doubao.bidir.append", "我在。") in fakes.calls
+    assert ("doubao.bidir.append", "在。") in fakes.calls
     assert c.audio > 0
     assert store.get(c.msgs[0]["conversation"])["messages"] == []  # 应答不进对话记录
+
+
+def test_wake_acked_by_device_is_silent(call, fakes):
+    """pad 已经用本机缓存说了「在」（acked）：服务端不再合成，直接等用户说。"""
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学", "acked": True}))
+    c.until("idle")
+    assert "doubao.bidir" not in fakes.names() and c.audio == 0
 
 
 def test_wake_uses_custom_wake_word(call, fakes):

@@ -82,10 +82,10 @@ public final class Talk {
      * 待命唤醒后用：连上就把端侧认出的那句发过去（服务端去掉唤醒词直接回答，one-shot），再开音频接着聊。
      * 连接和录音都在这里开，所以从听到唤醒词到问题送到服务端只差一次握手。
      */
-    public void startWoken(String url, String key, String wakeText) throws IOException {
+    public void startWoken(String url, String key, String wakeText, boolean acked) throws IOException {
         start(url, key);
         try {
-            sendText(new JSONObject().put("type", "wake").put("text", wakeText).toString());
+            sendText(new JSONObject().put("type", "wake").put("text", wakeText).put("acked", acked).toString());
         } catch (JSONException e) {
             throw new IOException(e);
         }

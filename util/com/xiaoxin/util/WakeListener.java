@@ -17,8 +17,8 @@ public final class WakeListener {
         /** 认出了唤醒词。text 是端侧认出的整句（含唤醒词），交给服务端去掉唤醒词后作答。 */
         void onWake(String text);
 
-        /** 每一句（没唤醒的也算）认出来的字，调试用。 */
-        void onHeard(String text, long millis);
+        /** 每一句（没唤醒的也算）认出来的字，调试用。millis 识别耗时，audioMs 这句话多长。 */
+        void onHeard(String text, long millis, long audioMs);
 
         void onError(String message);
     }
@@ -39,6 +39,24 @@ public final class WakeListener {
 
     public void setWakeWords(String[] words) {
         wakeWords = words;
+    }
+
+    private volatile int endMs = 800;
+    private volatile boolean debug;
+
+    /** 停多久算说完，跟主系统设置（下一句起生效）。 */
+    public void setEndMs(int ms) {
+        if (ms > 0) {
+            endMs = ms;
+        }
+    }
+
+    /**
+     * 调试模式：每句都只回调 onHeard，认出唤醒词也不触发唤醒、不松开麦克风。
+     * 设置页「端侧模型调试」用，自己说一些词看本机模型认成什么、算不算唤醒 / 退出。
+     */
+    public void setDebug(boolean on) {
+        debug = on;
     }
 
 
@@ -82,8 +100,8 @@ public final class WakeListener {
             listener.onError("麦克风打不开：" + e.getMessage());
             return;
         }
-        // 待命时句尾停顿短一点（唤醒词后面的问题一般一口气说完），反应快
-        Vad vad = new Vad(700);
+        int vadMs = endMs;
+        Vad vad = new Vad(vadMs);  // 跟主系统设置的「停多久算说完」，设置改了马上换
         byte[] frame = new byte[Pcm.FRAME_BYTES];
         try {
             while (running) {
@@ -91,12 +109,16 @@ public final class WakeListener {
                 if (n <= 0) {
                     continue;
                 }
+                if (endMs != vadMs) {
+                    vadMs = endMs;
+                    vad = new Vad(vadMs);
+                }
                 vad.feed(frame, n, pcm -> {
                     long t0 = System.nanoTime();
                     String text = asr.decode(pcm, pcm.length);
                     long ms = (System.nanoTime() - t0) / 1_000_000;
-                    listener.onHeard(text, ms);
-                    if (!text.isEmpty() && Keywords.startsWithAny(text, wakeWords)) {
+                    listener.onHeard(text, ms, pcm.length / 2 * 1000L / Pcm.SAMPLE_RATE);
+                    if (!debug && !text.isEmpty() && Keywords.startsWithAny(text, wakeWords)) {
                         running = false;  // 交给 Talk，先松开麦克风
                         listener.onWake(text);
                     }

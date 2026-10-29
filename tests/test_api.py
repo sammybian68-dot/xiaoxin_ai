@@ -419,3 +419,34 @@ def test_saved_search_history_is_not_resent_as_tool_messages(client, fakes):
     client.post(f"/api/conversations/{cid}/messages", json={"text": "再说说"})
     hist = fakes.llm_requests[-1]["messages"]
     assert [m["role"] for m in hist] == ["user", "assistant", "user"]  # 历史里只留正文，不留 tool 消息
+
+
+# ---------------------------------------------------------------- 唤醒「在」/ 主动退出「拜拜」
+
+def test_cue_synthesized_in_current_voice_and_cached(client, fakes):
+    r = client.get("/api/cue/zai")
+    assert r.status_code == 200 and r.headers["x-sample-rate"] == "24000" and len(r.content) > 0
+    assert r.headers["x-voice"] == voices.DEFAULT
+    assert ("doubao.tts", voices.PRESETS[0][0], "在。") in fakes.calls
+    n = len([c for c in fakes.calls if c[0] == "doubao.tts"])
+    client.get("/api/cue/zai")
+    assert len([c for c in fakes.calls if c[0] == "doubao.tts"]) == n  # 第二次读缓存
+
+
+def test_cue_follows_voice(client, fakes):
+    r = client.get("/api/cue/bye", params={"voice": voices.BUILTIN})
+    assert r.status_code == 200 and r.headers["x-voice"] == voices.BUILTIN
+    assert fakes.calls[-1] == ("cosyvoice", "拜拜。", voices.BUILTIN_MALE_TEXT)
+
+
+def test_cue_trims_silence():
+    from server.main import _trim_pcm
+    from tests.audio import silence, tone
+
+    pcm = silence(0.5) + tone(0.3, rate=24000, amp=3000) + silence(0.5)
+    out = _trim_pcm(pcm, 24000)
+    assert 0.3 <= len(out) / 48000 <= 0.4
+
+
+def test_cue_unknown(client):
+    assert client.get("/api/cue/hello").status_code == 404
