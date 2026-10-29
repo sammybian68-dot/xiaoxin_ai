@@ -65,16 +65,30 @@ def test_short_pause_inside_speech_is_kept():
     assert seconds(out) == pytest.approx(2.6, abs=0.01)
 
 
-def test_leading_silence_is_held_and_sent_with_first_speech():
+def test_leading_silence_trimmed_to_keep():
+    """Triton 版常先吐 0.5–2 秒静音才开口：只留 LEAD_KEEP_S，免得用户干等。"""
     out = list(trim_runaway(blocks(quiet(0.4), speech(1.0)), BIG))
-    assert seconds(out) == pytest.approx(1.4, abs=0.01)
-    assert out[0][:2] == b"\0\0"  # 开头静音没丢，跟着第一块出去
+    assert seconds(out) == pytest.approx(1.0 + cosyvoice.LEAD_KEEP_S, abs=0.01)
+    assert out[0][:2] == b"\0\0"  # 留了一点，不切字头
 
 
-def test_long_leading_silence_does_not_stop_before_speech():
-    # 还没说过话时不触发「静音 1 秒就停」
-    out = list(trim_runaway(blocks(quiet(2.0), speech(0.5)), BIG))
-    assert seconds(out) == pytest.approx(2.5, abs=0.01)
+def test_long_leading_silence_dropped_not_played():
+    out = list(trim_runaway(blocks(quiet(1.2), speech(0.5)), BIG))
+    assert seconds(out) == pytest.approx(0.5 + cosyvoice.LEAD_KEEP_S, abs=0.01)
+
+
+def test_silent_too_long_raises(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(cosyvoice.time, "monotonic", lambda: clock[0])
+
+    def slow_quiet():
+        for b in blocks(quiet(10.0)):
+            clock[0] += 0.1
+            yield b
+
+    with pytest.raises(cosyvoice.Silent):
+        list(trim_runaway(slow_quiet(), BIG))
+    assert clock[0] <= cosyvoice.SILENT_GIVEUP_S + 0.2
 
 
 def test_hard_cap_truncates_continuous_speech():
@@ -82,8 +96,35 @@ def test_hard_cap_truncates_continuous_speech():
     assert seconds(out) <= 4.0
 
 
-def test_all_silence_yields_nothing():
+def test_all_silence_arriving_fast_yields_nothing():
+    # 一下子全到（墙钟没走到放弃时间）：不出东西，tts() 那层会判没出声
     assert list(trim_runaway(blocks(quiet(3.0)), BIG)) == []
+
+
+def test_stream_retries_once_when_silent(monkeypatch):
+    calls = []
+
+    def chunks(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise cosyvoice.Silent()
+            yield  # noqa
+        yield from blocks(speech(0.5))
+
+    monkeypatch.setattr(cosyvoice, "_triton_chunks", chunks)
+    out = list(cosyvoice.stream("你好", None, "参考"))
+    assert len(calls) == 2 and seconds(out) > 0
+
+
+def test_session_skips_silent_sentence_and_continues(monkeypatch):
+    def chunks(text, *a, **kw):
+        if text == "第一句。":
+            raise cosyvoice.Silent()
+            yield  # noqa
+        yield from blocks(speech(0.3))
+
+    got, ended, s = run_session(chunks, monkeypatch, ["第一句。", "第二句。"])
+    assert ended == [""] and seconds(got) == pytest.approx(0.3, abs=0.01)
 
 
 def test_output_is_s16le_with_clipping():

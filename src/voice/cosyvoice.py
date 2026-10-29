@@ -62,6 +62,10 @@ def load_reference(path: str | Path):
 
 SILENCE_LEVEL = 300   # s16 绝对值低于这个算静音（正常说话段的逐秒 RMS 在 1500–3000）
 SILENCE_STOP_S = 1.0  # 说过话以后连着静音这么久就停
+LEAD_KEEP_S = 0.15    # 开头的静音只留这么多，多的直接丢
+# 一直没出声就放弃：实测 Triton 版偶尔先吐 1–2 秒静音才开口，或者整段都是静音。
+# 2026-10-30 测：出声的那些第一个有声样本在 0.3–0.8 秒到，所以 1.5 秒还没声就不等了，调用方换一次重来。
+SILENT_GIVEUP_S = 1.5
 
 
 def max_seconds(text: str) -> float:
@@ -72,8 +76,10 @@ def max_seconds(text: str) -> float:
 def trim_runaway(chunks: Iterable, max_samples: int) -> Iterator[bytes]:
     """把 Triton 吐出的 float32 波形块变成 s16le PCM，顺带处理跑飞：
 
-    - 静音先压着，后面又出声了再一起放出去；开头那块（约 0.4 秒）基本是静音，也压着，第一句出声时一起发
+    - 开头的静音只留 LEAD_KEEP_S，多的丢掉：Triton 版常先吐 0.5–2 秒静音才开口，原样放出去用户就干等着
+    - 中间的静音先压着，后面又出声了再一起放出去
     - 说过话以后连着静音 SILENCE_STOP_S 秒就当念完了，后面的不要
+    - 收到 SILENT_GIVEUP_S 秒还一个有声样本都没有，就抛 Silent（墙钟时间，调用方重来一次通常就好）
     - 总长到 max_samples 就截断
     调用方停止迭代时要关掉 chunks，让上游取消请求。
     """
@@ -81,6 +87,8 @@ def trim_runaway(chunks: Iterable, max_samples: int) -> Iterator[bytes]:
 
     sent = 0
     held, spoken = bytearray(), False
+    keep = int(LEAD_KEEP_S * SAMPLE_RATE) * 2
+    t0 = time.monotonic()
     for audio in chunks:
         audio = np.asarray(audio, dtype=np.float32).reshape(-1)[:max(0, max_samples - sent)]
         sent += audio.size
@@ -88,7 +96,12 @@ def trim_runaway(chunks: Iterable, max_samples: int) -> Iterator[bytes]:
         loud = np.abs(pcm) > SILENCE_LEVEL
         if loud.any():
             last = int(np.nonzero(loud)[0][-1]) + 1
-            out = bytes(held) + pcm[:last].tobytes()
+            if not spoken:  # 第一次出声：前面攒的静音只留最后一点，免得切掉字头
+                first = int(np.nonzero(loud)[0][0])
+                head = (bytes(held) + pcm[:first].tobytes())[-keep:] if keep else b""
+                out = head + pcm[first:last].tobytes()
+            else:
+                out = bytes(held) + pcm[:last].tobytes()
             held = bytearray(pcm[last:].tobytes())
             spoken = True
             yield out
@@ -96,21 +109,41 @@ def trim_runaway(chunks: Iterable, max_samples: int) -> Iterator[bytes]:
             held += pcm.tobytes()
             if spoken and len(held) >= SILENCE_STOP_S * SAMPLE_RATE * 2:
                 return
+            if not spoken:
+                held = held[-keep:] if keep else bytearray()  # 只是省内存，裁剪由上面第一次出声时做
+                if time.monotonic() - t0 >= SILENT_GIVEUP_S:
+                    raise Silent()
         if sent >= max_samples:
             return
 
 
+class Silent(CosyVoiceError):
+    """等了 SILENT_GIVEUP_S 还没出声。"""
+
+
 def stream(text: str, reference, reference_text: str, *, timeout: float = 60,
-           stop: threading.Event | None = None) -> Iterator[bytes]:
+           stop: threading.Event | None = None, retries: int = 1) -> Iterator[bytes]:
     """逐块 yield 24 kHz s16le PCM。reference 是 load_reference() 的结果。
 
     stop 置位就不再往外给；超过 max_seconds(text) 或念完后一直静音就截断。这几种情况都会让 Triton 取消这个请求。
+    1.5 秒还没出声就取消、重来，最多 retries 次（采样是随机的，重来一次多半就正常）；还不行抛 Silent。
     """
-    chunks = _triton_chunks(text, reference, reference_text, timeout=timeout, stop=stop)
-    try:
-        yield from trim_runaway(chunks, int(max_seconds(text) * SAMPLE_RATE))
-    finally:
-        chunks.close()
+    for attempt in range(retries + 1):
+        chunks = _triton_chunks(text, reference, reference_text, timeout=timeout, stop=stop)
+        got = False
+        try:
+            for pcm in trim_runaway(chunks, int(max_seconds(text) * SAMPLE_RATE)):
+                got = True
+                yield pcm
+            if got or (stop and stop.is_set()):
+                return
+            # 很快就结束了、可一个有声样本都没有：和等不到声音一样，重来
+        except Silent:
+            pass
+        finally:
+            chunks.close()
+        if attempt == retries:
+            raise Silent()
 
 
 def _triton_chunks(text: str, reference, reference_text: str, *, timeout: float,
@@ -162,14 +195,14 @@ def tts(text: str, reference, reference_text: str, *, retry: bool = True) -> tup
     t0 = time.monotonic()
     first = None
     parts = []
-    for chunk in stream(text, reference, reference_text):
-        if first is None:
-            first = time.monotonic() - t0
-        parts.append(chunk)
+    try:
+        for chunk in stream(text, reference, reference_text, retries=1 if retry else 0):
+            if first is None:
+                first = time.monotonic() - t0
+            parts.append(chunk)
+    except Silent:
+        raise CosyVoiceError("CosyVoice 没出声") from None
     if not parts:
-        # 偶发（25 次里见过 1 次），整段只出了静音；重来一次通常就好
-        if retry:
-            return tts(text, reference, reference_text, retry=False)
         raise CosyVoiceError("CosyVoice 没出声")
     return b"".join(parts), first, time.monotonic() - t0
 
@@ -216,8 +249,11 @@ class CosyVoiceSession:
             self._task.cancel()
 
     def _synth(self, text: str) -> None:
-        for chunk in stream(text, self.reference, self.reference_text, stop=self._stop):
-            self._loop.call_soon_threadsafe(self.on_pcm, chunk)
+        try:
+            for chunk in stream(text, self.reference, self.reference_text, stop=self._stop):
+                self._loop.call_soon_threadsafe(self.on_pcm, chunk)
+        except Silent:
+            pass  # 重来过一次还是没声：这句跳过，接着念下一句，不让整轮朗读失败
 
     async def _run(self) -> None:
         err = ""
