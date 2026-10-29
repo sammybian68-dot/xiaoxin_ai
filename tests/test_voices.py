@@ -41,6 +41,19 @@ def test_set_engines_rejects_unknown(fakes, kw):
         voices.set_engines(**kw)
 
 
+def test_vad_end_ms_default_800_and_adjustable(fakes):
+    assert voices.engines()["vad_end_ms"] == 800
+    assert voices.set_engines(vad_end_ms=500)["vad_end_ms"] == 500
+    assert voices.set_engines(vad_end_ms="650")["vad_end_ms"] == 650  # 网页传字符串也行
+
+
+@pytest.mark.parametrize("bad", [100, 5000, "abc"])
+def test_vad_end_ms_rejects_out_of_range(fakes, bad):
+    with pytest.raises(voices.VoiceError):
+        voices.set_engines(vad_end_ms=bad)
+    assert voices.engines()["vad_end_ms"] == 800
+
+
 def test_unknown_engine_in_settings_file_falls_back(fakes):
     store.update_settings(asr_engine="gone", tts_engine="gone")
     assert (voices.engines()["asr"], voices.engines()["tts"]) == ("doubao", "doubao")

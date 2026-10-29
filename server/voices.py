@@ -22,7 +22,7 @@ import threading
 import time
 from pathlib import Path
 
-from server import store
+from server import store, vad
 from src.voice import cosyvoice, doubao
 
 ASR_ENGINES = [
@@ -86,13 +86,23 @@ def engines() -> dict:
     s = store.settings()
     asr = s.get("asr_engine") if s.get("asr_engine") in ASR_IDS else "doubao"
     tts = s.get("tts_engine") if s.get("tts_engine") in TTS_IDS else "doubao"
-    return {"asr": asr, "tts": tts,
+    end_ms = s.get("vad_end_ms") if isinstance(s.get("vad_end_ms"), int) else vad.END_MS
+    return {"asr": asr, "tts": tts, "vad_end_ms": end_ms, "vad_end_ms_range": list(vad.END_MS_RANGE),
             "asr_options": [{"id": i, "name": n, "desc": d} for i, n, d in ASR_ENGINES],
             "tts_options": [{"id": i, "name": n, "desc": d} for i, n, d in TTS_ENGINES]}
 
 
-def set_engines(asr: str | None = None, tts: str | None = None) -> dict:
+def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None) -> dict:
     fields = {}
+    if vad_end_ms is not None:
+        lo, hi = vad.END_MS_RANGE
+        try:
+            ms = int(vad_end_ms)
+        except (TypeError, ValueError):
+            raise VoiceError("说完判定要填毫秒数") from None
+        if not lo <= ms <= hi:
+            raise VoiceError(f"说完判定要在 {lo}–{hi} 毫秒之间")
+        fields["vad_end_ms"] = ms
     if asr is not None:
         if asr not in ASR_IDS:
             raise VoiceError(f"没有这个 ASR 引擎：{asr}")

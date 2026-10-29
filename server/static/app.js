@@ -1158,6 +1158,8 @@ function renderEngines(e) {
     $(sel).innerHTML = options.map((o) => `<option value="${o.id}">${esc(o.name)}${ready[o.id] === false ? "（没起来）" : ""}</option>`).join("");
     $(sel).value = cur;
   };
+  $("set-vad-end").value = e.vad_end_ms;
+  [$("set-vad-end").min, $("set-vad-end").max] = e.vad_end_ms_range || [300, 2000];
   fill("set-asr", e.asr_options, e.asr, { paraformer: e.paraformer_ready });
   fill("set-tts", e.tts_options, e.tts, { cosyvoice: e.cosyvoice_ready });
   $("asr-desc").textContent = e.asr_options.find((o) => o.id === e.asr)?.desc || "";
@@ -1177,6 +1179,14 @@ async function setEngine(kind, value) {
     if (kind === "tts") loadVoices();
   } catch (err) { toast(err.message); loadEngines(); }
 }
+$("set-vad-end").addEventListener("change", async () => {
+  try {
+    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vad_end_ms: Number($("set-vad-end").value) }) }).then(json);
+    renderEngines(e);
+    toast(`停 ${e.vad_end_ms} 毫秒算说完，下一通电话起生效`);
+  } catch (err) { toast(err.message); loadEngines(); }
+});
 $("set-asr").addEventListener("change", () => setEngine("asr", $("set-asr").value));
 $("set-tts").addEventListener("change", () => setEngine("tts", $("set-tts").value));
 

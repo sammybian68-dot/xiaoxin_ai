@@ -63,7 +63,7 @@ class Talk:
         self._transcribe = transcribe    # (engine, pcm) -> text，同步，放线程里跑
         self._reply_record = reply_record
         self._history = history          # conv -> OpenAI messages
-        self.vad = Vad()
+        self.vad = Vad(end_ms=voices.engines()["vad_end_ms"])
         self.turn: asyncio.Task | None = None
         self.turn_id = 0
         self._send_lock = asyncio.Lock()

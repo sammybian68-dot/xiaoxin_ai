@@ -24,7 +24,8 @@ RATE = 16000
 FRAME_MS = 20
 FRAME_BYTES = RATE * 2 * FRAME_MS // 1000  # 640
 START_MS = 200          # 连续这么久有声才算开口，咳嗽、敲桌子大多短于这个
-END_MS = 700            # 说完后停这么久算一句结束
+END_MS = 800            # 说完后停这么久算一句结束；默认值，设置里可调（和豆包流式识别的 end_window_size 一致）
+END_MS_RANGE = (300, 2000)
 PRE_ROLL_MS = 300       # 开口判定前的这段也算进句子，免得吃掉字头
 MAX_UTTERANCE_S = 30
 WARMUP_MS = 400
@@ -46,7 +47,8 @@ def frame_db(frame: bytes) -> float:
 class Vad:
     """feed(pcm) 返回这块里发生的事件列表：[("start", None)] / [("end", 一整句 PCM)]。"""
 
-    def __init__(self):
+    def __init__(self, end_ms: int | None = None):
+        self.end_ms = end_ms or END_MS  # 每通电话可以不同，设置里调
         self._buf = b""
         self._noise: deque[float] = deque(maxlen=150)  # 最近 3 秒安静帧
         self._pre: deque[bytes] = deque(maxlen=PRE_ROLL_MS // FRAME_MS)
@@ -105,7 +107,7 @@ class Vad:
         self._utt += frame
         self._quiet_run = 0 if loud else self._quiet_run + 1
         too_long = len(self._utt) >= MAX_UTTERANCE_S * RATE * 2
-        if self._quiet_run * FRAME_MS >= END_MS or too_long:
+        if self._quiet_run * FRAME_MS >= self.end_ms or too_long:
             utt = bytes(self._utt[:len(self._utt) - (0 if too_long else (self._quiet_run - 5) * FRAME_BYTES)])
             if too_long:  # 多半是持续噪声：把最近 3 秒的电平学进底噪
                 tail = utt[-FRAME_BYTES * self._noise.maxlen:]

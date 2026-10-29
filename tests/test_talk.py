@@ -29,9 +29,19 @@ class Call:
         for i in range(0, len(pcm), chunk):
             self.ws.send_bytes(pcm[i:i + chunk])
 
-    def until(self, kind, limit=400):
+    def until(self, kind, limit=400, timeout=10.0):
+        """收到 kind 为止。超过 timeout 秒没等到就失败，不让整个测试卡死。"""
+        import queue
+        import threading
+
+        deadline = time.monotonic() + timeout
         for _ in range(limit):
-            m = self.ws.receive()
+            box: queue.Queue = queue.Queue()
+            threading.Thread(target=lambda: box.put(self.ws.receive()), daemon=True).start()
+            try:
+                m = box.get(timeout=max(0.01, deadline - time.monotonic()))
+            except queue.Empty:
+                raise AssertionError(f"{timeout} 秒没等到 {kind}，收到 {[x['type'] for x in self.msgs]}") from None
             if m.get("bytes"):
                 self.audio += len(m["bytes"])
                 continue
@@ -230,6 +240,23 @@ def test_timing_reported_and_saved(call, fakes):
     assert next(m for m in c.msgs if m["type"] == "heard")["t_asr"] == t["asr"]
     saved = store.get(c.msgs[0]["conversation"])["messages"][-1]
     assert saved["timing"] == t
+
+
+def test_vad_end_ms_setting_applies_to_new_call(call, fakes):
+    """停 0.6 秒：默认 800 ms 下这还算一句话；设成 400 ms 就断成两句（看服务端判了几次「说完」）。"""
+    from server import talk as talk_mod
+
+    gap = silence(0.5) + tone(1.0, amp=2000) + silence(0.6) + tone(1.0, amp=2000) + silence(1.2)
+    c = call()
+    assert c.msgs[0]  # ready
+    c.send_pcm(gap)
+    c.until("idle")
+    asr_calls = [x for x in fakes.calls if x[0] == "doubao.asr"]
+    assert len(asr_calls) == 1
+    voices.set_engines(vad_end_ms=400)
+    c2 = call()
+    vad = talk_mod.Vad(end_ms=voices.engines()["vad_end_ms"])
+    assert [k for k, _ in vad.feed(gap)] == ["start", "end", "start", "end"]
 
 
 def test_stop_closes(call, fakes):
