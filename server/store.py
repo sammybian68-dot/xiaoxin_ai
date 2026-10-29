@@ -97,6 +97,18 @@ def append(cid: str, msg: dict) -> dict:
     return msg
 
 
+def update_message(cid: str, mid: str, **fields) -> dict | None:
+    """给已存的一条消息补字段（比如念完才知道的首响时间）。找不到返回 None。"""
+    with _lock:
+        conv = get(cid)
+        for m in conv["messages"]:
+            if m["id"] == mid:
+                m.update(fields)
+                _write_json(CONV / f"{cid}.json", conv)
+                return m
+    return None
+
+
 # ---------------------------------------------------------------- 附件
 
 def _kind(name: str, mime: str, size: int) -> str:

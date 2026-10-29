@@ -4,19 +4,26 @@
   上行  二进制帧：s16le 16 kHz 单声道 PCM，多长都行（建议 20–100 ms）
         文本帧 {"type":"hello","conversation":"<id 可空>","model":"<可空>"}  连上后第一条，可省
         文本帧 {"type":"stop"}  挂断
+        文本帧 {"type":"model","model":"<id>"}  换模型，下一句起生效
   下行  文本帧 JSON：
         ready      {conversation, asr, tts, voice}           准备好了，可以说话
         listening  {}                                         用户开口了（VAD start）
-        heard      {text}                                     一句话识别完
+        model      {model}                                    换模型生效了
+        heard      {text, t_asr}                              一句话识别完；t_asr 是说完到识别出来的秒数
         thinking   {}                                         送给模型了
         search     {queries, state, ok, sources}              联网搜索，同对话页
         delta      {text}                                     回答正文
         reply      {message}                                  回答存进对话了
         speaking   {sample_rate}                              下面开始有音频
         interrupt  {}                                         用户插话，端侧立刻清空播放队列
-        idle       {}                                         这一轮念完了，等用户说
+        idle       {timing}                                   这一轮念完了，等用户说。timing 见下
         note / error {detail}
         二进制帧：24 kHz s16le PCM，约 100 ms 一块（服务端节流，最多领先播放 2 秒）
+
+首响计时（服务端视角，从 VAD 判定说完算起，秒）：
+  timing = {asr, search, first_text, first_audio, model}
+  asr 说完到识别出来；search 搜索花的时间（没搜是 0）；first_text 说完到第一个字；first_audio 说完到第一块音频发出。
+  端侧再加上自己的「收到第一块到真正出声」，就是用户听到的首响。
 
 一轮的状态：听 → 识别 → 想（LLM，可能搜）→ 说（边出字边 TTS）→ 听。
 在想或说的时候 VAD 判到用户开口，就取消这一轮（LLM 和 TTS 都停，端侧清空播放），转去听这句新的。
@@ -35,15 +42,21 @@ from server.vad import Vad
 
 log = logging.getLogger("xiaoxin.talk")
 
+# 加在人设后面：不然模型以为自己在打字聊天，会说「我听不到声音，请打字」（2026-10-29 实测 deepseek 这么回过）
+VOICE_HINT = ("现在是语音通话：用户的话是语音识别出来的文字（可能有错字，按意思理解），你的回答会被念出来。"
+              "所以要短，像打电话说话一样，一般一两句、不超过 80 个字；别用列表、表格、markdown、表情符号；"
+              "别说你听不到声音或者让用户打字。")
+
 
 class Talk:
     """一通电话。run() 跑到挂断。外部依赖都从 main 传进来，方便测试替换。"""
 
     def __init__(self, ws, *, asr_engine: str, model: str, conversation: str | None,
-                 llm_thread, make_speech, transcribe, reply_record, history):
+                 llm_thread, make_speech, transcribe, reply_record, history, models=()):
         self.ws = ws
         self.asr_engine = asr_engine
         self.model = model
+        self._models = set(models) or {model}
         self.cid = conversation
         self._llm_thread = llm_thread    # main._llm_thread(model, history, q, loop)
         self._make_speech = make_speech  # () -> (TurnSpeech, note)
@@ -89,6 +102,9 @@ class Talk:
                 cmd = json.loads(msg.get("text") or "{}")
                 if cmd.get("type") == "stop":
                     return
+                if cmd.get("type") == "model" and cmd.get("model") in self._models:
+                    self.model = cmd["model"]  # 下一轮起生效，正在答的这一轮不换
+                    await self.send("model", model=self.model)
         finally:
             self.closed = True
             await self.cancel_turn()
@@ -126,12 +142,14 @@ class Talk:
         except Exception as e:
             await self.send("error", detail=f"识别失败：{str(e)[:120]}")
             return
-        log.info("talk turn %d heard %.1fs audio in %.2fs: %s", turn_id, len(utt) / 32000,
-                 time.monotonic() - t0, text[:60])
+        t_asr = time.monotonic() - t0
+        log.info("talk turn %d heard %.1fs audio in %.2fs: %s", turn_id, len(utt) / 32000, t_asr, text[:60])
         if not text:
             await self.send("idle")
             return
-        await self.send("heard", text=text)
+        await self.send("heard", text=text, t_asr=round(t_asr, 2))
+        model = self.model
+        t_search, search_at, first_text, saved_id = 0.0, None, None, None
         store.append(self.cid, {"role": "user", "text": text, "files": [], "via": "talk"})
         history = self._history(store.get(self.cid))
         tts, note = self._make_speech()
@@ -141,7 +159,7 @@ class Talk:
 
         loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
-        worker = loop.run_in_executor(None, self._llm_thread, self.model, history, q, loop)
+        worker = loop.run_in_executor(None, self._llm_thread, model, history, q, loop, VOICE_HINT)
         tts.start()
         parts, end, speaking = [], None, False
         try:
@@ -153,10 +171,17 @@ class Talk:
                     except asyncio.TimeoutError:
                         kind = None
                     if kind == "delta":
+                        if first_text is None:
+                            first_text = time.monotonic() - t0
                         parts.append(value)
                         await self.send("delta", text=value)
                         await tts.feed(value)
                     elif kind == "search":
+                        if value.get("state") == "start":
+                            search_at = time.monotonic()
+                        elif search_at is not None:
+                            t_search += time.monotonic() - search_at
+                            search_at = None
                         await self.send("search", **value)
                     elif kind == "end":
                         end = value
@@ -164,6 +189,7 @@ class Talk:
                         if reply:
                             await tts.finish_text()
                             saved = store.append(self.cid, self._reply_record(reply, end))
+                            saved_id = saved["id"]
                             await self.send("reply", message=saved)
                         else:
                             await tts.cancel()
@@ -180,9 +206,17 @@ class Talk:
             info = tts.info()
             if info["error"]:
                 await self.send("note", detail="朗读出错：" + info["error"])
-            log.info("talk turn %d done: first_audio=%.2fs audio=%.1fs total=%.1fs", turn_id,
-                     info["first_audio_s"] or -1, info["seconds"], time.monotonic() - t0)
-            await self.send("idle")
+            # TurnSpeech 的时间从它建起来算，换成从说完算
+            tts_base = tts.t0 - t0
+            timing = {"asr": round(t_asr, 2), "search": round(t_search, 2),
+                      "first_text": first_text and round(first_text, 2),
+                      "first_audio": info["first_audio_s"] and round(info["first_audio_s"] + tts_base, 2),
+                      "model": (end or {}).get("served") or model}
+            log.info("talk turn %d done: %s audio=%.1fs total=%.1fs", turn_id, timing, info["seconds"],
+                     time.monotonic() - t0)
+            if saved_id:
+                store.update_message(self.cid, saved_id, timing=timing)
+            await self.send("idle", timing=timing)
         except asyncio.CancelledError:
             # 被插话打断：TTS 停掉；模型还在想的话等它说完把整段存下，免得历史里只有问题没有回答
             await tts.cancel()

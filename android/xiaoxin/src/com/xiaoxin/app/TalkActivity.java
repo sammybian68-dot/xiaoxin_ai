@@ -198,6 +198,15 @@ public class TalkActivity extends Activity {
             });
         }
 
+        /** 网页发给服务端的控制消息（比如通话中换模型）。 */
+        @JavascriptInterface
+        public void send(String json) {
+            Talk t = talk;
+            if (t != null) {
+                new Thread(() -> t.sendText(json), "talk-send").start();
+            }
+        }
+
         @JavascriptInterface
         public void stop() {
             runOnUiThread(TalkActivity.this::stopTalk);

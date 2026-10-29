@@ -60,7 +60,11 @@ const prefs = { autoread: true, enter: true };
 try { Object.assign(prefs, JSON.parse(localGet("prefs") || "{}")); } catch (_) { /* 坏数据就用默认 */ }
 function savePrefs() { localSet("prefs", JSON.stringify(prefs)); }
 
-$("model").addEventListener("change", () => { state.model = $("model").value; localSet("model", state.model); });
+$("model").addEventListener("change", () => {
+  state.model = $("model").value;
+  localSet("model", state.model);
+  if (talk.on) talkSend({ type: "model", model: state.model });  // 自由对话中换模型，下一句起生效
+});
 
 // ---------------------------------------------------------------- 侧栏
 
@@ -171,7 +175,9 @@ function appendMessage(m) {
       + `<div class="actions"><button type="button" data-act="copy">复制</button><button type="button" data-act="read">朗读</button></div>`
       + `<div class="meta"></div></div>`;
     row.querySelector(".text").innerHTML = renderText(m.text || "");
-    row.querySelector(".meta").textContent = m.model || "";
+    const t = m.timing;  // 自由对话存下来的首响（服务端视角，从说完算起）
+    row.querySelector(".meta").textContent = (m.model || "")
+      + (t ? `  文字首响 ${t.first_text ?? "-"}s · 语音首响 ${t.first_audio ?? "-"}s（服务端）` : "");
     renderSources(row, m.searches);
     row.dataset.reply = m.text || "";
     wireActions(row);
@@ -266,6 +272,10 @@ class PcmStream {
     // 第一块或者断粮后重新起播时，留 60 ms 余量
     const at = Math.max(this.next, this.ctx.currentTime + 0.06);
     src.start(at);
+    if (!this.started) {  // 第一块真正出声的时刻（performance.now 时间轴），首响计时用
+      this.started = true;
+      this.onStart?.(performance.now() + (at - this.ctx.currentTime) * 1000);
+    }
     this.next = at + buf.duration;
     this.sources.add(src);
     src.onended = () => { this.sources.delete(src); this.maybeEnd(); };
@@ -347,6 +357,14 @@ async function send(text, via = "text") {
   const speakNow = prefs.autoread;
   const readBtn = row.querySelector('[data-act="read"]');
   const abort = new AbortController();
+  // 首响：从点发送算起。文字 = 第一个字上屏，语音 = 第一声出来（开了自动朗读才有）
+  const tm = { t0: performance.now(), text: null, audio: null, model: "" };
+  const showMeta = () => {
+    const f = (x) => (x == null ? "…" : x.toFixed(1) + "s");
+    const parts = [`文字首响 ${f(tm.text)}`];
+    if (speakNow) parts.push(`语音首响 ${f(tm.audio)}`);
+    meta.textContent = [tm.model, parts.join(" · ")].filter(Boolean).join("  ");
+  };
   state.abort = abort;
   if (speakNow) {
     stopSpeaking();
@@ -355,6 +373,7 @@ async function send(text, via = "text") {
     readBtn.textContent = "停止";
     player.stream = new PcmStream(24000, () => { if (player.seq === seq) stopSpeaking(); });
     player.stream.abort = abort;
+    player.stream.onStart = (at) => { tm.audio = (at - tm.t0) / 1000; showMeta(); };
   }
   try {
     const r = await api(`api/conversations/${conv.id}/messages`, { method: "POST", headers: { "Content-Type": "application/json" },
@@ -376,7 +395,8 @@ async function send(text, via = "text") {
         if (ev === "user") {
           $("messages").insertBefore(appendMessage(data), row);
         } else if (ev === "model") {
-          meta.textContent = data;
+          tm.model = data;
+          showMeta();
         } else if (ev === "reasoning") {
           reasoning += data.length;
           if (!reply) textEl.innerHTML = `<span class="thinking">小新在想…（${reasoning} 字）</span>`;
@@ -389,6 +409,7 @@ async function send(text, via = "text") {
             if (!reply) textEl.innerHTML = `<span class="thinking">${data.ok ? "搜到了，在整理…" : "没搜到，小新先按知道的说…"}</span>`;
           }
         } else if (ev === "delta") {
+          if (tm.text == null) { tm.text = (performance.now() - tm.t0) / 1000; showMeta(); }
           reply += data;
           textEl.innerHTML = renderText(reply);
         } else if (ev === "audio") {
@@ -761,6 +782,12 @@ async function startTalk() {
   }
 }
 
+function talkSend(obj) {
+  const s = JSON.stringify(obj);
+  if (native) native.send(s);
+  else if (talk.ws?.readyState === WebSocket.OPEN) talk.ws.send(s);
+}
+
 function hangUp() {
   if (!talk.on) return;
   talk.on = false;
@@ -777,6 +804,21 @@ function hangUp() {
 
 function drawTalkLevel(peak) {
   $("talk-level").style.transform = `scaleX(${Math.max(0.04, Math.min(1, peak * 3))})`;
+}
+
+// 首响：从你说完算起，文字首响 = 第一个字出现在屏幕上，语音首响 = 第一声从喇叭出来。
+// 写在这一条回答的 meta 行里（模型名后面），服务端的分解（识别 / 搜索）也一起列上。
+function showTiming() {
+  const row = talk.row;
+  if (!row) return;
+  const f = (x) => (x == null ? "…" : x.toFixed(1) + "s");
+  const s = talk.server;
+  const parts = [`文字首响 ${f(talk.firstText)}`, `语音首响 ${f(talk.firstAudio)}`];
+  if (s) parts.push(`识别 ${f(s.asr)}` + (s.search ? ` · 搜索 ${f(s.search)}` : ""));
+  const model = s?.model || row.querySelector(".meta").dataset.model || "";
+  row.querySelector(".meta").dataset.model = model;
+  row.querySelector(".meta").textContent = [model, parts.join(" · ")].filter(Boolean).join("  ");
+  talk.server = null;
 }
 
 function finishTalkRow() {
@@ -808,6 +850,9 @@ function onTalkEvent(ev) {
       break;
     case "heard":
       finishTalkRow();
+      // 首响计时的起点：用户说完。本地收到 heard 的时刻往回推识别花的时间（服务端给的 t_asr）
+      talk.t0 = performance.now() - (ev.t_asr || 0) * 1000;
+      talk.firstText = talk.firstAudio = null;
       appendMessage({ role: "user", text: ev.text, via: "talk" });
       talk.row = appendMessage({ role: "assistant", text: "" });
       talk.row.querySelector(".text").classList.add("cursor");
@@ -829,20 +874,32 @@ function onTalkEvent(ev) {
       break;
     case "delta":
       if (!talk.row) break;
+      if (talk.firstText == null) { talk.firstText = (performance.now() - talk.t0) / 1000; showTiming(); }
       talk.text += ev.text;
       talk.row.querySelector(".text").innerHTML = renderText(talk.text);
       scrollDown();
       break;
     case "reply":
-      if (talk.row) talk.row.querySelector(".meta").textContent = ev.message.model || "";
+      if (talk.row) { talk.row.querySelector(".meta").dataset.model = ev.message.model || ""; showTiming(); }
       break;
+    case "model": toast(`下一句用 ${state.models.find((m) => m.id === ev.model)?.label || ev.model}`); break;
     case "speaking":
       talkStatus("小新在说（可以直接打断）");
-      if (!native) talk.stream = new PcmStream(ev.sample_rate || 24000);
+      if (!native) {
+        talk.stream = new PcmStream(ev.sample_rate || 24000);
+        talk.stream.onStart = (at) => { talk.firstAudio = (at - talk.t0) / 1000; showTiming(); };
+      }
+      break;
+    case "native_play":  // APK：第一块音频真正从喇叭出来了，delay_ms 是收到到出声的时间
+      if (talk.t0 != null && talk.firstAudio == null) {
+        talk.firstAudio = (performance.now() - talk.t0) / 1000;
+        showTiming();
+      }
       break;
     case "idle":
       talkStatus("在听，直接说");
       talk.stream?.close();
+      if (ev.timing) { talk.server = ev.timing; showTiming(); }
       finishTalkRow();
       break;
     case "note": toast(ev.detail); break;

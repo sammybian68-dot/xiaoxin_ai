@@ -48,6 +48,32 @@ public final class Talk {
     private volatile boolean running;
     private int oldMode = AudioManager.MODE_NORMAL;
     private int oldVolume = -1;
+    private volatile boolean firstAudio;
+
+    /**
+     * 这一轮第一块音频写进播放器后，盯着播放头，真正开始出声时报一次 native_play {delay_ms}：
+     * 从收到第一块到喇叭出声的时间（AudioTrack 缓冲 + 通话通路的延迟）。
+     */
+    private void notePlayStart(AudioTrack t) {
+        long recvAt = System.nanoTime();
+        int head0 = t.getPlaybackHeadPosition();
+        Thread w = new Thread(() -> {
+            for (int i = 0; i < 300 && running; i++) {
+                try {
+                    if (t.getPlaybackHeadPosition() != head0) {
+                        long ms = (System.nanoTime() - recvAt) / 1_000_000;
+                        listener.onEvent(new JSONObject().put("type", "native_play").put("delay_ms", ms));
+                        return;
+                    }
+                    Thread.sleep(5);
+                } catch (Exception e) {
+                    return;
+                }
+            }
+        }, "talk-play-watch");
+        w.setDaemon(true);
+        w.start();
+    }
 
     public Talk(Context context, Listener listener) {
         this.context = context.getApplicationContext();
@@ -63,8 +89,12 @@ public final class Talk {
             public void onText(String text) {
                 try {
                     JSONObject ev = new JSONObject(text);
-                    if ("interrupt".equals(ev.optString("type"))) {
+                    String type = ev.optString("type");
+                    if ("interrupt".equals(type)) {
                         flushPlayback();
+                    }
+                    if ("speaking".equals(type)) {
+                        firstAudio = true;
                     }
                     listener.onEvent(ev);
                 } catch (JSONException e) {
@@ -76,6 +106,10 @@ public final class Talk {
             public void onBinary(byte[] data) {
                 AudioTrack t = track;
                 if (t != null && running) {
+                    if (firstAudio) {
+                        firstAudio = false;
+                        notePlayStart(t);
+                    }
                     t.write(data, 0, data.length);
                 }
             }
@@ -146,6 +180,18 @@ public final class Talk {
                 ws.sendBinary(frame, n);
             } catch (IOException e) {
                 break;  // 断线由 onClosed 处理
+            }
+        }
+    }
+
+    /** 发一条控制消息给服务端（JSON 文本帧）。断了就算了。 */
+    public void sendText(String json) {
+        WebSocket w = ws;
+        if (w != null) {
+            try {
+                w.sendText(json);
+            } catch (IOException ignored) {
+                // 断线由 onClosed 处理
             }
         }
     }

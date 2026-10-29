@@ -236,7 +236,7 @@ def _run_tool(name: str, arguments: str) -> web_search.Result:
     return web_search.search(arguments)
 
 
-def _llm_thread(model: str, history: list[dict], q, loop) -> None:
+def _llm_thread(model: str, history: list[dict], q, loop, extra_system: str = "") -> None:
     """在线程里跑同步的流式请求，每个事件丢回事件循环的队列。
 
     工具循环：模型要搜就搜（发 search 事件），把结果接在后面再问一次，一轮最多搜 MAX_SEARCHES 次。
@@ -261,7 +261,8 @@ def _llm_thread(model: str, history: list[dict], q, loop) -> None:
         text = ""
         tools = [web_search.SPEC]
         try:
-            for kind, value in client.iter_stream(m, msgs, system=_system(), max_tokens=4096, timeout=180,
+            system = _system() + ("\n" + extra_system if extra_system else "")
+            for kind, value in client.iter_stream(m, msgs, system=system, max_tokens=4096, timeout=180,
                                                   tools=tools):
                 if kind == "model":
                     served = value
@@ -688,7 +689,7 @@ async def talk(ws: WebSocket) -> None:
         return
     session = Talk(ws, asr_engine=asr_engine, model=model, conversation=q.get("conversation") or None,
                    llm_thread=_llm_thread, make_speech=_turn_speech, transcribe=_transcribe,
-                   reply_record=_reply_record, history=_llm_messages)
+                   reply_record=_reply_record, history=_llm_messages, models=[m["id"] for m in MODELS])
     log.info("talk open asr=%s model=%s conversation=%s", asr_engine, model, session.cid)
     try:
         await session.run()

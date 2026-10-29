@@ -182,6 +182,56 @@ def test_barge_in_while_speaking_stops_audio(call, fakes, monkeypatch):
     assert c.audio == before
 
 
+def test_model_from_query_is_used(call, fakes):
+    c = call("?model=qwen3.8-27b")
+    c.send_pcm(said())
+    c.until("idle")
+    assert [x[1] for x in fakes.calls if x[0] == "llm"] == ["qwen3.8-27b"]
+
+
+def test_switch_model_mid_call(call, fakes):
+    """通话中在顶栏换模型：下一句起用新的（2026-10-29 用户切了 27B，回答还是 deepseek）。"""
+    c = call()
+    c.send_pcm(said())
+    c.until("idle")
+    c.ws.send_text(json.dumps({"type": "model", "model": "qwen3.8-27b"}))
+    assert c.until("model")["model"] == "qwen3.8-27b"
+    c.send_pcm(said())
+    c.until("idle")
+    assert [x[1] for x in fakes.calls if x[0] == "llm"] == ["deepseek-v4.1-flash", "qwen3.8-27b"]
+
+
+def test_switch_to_unknown_model_ignored(call, fakes):
+    c = call()
+    c.ws.send_text(json.dumps({"type": "model", "model": "gpt-99"}))
+    c.send_pcm(said())
+    c.until("idle")
+    assert "model" not in c.kinds()
+    assert [x[1] for x in fakes.calls if x[0] == "llm"] == ["deepseek-v4.1-flash"]
+
+
+def test_voice_hint_in_system_prompt(call, fakes):
+    """语音通话要告诉模型：不然它说「我听不到声音，请打字」。"""
+    c = call()
+    c.send_pcm(said())
+    c.until("idle")
+    system = fakes.llm_requests[-1]["system"]
+    assert "语音通话" in system and "别说你听不到声音" in system
+
+
+def test_timing_reported_and_saved(call, fakes):
+    fakes.llm_script = [("search", ["北京天气"]), ("text", "北京明天晴。")]
+    c = call()
+    c.send_pcm(said())
+    t = c.until("idle")["timing"]
+    assert set(t) == {"asr", "search", "first_text", "first_audio", "model"}
+    assert 0 <= t["asr"] <= t["first_text"] <= t["first_audio"]
+    assert t["search"] >= 0 and t["model"] == "deepseek-v4.1-flash"
+    assert next(m for m in c.msgs if m["type"] == "heard")["t_asr"] == t["asr"]
+    saved = store.get(c.msgs[0]["conversation"])["messages"][-1]
+    assert saved["timing"] == t
+
+
 def test_stop_closes(call, fakes):
     c = call()
     c.ws.send_text(json.dumps({"type": "stop"}))
