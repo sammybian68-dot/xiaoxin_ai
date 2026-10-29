@@ -1,6 +1,8 @@
 # 小新 APK
 
-pad 上的「小新」，现在只有自由对话：点「开始说话」后像打电话一样一直说，小新说话时可以直接插话打断。断句、识别、回答、打断都在服务端 `/api/talk`（协议见 `server/talk.py`），APK 只收发 PCM。
+pad 上的「小新」：一个 WebView 套着网页版，界面、对话、设置和电脑上完全一样，改网页（`server/static/`）部署后 pad 刷新就生效，不用重新打包。
+
+只有「📞 自由对话」的音频走原生：网页检测到 `window.XiaoxinNative` 就把它交给 `com.xiaoxin.util.Talk`，原生连 `/api/talk`、录音、放音，事件通过 `window.xiaoxinTalkEvent` 回给网页画界面。原因是 WebView 里的 getUserMedia 走不到 pad 的系统 AEC。断句、识别、回答、打断都在服务端（协议见 `server/talk.py`）。
 
 「小新测试」是另一个 APK（`com.xiaoxin.testapp`，橙色烧瓶图标），放麦克风、前摄、回声这些测试页，两个可以同时装。
 
@@ -17,18 +19,14 @@ adb install -r -g android/build/xiaoxin.apk
 
 ```bash
 K=$(grep '^XIAOXIN_KEY=' .env | cut -d= -f2)
-adb shell am start -n com.xiaoxin.app/.TalkActivity --es key "$K"                    # 走公网 wss://gpu.cmbian.top:8183
-adb shell am start -n com.xiaoxin.app/.TalkActivity --es url ws://127.0.0.1:18184/api/talk   # 改走 USB 调试链路
+adb shell am start -n com.xiaoxin.app/.TalkActivity --es key "$K"     # 默认打开 https://47.116.13.227:8183/xiaoxin/
 ```
 
-USB 调试链路（公网 8183 不通时用）：
+**用 IP，不用域名。** gpu.cmbian.top 没备案，TLS 里带这个域名的 SNI 会被运营商掐掉（TCP 能连上，握手收不到任何字节）。证书 SAN 里有这个 IP。
 
-```bash
-ssh -f -N -L 18184:127.0.0.1:8184 gpu2   # 电脑 → gpu2 的小新
-adb reverse tcp:18184 tcp:18184           # pad → 电脑
-```
+证书是自签的 `res/raw/gpu_cert.pem`（2027-04-15 到期，换证书要同步换这个文件再打包）：WebView 在 `onReceivedSslError` 里按这张证书的指纹放行，原生 wss 由 `res/xml/network_security_config.xml` 信任它，别的证书一律拒绝。
 
-`ws://` 明文只允许 `127.0.0.1`，见 `res/xml/network_security_config.xml`。公网走 wss，只信任 `res/raw/gpu_cert.pem` 这张自签证书（2027-04-15 到期，换证书要同步换这个文件）。
+调试时改地址：`--es url http://127.0.0.1:18184/`，配合 `ssh -f -N -L 18184:127.0.0.1:8184 gpu2` 和 `adb reverse tcp:18184 tcp:18184`。明文只允许 127.0.0.1。
 
 ## 音频
 
