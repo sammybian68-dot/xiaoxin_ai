@@ -777,7 +777,9 @@ def cue(name: str, voice: str = "") -> Response:
         v, engine, _ = voices.resolve(voice or None)
     except voices.VoiceError as e:
         raise HTTPException(400, str(e))
-    key = hashlib.sha1(f"{v['id']}|{engine}|{text}".encode()).hexdigest()[:16]
+    # 内置男声换过参考素材：素材名也算进去，换了就重新合成
+    ref = voices.BUILTIN_MALE_SOURCE if v["id"] == voices.BUILTIN else ""
+    key = hashlib.sha1(f"{v['id']}|{engine}|{text}|{ref}".encode()).hexdigest()[:16]
     path = store.VOICE / "cues" / f"{key}.pcm"
     if not path.is_file():
         try:

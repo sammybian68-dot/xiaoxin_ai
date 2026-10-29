@@ -59,14 +59,15 @@ PRESETS = [
 ]
 DEFAULT = "doubao:" + PRESETS[0][0]
 
-# CosyVoice3 没有内置音色（只能 zero-shot），要给一段男声当参考。2026-10-30 用户在四个候选里试听选了
-# MiMo-Audio 的官方中文男声示例 examples/prompt_speech_zh_m.wav（4.5 秒，24 kHz，音高约 125 Hz）。
-# CosyVoice 官方那段 cross_lingual_prompt.wav 用户嫌口音重，不用了。
-# 切到前后各留 0.1 秒（0.04–4.53 秒）最稳：48 次 0 次无声，首个有声样本中位 0.29 秒、最大 0.60 秒，念出来约 126 Hz。
-COSYVOICE_ASSET = Path(os.environ.get("COSYVOICE_ASSET", "/Data/cmbian/codes/mimo_audio/MiMo-Audio/examples"))
-BUILTIN_MALE_SOURCE = "prompt_speech_zh_m.wav"
-BUILTIN_MALE_SPAN = (0.04, 4.53)
-BUILTIN_MALE_TEXT = "养殖场的工作人员说，猪尾巴甩起来，就说明猪高兴。"
+# CosyVoice3 没有内置音色（只能 zero-shot），要给一段男声当参考。
+# 2026-10-30 第二轮：用户嫌 MiMo-Audio 那段（prompt_speech_zh_m.wav）口音重、不够阳光，在 13 个候选里试听选了
+# 豆包 TTS「少年梓辛」（zh_male_shaonianzixin_uranus_bigtts）生成的一段，3.1 秒、16 kHz、音高约 151 Hz。
+# 同一个音色不同段差别很大，这一段 32 次 0 无声 0 跑飞，首个有声样本中位 0.29 秒、最慢 0.34 秒，Paraformer 回认错字 0.3%。
+# 候选和全部测量在 gpu2 数据目录 voice/male_candidates_20261030/。素材随代码放在 server/assets/。
+COSYVOICE_ASSET = Path(os.environ.get("COSYVOICE_ASSET", str(Path(__file__).parent / "assets")))
+BUILTIN_MALE_SOURCE = "male_shaonianzixin.wav"
+BUILTIN_MALE_SPAN = (0.0, 3.08)  # 已经切好（前后各留 0.1 秒），整段用
+BUILTIN_MALE_TEXT = "这首歌的旋律真好听，我已经跟着哼了好几遍了。"
 BUILTIN = "cosyvoice:male"
 
 # pad 待命唤醒：端侧 Paraformer 小模型认出这句话以唤醒词开头，才连服务端。没唤醒时一个字节都不上传。
