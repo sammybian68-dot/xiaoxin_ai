@@ -1369,13 +1369,11 @@ function onAsrDebug(ev) {
   else if (ev.state === "off") set("没开");
   else if (ev.state === "error") set("出错了", ev.detail);
   else if (ev.state === "heard") {
+    // 只显示转写，去掉标点空格（和匹配唤醒 / 退出词时用的是同一串）
+    const text = (ev.text || "").replace(/[，。！？、；：,.!?;:\s　]/g, "");
+    if (!text) return;
     const li = document.createElement("li");
-    const tags = [];
-    if (ev.wake) tags.push(`<span class="tag wake">${ev.one_shot ? "唤醒 · one-shot" : "唤醒 · 只喊名字（会说「在」）"}</span>`);
-    if (ev.exit) tags.push('<span class="tag exit">退出</span>');
-    if (!ev.wake && !ev.exit) tags.push('<span class="tag">都不算</span>');
-    li.innerHTML = `<span class="t">${esc(ev.text || "（没认出字）")}</span>${tags.join("")}`
-      + `<span class="m">${(ev.audio_ms / 1000).toFixed(1)} 秒的话 · 识别 ${ev.ms} ms</span>`;
+    li.innerHTML = `<span class="t">${esc(text)}</span>`;
     $("asr-debug-log").prepend(li);
   }
 }
