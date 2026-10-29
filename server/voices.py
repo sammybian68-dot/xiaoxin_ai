@@ -69,8 +69,15 @@ BUILTIN = "cosyvoice:male"
 # pad 待命唤醒：端侧 Paraformer 小模型认出这句话以唤醒词开头，才连服务端。没唤醒时一个字节都不上传。
 # 2026-10-30 在 pad 上测：4 种声音念「小新同学…」16/16 认对；只喊「小新」两个字 4 次里认错 1 次（小心 / 小谢），
 # 所以唤醒词至少 4 个字。
-WAKE_WORD = "小新同学"
-WAKE_IDLE_S = 20  # 唤醒后这么久没人说话就回去待命
+# 「你好小新」2026-10-30 测：单喊 4/4 对；带问题时「小新」偶尔被认成「小心」（端侧 8 句错 2 句），
+# 所以比对时把「小心」也当「小新」（只在唤醒词里替换，见 talk.wake_forms）。
+WAKE_WORDS = ["小新同学", "你好小新"]
+WAKE_WORD = WAKE_WORDS[0]
+# 退出词：唤醒状态下整句（去掉标点）正好是其中一个才退回待命，「你先退下吧」「我要退下来了」都不算。
+# 端侧小模型和 Paraformer 偶尔把童声的「退下」认成「退一下 / 推一下」，豆包都对；退出词在服务端判，用的是云端识别。
+EXIT_WORDS = ["退下", "退下吧"]
+WAKE_IDLE_S = 30  # 唤醒后这么久没人说话（小新也不在说）就挂断回待命；设置里可调。最后 10 秒 pad 上倒计时
+WAKE_IDLE_RANGE = (10, 300)
 PREVIEW = "你好，我是小新。今天的作业写完了吗？有不会的题可以来问我。"
 
 
@@ -93,36 +100,80 @@ def engines() -> dict:
     asr = s.get("asr_engine") if s.get("asr_engine") in ASR_IDS else "doubao"
     tts = s.get("tts_engine") if s.get("tts_engine") in TTS_IDS else "doubao"
     end_ms = s.get("vad_end_ms") if isinstance(s.get("vad_end_ms"), int) else vad.END_MS
-    wake = s.get("wake_word") if isinstance(s.get("wake_word"), str) and s.get("wake_word") else WAKE_WORD
+    words = s.get("wake_words")
+    if not (isinstance(words, list) and words and all(isinstance(w, str) for w in words)):
+        old = s.get("wake_word")  # 老数据只有一个
+        words = [old] if isinstance(old, str) and old else list(WAKE_WORDS)
+    exits = s.get("exit_words") if isinstance(s.get("exit_words"), list) and s.get("exit_words") else list(EXIT_WORDS)
     return {"asr": asr, "tts": tts, "vad_end_ms": end_ms, "vad_end_ms_range": list(vad.END_MS_RANGE),
-            "wake_word": wake, "wake_idle_s": WAKE_IDLE_S,
+            "wake_words": words, "wake_word": words[0], "exit_words": exits,
+            "wake_idle_s": s.get("wake_idle_s") if isinstance(s.get("wake_idle_s"), int) else WAKE_IDLE_S,
+            "wake_idle_s_range": list(WAKE_IDLE_RANGE),
             "asr_options": [{"id": i, "name": n, "desc": d} for i, n, d in ASR_ENGINES],
             "tts_options": [{"id": i, "name": n, "desc": d} for i, n, d in TTS_ENGINES]}
 
 
+def _split_words(value) -> list[str]:
+    """「小新同学, 你好小新」「小新同学 你好小新」或列表，都拆成列表，去重保序。"""
+    import re
+
+    items = value if isinstance(value, list) else re.split(r"[,，、;；\s]+", str(value or ""))
+    out = []
+    for w in (str(x).strip() for x in items):
+        if w and w not in out:
+            out.append(w)
+    return out
+
+
 def check_wake_word(word) -> str:
-    """唤醒词：2–8 个汉字（可以夹字母数字），不能有标点空格。pad 端侧识别出来没有标点，比对时也不看标点。"""
+    """一个唤醒词：4–8 个字（可以夹字母数字），不能有标点空格。pad 端侧识别出来没有标点，比对时也不看标点。"""
     word = str(word or "").strip()
     if not 2 <= len(word) <= 8 or not all(c.isalnum() for c in word):
-        raise VoiceError("唤醒词要 2–8 个字，不带标点和空格，比如：小新同学")
+        raise VoiceError("唤醒词每个 2–8 个字，不带标点和空格，比如：小新同学")
     if len(word) < 4:
         raise VoiceError("唤醒词至少 4 个字：两个字的（比如「小新」）容易认成「小心」「小谢」，也容易误唤醒")
     return word
 
 
-def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None, wake_word=None) -> dict:
+def check_wake_words(value) -> list[str]:
+    words = [check_wake_word(w) for w in _split_words(value)]
+    if not 1 <= len(words) <= 4:
+        raise VoiceError("唤醒词 1–4 个，用逗号隔开")
+    return words
+
+
+def check_exit_words(value) -> list[str]:
+    """退出词：2–6 个字，整句精确匹配才算，所以短一点没关系；1–4 个。"""
+    words = _split_words(value)
+    if not 1 <= len(words) <= 4:
+        raise VoiceError("退出词 1–4 个，用逗号隔开")
+    for w in words:
+        if not 2 <= len(w) <= 6 or not all(c.isalnum() for c in w):
+            raise VoiceError("退出词每个 2–6 个字，不带标点，比如：退下")
+    return words
+
+
+def _int_in(value, lo: int, hi: int, what: str) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise VoiceError(f"{what}要填数字") from None
+    if not lo <= n <= hi:
+        raise VoiceError(f"{what}要在 {lo}–{hi} 之间")
+    return n
+
+
+def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None, wake_word=None,
+                wake_idle_s=None, wake_words=None, exit_words=None) -> dict:
     fields = {}
-    if wake_word is not None:
-        fields["wake_word"] = check_wake_word(wake_word)
+    if wake_words is not None or wake_word is not None:
+        fields["wake_words"] = check_wake_words(wake_words if wake_words is not None else wake_word)
+    if exit_words is not None:
+        fields["exit_words"] = check_exit_words(exit_words)
+    if wake_idle_s is not None:
+        fields["wake_idle_s"] = _int_in(wake_idle_s, *WAKE_IDLE_RANGE, "唤醒后多久没说话回待命（秒）")
     if vad_end_ms is not None:
-        lo, hi = vad.END_MS_RANGE
-        try:
-            ms = int(vad_end_ms)
-        except (TypeError, ValueError):
-            raise VoiceError("说完判定要填毫秒数") from None
-        if not lo <= ms <= hi:
-            raise VoiceError(f"说完判定要在 {lo}–{hi} 毫秒之间")
-        fields["vad_end_ms"] = ms
+        fields["vad_end_ms"] = _int_in(vad_end_ms, *vad.END_MS_RANGE, "说完判定（毫秒）")
     if asr is not None:
         if asr not in ASR_IDS:
             raise VoiceError(f"没有这个 ASR 引擎：{asr}")

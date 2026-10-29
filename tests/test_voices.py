@@ -54,17 +54,43 @@ def test_vad_end_ms_rejects_out_of_range(fakes, bad):
     assert voices.engines()["vad_end_ms"] == 800
 
 
-def test_wake_word_default_and_change(fakes):
-    assert voices.engines()["wake_word"] == "小新同学"
-    assert voices.set_engines(wake_word=" 小新小新 ")["wake_word"] == "小新小新"
+def test_wake_words_default_and_change(fakes):
+    e = voices.engines()
+    assert e["wake_words"] == ["小新同学", "你好小新"] and e["wake_word"] == "小新同学"
+    assert voices.set_engines(wake_words="小新同学，你好小新、小新小新")["wake_words"] == ["小新同学", "你好小新", "小新小新"]
+    assert voices.set_engines(wake_word=" 小新小新 ")["wake_words"] == ["小新小新"]  # 老接口：单个
 
 
-@pytest.mark.parametrize("bad,msg", [("小新", "至少 4 个字"), ("小新，同学", "不带标点"), ("", "2–8"),
-                                     ("小新同学你好呀朋友们", "2–8")])
-def test_wake_word_validation(fakes, bad, msg):
+def test_old_single_wake_word_setting_still_read(fakes):
+    store.update_settings(wake_word="小新小新")
+    assert voices.engines()["wake_words"] == ["小新小新"]
+
+
+@pytest.mark.parametrize("bad,msg", [("小新", "至少 4 个字"), ("小新同学，小新", "至少 4 个字"), ("", "1–4"),
+                                     ("小新同学你好呀朋友们", "2–8"), ("一二三四,五六七八,甲乙丙丁,子丑寅卯,东南西北", "1–4")])
+def test_wake_words_validation(fakes, bad, msg):
     with pytest.raises(voices.VoiceError, match=msg):
-        voices.set_engines(wake_word=bad)
-    assert voices.engines()["wake_word"] == "小新同学"
+        voices.set_engines(wake_words=bad)
+    assert voices.engines()["wake_words"] == ["小新同学", "你好小新"]
+
+
+def test_exit_words_default_and_change(fakes):
+    assert voices.engines()["exit_words"] == ["退下", "退下吧"]
+    assert voices.set_engines(exit_words="再见小新, 拜拜")["exit_words"] == ["再见小新", "拜拜"]
+    with pytest.raises(voices.VoiceError):
+        voices.set_engines(exit_words="退")
+
+
+def test_wake_idle_default_30_and_adjustable(fakes):
+    assert voices.engines()["wake_idle_s"] == 30
+    assert voices.set_engines(wake_idle_s="45")["wake_idle_s"] == 45
+
+
+@pytest.mark.parametrize("bad", [5, 301, "x"])
+def test_wake_idle_rejects_out_of_range(fakes, bad):
+    with pytest.raises(voices.VoiceError, match="回待命"):
+        voices.set_engines(wake_idle_s=bad)
+    assert voices.engines()["wake_idle_s"] == 30
 
 
 def test_unknown_engine_in_settings_file_falls_back(fakes):

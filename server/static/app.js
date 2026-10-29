@@ -804,10 +804,10 @@ async function setStandby(on) {
   localSet("standby", on ? "1" : "");
   $("standby").setAttribute("aria-pressed", String(on));
   $("standby").textContent = on ? "👂 待命中" : "💤 待命";
-  let word = "小新同学";
-  try { word = (await api("api/engines").then(json)).wake_word; } catch (_) { /* 用默认 */ }
-  native.standby(on, word, standbyUrl());
-  if (on) toast(`说「${word}」就能叫我，比如「${word}，现在几点」`);
+  let words = ["小新同学", "你好小新"], idleS = 30;
+  try { ({ wake_words: words, wake_idle_s: idleS } = await api("api/engines").then(json)); } catch (_) { /* 用默认 */ }
+  native.standby(on, words.join(","), standbyUrl(), idleS);
+  if (on) toast(`说「${words.join("」或「")}」就能叫我，比如「${words[0]}，现在几点」`);
 }
 
 function onStandby(ev) {
@@ -833,7 +833,16 @@ if (native?.standby) {
   if (localGet("standby")) setTimeout(() => setStandby(true), 800);  // 上次开着，打开 app 就接着待命
 }
 
+// 唤醒后一直没人说话：最后 10 秒在通话条上倒计时，说一句话就清掉
+function showCountdown(left) {
+  const el = $("talk-countdown");
+  if (left == null || left < 0 || !talk.on) { el.hidden = true; return; }
+  el.hidden = false;
+  el.textContent = left > 0 ? `${left} 秒后回去待命` : "回去待命";
+}
+
 function hangUp(fromNative = false) {
+  showCountdown(-1);
   if (!talk.on) return;
   talk.on = false;
   talkUi(false);
@@ -956,6 +965,9 @@ function onTalkEvent(ev) {
       if (talk.on) { toast(ev.reason || "自由对话断开了"); hangUp(true); }
       break;
     case "standby": onStandby(ev); break;
+    case "exit": talkStatus("好的，退下了"); break;
+    case "bye": if (!native) setTimeout(() => { if (talk.on) { toast("退下了，有事再叫我"); hangUp(); } }, 2500); break;
+    case "wake_countdown": showCountdown(ev.left); break;
     default: break;
   }
 }
@@ -1208,7 +1220,10 @@ function renderEngines(e) {
     $(sel).value = cur;
   };
   $("set-vad-end").value = e.vad_end_ms;
-  if (document.activeElement !== $("set-wake")) $("set-wake").value = e.wake_word;
+  if (document.activeElement !== $("set-wake")) $("set-wake").value = (e.wake_words || [e.wake_word]).join("，");
+  if (document.activeElement !== $("set-exit")) $("set-exit").value = (e.exit_words || []).join("，");
+  $("set-wake-idle").value = e.wake_idle_s;
+  [$("set-wake-idle").min, $("set-wake-idle").max] = e.wake_idle_s_range || [10, 300];
   [$("set-vad-end").min, $("set-vad-end").max] = e.vad_end_ms_range || [300, 2000];
   fill("set-asr", e.asr_options, e.asr, { paraformer: e.paraformer_ready });
   fill("set-tts", e.tts_options, e.tts, { cosyvoice: e.cosyvoice_ready });
@@ -1232,10 +1247,27 @@ async function setEngine(kind, value) {
 $("set-wake").addEventListener("change", async () => {
   try {
     const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ wake_word: $("set-wake").value.trim() }) }).then(json);
+      body: JSON.stringify({ wake_words: $("set-wake").value.trim() }) }).then(json);
     renderEngines(e);
-    toast(`唤醒词改成「${e.wake_word}」，pad 待命下次打开生效`);
-    native?.setWakeWord?.(e.wake_word);
+    toast(`唤醒词：${e.wake_words.join("、")}`);
+    native?.setWakeWord?.(e.wake_words.join(","));
+  } catch (err) { toast(err.message); loadEngines(); }
+});
+$("set-exit").addEventListener("change", async () => {
+  try {
+    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ exit_words: $("set-exit").value.trim() }) }).then(json);
+    renderEngines(e);
+    toast(`退出词：${e.exit_words.join("、")}（整句只说这个才退出）`);
+  } catch (err) { toast(err.message); loadEngines(); }
+});
+$("set-wake-idle").addEventListener("change", async () => {
+  try {
+    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wake_idle_s: Number($("set-wake-idle").value) }) }).then(json);
+    renderEngines(e);
+    native?.setWakeIdle?.(e.wake_idle_s);
+    toast(`唤醒后 ${e.wake_idle_s} 秒没说话就回去待命`);
   } catch (err) { toast(err.message); loadEngines(); }
 });
 $("set-vad-end").addEventListener("change", async () => {

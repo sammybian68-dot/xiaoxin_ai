@@ -57,6 +57,7 @@
       <span class="talk-dot" aria-hidden="true"></span>
       <span id="talk-status">在听</span>
       <span class="talk-track" aria-hidden="true"><span id="talk-level"></span></span>
+      <span id="talk-countdown" class="talk-countdown" hidden></span>
     </div>
 
     <footer class="composer-wrap">
@@ -129,8 +130,16 @@
         <select id="set-tts"></select>
       </div>
       <div class="row">
-        <label for="set-wake"><b>唤醒词（pad 待命用）</b><small>pad 本机先听，认出这句开头才连云端，不唤醒不上传、不花钱。至少 4 个字</small></label>
-        <input id="set-wake" class="wake-input" type="text" maxlength="8" autocomplete="off" spellcheck="false">
+        <label for="set-wake"><b>唤醒词（pad 待命用）</b><small>pad 本机先听，认出这句开头才连云端，不唤醒不上传、不花钱。每个至少 4 个字，几个用逗号隔开</small></label>
+        <input id="set-wake" class="wake-input" type="text" maxlength="40" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="row">
+        <label for="set-exit"><b>退出词</b><small>唤醒后整句只说这个（不能多一个字）就退回待命，比如「退下」；「你先退下吧」不算</small></label>
+        <input id="set-exit" class="wake-input" type="text" maxlength="30" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="row">
+        <label for="set-wake-idle"><b>唤醒后多久没说话回待命</b><small>小新说完才开始算，有人开口就重新算；最后 10 秒 pad 上倒计时</small></label>
+        <span class="vad-end"><input id="set-wake-idle" type="number" min="10" max="300" step="5" inputmode="numeric"><span>秒</span></span>
       </div>
       <div class="row">
         <label for="set-vad-end"><b>自由对话：停多久算说完</b><small>短了反应快，但说话中间停顿稍长就会被打断；长了更稳，回答慢一点。下一通电话生效</small></label>

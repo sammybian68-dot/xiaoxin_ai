@@ -274,6 +274,59 @@ def test_strip_wake_word(text, rest):
     assert strip_wake_word(text, "小新同学") == rest
 
 
+@pytest.mark.parametrize("text,rest", [
+    ("你好小新现在几点", "现在几点"),
+    ("你好，小新，帮我开空调", "帮我开空调"),
+    ("你好小心现在几点", "现在几点"),        # 端侧把「小新」认成「小心」（实测 8 句里 2 句）
+    ("小心同学帮我开空调", "帮我开空调"),
+    ("小心点别摔了", "小心点别摔了"),        # 不是唤醒词：原样，不去改「小心」
+    ("你好", "你好"),
+])
+def test_strip_wake_words_multi_and_alias(text, rest):
+    from server.talk import strip_wake_word
+
+    assert strip_wake_word(text, ["小新同学", "你好小新"]) == rest
+
+
+@pytest.mark.parametrize("text,ok", [
+    ("退下", True), ("退下。", True), ("退下吧！", True), ("退 下 吧", True),
+    ("你先退下吧", False), ("我要退下来了", False), ("退一下", False), ("退下吧小新", False), ("", False),
+])
+def test_is_exit_exact(text, ok):
+    from server.talk import is_exit
+
+    assert is_exit(text, ["退下", "退下吧"]) is ok
+
+
+def test_exit_word_ends_talk_without_llm(call, fakes):
+    fakes.doubao_text = "退下吧。"
+    c = call()
+    c.send_pcm(said())
+    assert c.until("exit")["text"] == "退下吧。"
+    c.until("bye")
+    assert "llm" not in fakes.names()
+    assert ("doubao.bidir.append", "好的，有事再叫我。") in fakes.calls
+    assert "idle" not in c.kinds()  # bye 之前不发 idle，免得 pad 那边又开始计时
+    assert store.get(c.msgs[0]["conversation"])["messages"] == []
+
+
+def test_exit_word_inside_sentence_is_a_normal_question(call, fakes):
+    fakes.doubao_text = "你先退下吧"
+    c = call()
+    c.send_pcm(said())
+    c.until("idle")
+    assert "exit" not in c.kinds() and "llm" in fakes.names()
+
+
+def test_wake_then_exit(call, fakes):
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "你好小新"}))
+    c.until("idle")
+    fakes.doubao_text = "退下"
+    c.send_pcm(said())
+    c.until("bye")
+
+
 def test_wake_with_question_skips_cloud_asr(call, fakes):
     """pad 唤醒后发来端侧认好的整句：去掉唤醒词直接问模型，不再上云识别。"""
     c = call()
@@ -296,9 +349,9 @@ def test_wake_word_only_replies_ack_without_llm(call, fakes):
 
 
 def test_wake_uses_custom_wake_word(call, fakes):
-    voices.set_engines(wake_word="你好小新")
+    voices.set_engines(wake_words="小新小新")
     c = call()
-    c.ws.send_text(json.dumps({"type": "wake", "text": "你好小新今天作业是什么"}))
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新小新今天作业是什么"}))
     assert c.until("heard")["text"] == "今天作业是什么"
 
 

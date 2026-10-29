@@ -19,6 +19,8 @@
         speaking   {sample_rate}                              下面开始有音频
         interrupt  {}                                         用户插话，端侧立刻清空播放队列
         idle       {timing}                                   这一轮念完了，等用户说。timing 见下
+        exit       {text}                                     用户说了退出词（整句精确匹配），下面念一句「有事再叫我」
+        bye        {}                                         退出应答念完了，端侧挂断（pad 唤醒的回待命）
         note / error {detail}
         二进制帧：24 kHz s16le PCM，约 100 ms 一块（服务端节流，最多领先播放 2 秒）
 
@@ -51,25 +53,52 @@ VOICE_HINT = ("现在是语音通话：用户的话是语音识别出来的文�
 
 
 WAKE_ACK = "我在。"
+EXIT_ACK = "好的，有事再叫我。"
 _PUNCT = "，。！？、；：,.!?;: 　"
 
 
-def strip_wake_word(text: str, wake: str) -> str:
+# 「小新」常被认成同音的「小心」（2026-10-30 端侧测「你好小新…」8 句错 2 句）。只在比对唤醒词时把这几个当成「小新」，
+# 别的地方不替换，免得「小心点」被改坏。WakeListener.java 里是同一张表。
+_XIAOXIN_ALIASES = ("小心", "小欣", "小鑫")
+_LEADS = ("", "嘿", "哎", "喂", "嗨", "hi", "hey")
+
+
+def _bare(text: str) -> str:
+    return "".join(c for c in text if c not in _PUNCT).lower()
+
+
+def wake_forms(wake: str) -> list[str]:
+    """一个唤醒词能接受的写法：原样，加上把「小新」换成同音字的。"""
+    forms = [wake]
+    if "小新" in wake:
+        forms += [wake.replace("小新", a) for a in _XIAOXIN_ALIASES]
+    return forms
+
+
+def strip_wake_word(text: str, wakes) -> str:
     """去掉开头的唤醒词（前面可以带「嘿 / 哎」这类语气词），返回剩下的话；不是以唤醒词开头就原样返回。
 
-    比对时不看标点空格：端侧小模型认出来没有标点，豆包认出来有。
+    wakes 是一个或几个唤醒词。比对时不看标点空格：端侧小模型认出来没有标点，豆包认出来有。
     """
-    bare = "".join(c for c in text if c not in _PUNCT)
-    for lead in ("", "嘿", "哎", "喂", "嗨", "hi", "hey"):
-        if bare.lower().startswith(lead + wake):
-            # 在原文里找到唤醒词最后一个字的位置，从后面切，保留原文的标点
-            seen, need = 0, len(lead + wake)
-            for i, c in enumerate(text):
-                if c not in _PUNCT:
-                    seen += 1
-                    if seen == need:
-                        return text[i + 1:].lstrip(_PUNCT)
+    bare = _bare(text)
+    for wake in ([wakes] if isinstance(wakes, str) else wakes):
+        for form in wake_forms(wake):
+            for lead in _LEADS:
+                if bare.startswith(lead + form):
+                    # 在原文里找到唤醒词最后一个字的位置，从后面切，保留原文的标点
+                    seen, need = 0, len(lead + form)
+                    for i, c in enumerate(text):
+                        if c not in _PUNCT:
+                            seen += 1
+                            if seen == need:
+                                return text[i + 1:].lstrip(_PUNCT)
     return text.strip()
+
+
+def is_exit(text: str, exits) -> bool:
+    """整句（去掉标点空格）正好是某个退出词。「你先退下吧」「我要退下来了」都不算。"""
+    bare = _bare(text)
+    return bool(bare) and bare in {_bare(e) for e in exits}
 
 
 class Talk:
@@ -148,7 +177,7 @@ class Talk:
                 self.turn = asyncio.create_task(self.answer(self.turn_id, utt))
 
     async def on_wake(self, text: str) -> None:
-        rest = strip_wake_word(text, voices.engines()["wake_word"])
+        rest = strip_wake_word(text, voices.engines()["wake_words"])
         log.info("talk wake: %r -> %r", text, rest)
         await self.cancel_turn()
         self.turn_id += 1
@@ -187,6 +216,13 @@ class Talk:
         log.info("talk turn %d heard %.1fs audio in %.2fs: %s", turn_id, len(utt) / 32000, t_asr, text[:60])
         if not text:
             await self.send("idle")
+            return
+        if is_exit(text, voices.engines()["exit_words"]):
+            # 退出词：不问模型、不进对话记录，回一句就让端侧挂断（pad 唤醒的回待命，手动开的就挂断）
+            log.info("talk turn %d exit word: %s", turn_id, text)
+            await self.send("exit", text=text)
+            await self.speak_only(EXIT_ACK, idle=False)
+            await self.send("bye")
             return
         await self.send("heard", text=text, t_asr=round(t_asr, 2))
         model = self.model
@@ -266,8 +302,8 @@ class Talk:
             task.add_done_callback(_BACKGROUND.discard)
             raise
 
-    async def speak_only(self, text: str) -> None:
-        """只喊了唤醒词：念一句固定应答，不进对话记录、不问模型。"""
+    async def speak_only(self, text: str, idle: bool = True) -> None:
+        """念一句固定应答（「我在」「有事再叫我」），不进对话记录、不问模型。"""
         tts, _ = self._make_speech()
         tts.start()
         try:
@@ -283,7 +319,8 @@ class Talk:
                 await asyncio.sleep(tts.next_wait())
             for chunk in tts.take_audio_bytes():
                 await self.send_audio(chunk)
-            await self.send("idle")
+            if idle:
+                await self.send("idle")
         except asyncio.CancelledError:
             await tts.cancel()
             raise

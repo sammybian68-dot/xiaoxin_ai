@@ -25,27 +25,29 @@ public final class WakeListener {
 
     private static final String PUNCT = "，。！？、；：,.!?;: 　";
     private static final String[] LEADS = {"", "嘿", "哎", "喂", "嗨"};
+    // 「小新」常被认成同音的「小心」，只在比对唤醒词时当成一回事。和服务端 talk._XIAOXIN_ALIASES 同一张表
+    private static final String[] XIAOXIN_ALIASES = {"小心", "小欣", "小鑫"};
 
     private final Context context;
     private final Listener listener;
     private final LocalAsr asr;
-    private volatile String wakeWord;
+    private volatile String[] wakeWords;
     private volatile boolean running;
     private Thread thread;
 
-    public WakeListener(Context context, LocalAsr asr, String wakeWord, Listener listener) {
+    public WakeListener(Context context, LocalAsr asr, String[] wakeWords, Listener listener) {
         this.context = context.getApplicationContext();
         this.asr = asr;
-        this.wakeWord = wakeWord;
+        this.wakeWords = wakeWords;
         this.listener = listener;
     }
 
-    public void setWakeWord(String word) {
-        wakeWord = word;
+    public void setWakeWords(String[] words) {
+        wakeWords = words;
     }
 
-    /** 和服务端 talk.strip_wake_word 同一个判断：去掉标点空格后以（语气词 +）唤醒词开头。 */
-    public static boolean startsWithWake(String text, String wake) {
+    /** 和服务端 talk.strip_wake_word 同一个判断：去掉标点空格后以（语气词 +）某个唤醒词开头，「小新」认成「小心」也算。 */
+    public static boolean startsWithWake(String text, String[] wakes) {
         StringBuilder bare = new StringBuilder();
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
@@ -54,9 +56,20 @@ public final class WakeListener {
             }
         }
         String b = bare.toString();
-        for (String lead : LEADS) {
-            if (b.startsWith(lead + wake)) {
-                return true;
+        for (String wake : wakes) {
+            java.util.List<String> forms = new java.util.ArrayList<>();
+            forms.add(wake);
+            if (wake.contains("小新")) {
+                for (String a : XIAOXIN_ALIASES) {
+                    forms.add(wake.replace("小新", a));
+                }
+            }
+            for (String form : forms) {
+                for (String lead : LEADS) {
+                    if (b.startsWith(lead + form)) {
+                        return true;
+                    }
+                }
             }
         }
         return false;
@@ -116,7 +129,7 @@ public final class WakeListener {
                     String text = asr.decode(pcm, pcm.length);
                     long ms = (System.nanoTime() - t0) / 1_000_000;
                     listener.onHeard(text, ms);
-                    if (!text.isEmpty() && startsWithWake(text, wakeWord)) {
+                    if (!text.isEmpty() && startsWithWake(text, wakeWords)) {
                         running = false;  // 交给 Talk，先松开麦克风
                         listener.onWake(text);
                     }

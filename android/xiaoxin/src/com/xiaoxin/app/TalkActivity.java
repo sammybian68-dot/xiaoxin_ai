@@ -59,7 +59,7 @@ public class TalkActivity extends Activity {
     private WakeListener wake;
     private volatile boolean standbyOn;
     private volatile boolean woken;
-    private String wakeWord = "小新同学";
+    private String[] wakeWords = {"小新同学", "你好小新"};
     private String talkUrl = "";
     private long lastActivity;
     private final android.os.Handler idle = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -202,11 +202,16 @@ public class TalkActivity extends Activity {
             runOnUiThread(() -> openTalk(pageUrl, null));
         }
 
-        /** 网页的「待命」开关。wakeWord 从设置里来；talkUrl 是唤醒后要连的 /api/talk 地址（带对话 id、模型）。 */
+        /** 网页的「待命」开关。wakeWord、idleS 从设置里来；talkUrl 是唤醒后要连的 /api/talk 地址（带对话 id、模型）。 */
         @JavascriptInterface
-        public void standby(boolean on, String word, String pageUrl) {
+        public void standby(boolean on, String word, String pageUrl, int idleS) {
             runOnUiThread(() -> {
-                wakeWord = word == null || word.isEmpty() ? wakeWord : word;
+                if (idleS > 0) {
+                    wakeIdleS = idleS;
+                }
+                if (word != null && !word.isEmpty()) {
+                    wakeWords = word.split("[,，\\s]+");
+                }
                 talkUrl = pageUrl;
                 standbyOn = on;
                 if (on) {
@@ -218,11 +223,21 @@ public class TalkActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void setWakeIdle(int seconds) {
+            if (seconds > 0) {
+                wakeIdleS = seconds;
+            }
+        }
+
+        @JavascriptInterface
         public void setWakeWord(String word) {
-            wakeWord = word;
+            if (word == null || word.isEmpty()) {
+                return;
+            }
+            wakeWords = word.split("[,，\\s]+");
             WakeListener w = wake;
             if (w != null) {
-                w.setWakeWord(word);
+                w.setWakeWords(wakeWords);
             }
         }
 
@@ -261,16 +276,30 @@ public class TalkActivity extends Activity {
         }
         String url = pageUrl.replaceFirst("^http", "ws");
         stopTalk();
+        // 待命在听的话先松开麦克风，不然和这通电话抢同一个麦克风（手动点「自由对话」时会这样）
+        WakeListener w = wake;
+        wake = null;
+        if (w != null) {
+            w.stop();
+        }
         woken = wakeText != null;
+        xiaoxinBusy = woken;  // 唤醒带着问题来的：小新马上要答，答完才开始计时
+        lastShown = -1;
         lastActivity = System.currentTimeMillis();
         talk = new Talk(TalkActivity.this, new Talk.Listener() {
             @Override
             public void onEvent(JSONObject event) {
                 String type = event.optString("type");
-                if (!"native_play".equals(type)) {
-                    lastActivity = System.currentTimeMillis();
-                }
+                noteActivity(type);
                 emit(event.toString());
+                if ("bye".equals(type)) {
+                    // 说了退出词：让「有事再叫我」放完（最多领先 2 秒）再挂断，回待命
+                    idle.postDelayed(() -> {
+                        emit("{\"type\":\"native_closed\",\"reason\":\"退下了，有事再叫我\"}");
+                        stopTalk();
+                        afterTalk();
+                    }, 2500);
+                }
             }
 
             @Override
@@ -303,23 +332,60 @@ public class TalkActivity extends Activity {
         }
     }
 
-    /** 唤醒起来的电话：WAKE_IDLE_S 秒没动静（没人说、小新也不在说）就挂断，回去待命。 */
-    private static final long WAKE_IDLE_MS = 20_000;
+    /**
+     * 唤醒起来的电话：wakeIdleS 秒没动静（没人开口、小新也不在说）就挂断，回去待命。
+     * 「动静」= 用户开口（listening）或小新出声（speaking / 音频还在放）；小新念完（idle）才开始计时。
+     * 最后 COUNTDOWN_S 秒每秒发一次 wake_countdown {left}，网页显示倒计时；有人开口就清零。
+     */
+    private static final int COUNTDOWN_S = 10;
+    private volatile int wakeIdleS = 30;
+    private volatile boolean xiaoxinBusy;  // 小新在想或在说：这时不算没动静
+    private int lastShown = -1;
     private final Runnable idleCheck = new Runnable() {
         @Override
         public void run() {
             if (talk == null || !woken) {
                 return;
             }
-            if (System.currentTimeMillis() - lastActivity >= WAKE_IDLE_MS) {
-                emit("{\"type\":\"native_closed\",\"reason\":\"一会儿没说话，回去待命了\"}");
+            long quietMs = xiaoxinBusy ? 0 : System.currentTimeMillis() - lastActivity;
+            int left = (int) Math.ceil((wakeIdleS * 1000L - quietMs) / 1000.0);
+            if (left <= 0) {
+                emit("{\"type\":\"wake_countdown\",\"left\":0}");
+                emit("{\"type\":\"native_closed\",\"reason\":\"" + wakeIdleS + " 秒没说话，回去待命了\"}");
                 stopTalk();
                 afterTalk();
-            } else {
-                idle.postDelayed(this, 1000);
+                return;
             }
+            int show = left <= COUNTDOWN_S ? left : -1;
+            if (show != lastShown) {
+                lastShown = show;
+                emit("{\"type\":\"wake_countdown\",\"left\":" + show + "}");  // -1 = 不显示
+            }
+            idle.postDelayed(this, 250);
         }
     };
+
+    /** 服务端事件里哪些算「有动静」。 */
+    private void noteActivity(String type) {
+        switch (type) {
+            case "listening":
+            case "heard":
+            case "interrupt":
+                xiaoxinBusy = true;  // 用户开口了，接下来小新要想要说，计时暂停
+                lastActivity = System.currentTimeMillis();
+                break;
+            case "speaking":
+                xiaoxinBusy = true;
+                break;
+            case "idle":
+            case "error":
+                xiaoxinBusy = false;  // 小新说完了：从现在开始算没动静
+                lastActivity = System.currentTimeMillis();
+                break;
+            default:
+                break;
+        }
+    }
 
     /** 电话挂了：开着待命就回去待命。 */
     private void afterTalk() {
@@ -351,7 +417,7 @@ public class TalkActivity extends Activity {
                 if (!standbyOn || talk != null) {
                     return;
                 }
-                wake = new WakeListener(this, localAsr, wakeWord, new WakeListener.Listener() {
+                wake = new WakeListener(this, localAsr, wakeWords, new WakeListener.Listener() {
                     @Override
                     public void onWake(String text) {
                         emit("{\"type\":\"standby\",\"state\":\"woken\",\"text\":" + JSONObject.quote(text) + "}");
@@ -366,11 +432,17 @@ public class TalkActivity extends Activity {
 
                     @Override
                     public void onError(String message) {
-                        emit("{\"type\":\"standby\",\"state\":\"error\",\"detail\":" + JSONObject.quote(message) + "}");
+                        // 麦克风一时被别的 app 占着之类：告诉网页，3 秒后再试，待命不悄悄失效
+                        emit("{\"type\":\"standby\",\"state\":\"error\",\"detail\":"
+                                + JSONObject.quote(message + "，3 秒后再试") + "}");
+                        runOnUiThread(() -> {
+                            wake = null;
+                            idle.postDelayed(TalkActivity.this::startStandby, 3000);
+                        });
                     }
                 });
                 wake.start();
-                emit("{\"type\":\"standby\",\"state\":\"listening\",\"wake_word\":" + JSONObject.quote(wakeWord) + "}");
+                emit("{\"type\":\"standby\",\"state\":\"listening\",\"wake_word\":" + JSONObject.quote(wakeWords[0]) + "}");
             });
         }, "wake-load").start();
     }
