@@ -1019,14 +1019,13 @@ const vrec = { rec: null, blob: null, levels: [], timer: null };
 
 // ---------------------------------------------------------------- 设置
 
-const PANES = ["general", "talk", "wake", "voice", "account"];
+const PANES = ["general", "talk", "wake", "voice", "prompt", "account"];
 
 function openSettings(pane = "general") {
   closeSide();
   $("set-model").innerHTML = state.models.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
   $("set-model").value = localGet("model") || state.model;
   $("set-autoread").checked = prefs.autoread;
-  $("set-system").textContent = state.system || "（没取到）";
   const label = (id) => state.models.find((m) => m.id === id)?.label || id;
   $("set-routing").textContent = state.vision
     ? `带图片的消息，选了不看图的模型会自动换成 ${label(state.vision)}；选的模型连着失败两次，换成 ${label(state.fallback)} 回答。`
@@ -1041,6 +1040,7 @@ function showPane(name) {
   for (const p of document.querySelectorAll(".pane")) p.hidden = p.dataset.pane !== name;
   if (name !== "wake" && typeof asrDebug !== "undefined" && asrDebug.on) $("asr-debug").click();
   if (name === "talk" || name === "wake") loadEngines();
+  if (name === "prompt") loadPrompts();
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
     loadEngines();
@@ -1479,3 +1479,41 @@ $("custom-add").addEventListener("click", async () => {
 });
 
 boot();
+
+
+// ---------------------------------------------------------------- 设置：提示词与工具
+
+const promptView = { data: null, view: "parts", voice: false };
+
+async function loadPrompts() {
+  try { promptView.data = await api("api/prompts").then(json); } catch (e) { $("prompt-view").textContent = e.message; return; }
+  renderPrompts();
+}
+
+function renderPrompts() {
+  const d = promptView.data, box = $("prompt-view");
+  if (!d) return;
+  for (const b of document.querySelectorAll('[data-pane="prompt"] .seg button')) b.setAttribute("aria-selected", String(b.dataset.view === promptView.view));
+  const chars = (t) => `<small>${t.length} 字</small>`;
+  if (promptView.view === "parts") {
+    box.innerHTML = d.parts.map((p) => `<details class="pm" open><summary><b>${esc(p.name)}.md</b>`
+      + `<span class="pm-when">${esc(p.when)}</span>${chars(p.text)}</summary><pre class="sys-prompt">${esc(p.text)}</pre></details>`).join("");
+  } else if (promptView.view === "system") {
+    const text = promptView.voice ? d.system_voice : d.system;
+    box.innerHTML = `<label class="pm-toggle"><input type="checkbox" class="switch" id="pm-voice" ${promptView.voice ? "checked" : ""}>`
+      + `<span>语音通话时（多拼 voice.md）</span>${chars(text)}</label><pre class="sys-prompt">${esc(text)}</pre>`;
+    $("pm-voice").addEventListener("change", (e) => { promptView.voice = e.target.checked; renderPrompts(); });
+  } else {
+    box.innerHTML = d.tools.map((t) => {
+      const props = t.parameters.properties || {}, req = new Set(t.parameters.required || []);
+      const rows = Object.entries(props).map(([k, v]) => `<li><code>${esc(k)}</code>${req.has(k) ? '<span class="pm-req">必填</span>' : ""}`
+        + `<span>${esc(v.description || (v.enum ? v.enum.join(" / ") : v.type || ""))}</span></li>`).join("");
+      return `<details class="pm"><summary><b>${esc(t.name)}</b><span class="pm-desc">${esc(t.description.split("\n")[0])}</span></summary>`
+        + (rows ? `<ul class="pm-args">${rows}</ul>` : "") + `<pre class="sys-prompt">${esc(JSON.stringify(t.parameters, null, 2))}</pre></details>`;
+    }).join("");
+  }
+}
+
+for (const b of document.querySelectorAll('[data-pane="prompt"] .seg button')) {
+  b.addEventListener("click", () => { promptView.view = b.dataset.view; renderPrompts(); });
+}

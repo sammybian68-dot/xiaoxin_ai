@@ -141,7 +141,8 @@ def install(monkeypatch) -> Fakes:
     monkeypatch.setattr(cosyvoice, "_triton_chunks", cosy_chunks)
 
     # ---------------- LLM
-    # llm_script 非空时按顺序一次吐一步：("search", [query...]) 是调一次搜索工具，("text", "...") 是回答。
+    # llm_script 非空时按顺序一次吐一步：("search", [query...]) 是调一次搜索工具，("text", "...") 是回答，
+    # ("tool", name, {参数}) 是调别的工具（闹钟之类）。
     # 没给工具（到了搜索上限）还排着 search 的话，就当模型老老实实回答 llm_deltas。
     def iter_stream(model, history, *, tools=None, **kw):
         f.calls.append(("llm", model, bool(tools)))
@@ -150,6 +151,10 @@ def install(monkeypatch) -> Fakes:
             raise llm.ProxyError(f.llm_error)
         yield "model", model
         step = f.llm_script.pop(0) if f.llm_script else ("text", "".join(f.llm_deltas))
+        if step[0] == "tool" and tools:  # ("tool", 工具名, 参数 dict)：调任意一个工具
+            n = len(f.llm_requests)
+            yield "tool_calls", [{"id": f"call_{n}", "name": step[1], "arguments": json.dumps(step[2], ensure_ascii=False)}]
+            return
         if step[0] == "search" and tools:
             n = len([r for r in f.llm_requests if r["tools"]])
             yield "tool_calls", [{"id": f"call_{n}", "name": tools[0]["function"]["name"],

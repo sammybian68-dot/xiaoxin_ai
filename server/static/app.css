@@ -231,6 +231,23 @@ button { cursor: pointer; }
   white-space: pre-wrap; word-break: break-word; font: 14px/1.7 ui-monospace, Menlo, "PingFang SC", monospace; color: var(--text);
 }
 .voice-tip { color: var(--muted); margin: 0 0 10px; }
+.seg { display: inline-flex; padding: 3px; border-radius: 12px; background: var(--raised); border: 1px solid var(--line); margin: 4px 0 14px; }
+.seg button { border: 0; background: none; color: var(--muted); padding: 6px 16px; border-radius: 9px; }
+.seg button[aria-selected="true"] { background: var(--bg); color: var(--text); font-weight: 600; }
+.pm { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; background: var(--panel); }
+.pm summary { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px; cursor: pointer; list-style: none; }
+.pm summary::-webkit-details-marker { display: none; }
+.pm summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+.pm[open] summary::before { transform: rotate(90deg); }
+.pm summary small, .pm-toggle small { color: var(--muted); margin-left: auto; }
+.pm .sys-prompt { margin: 0 12px 12px; }
+.pm-when { font-size: 12px; padding: 0 8px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
+.pm-desc { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pm-args { list-style: none; margin: 0 14px 10px; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.pm-args li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.pm-args span:last-child { color: var(--muted); }
+.pm-req { font-size: 11px; color: var(--accent); }
+.pm-toggle { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .voice-text { width: 100%; border-radius: 14px; border: 1px solid var(--line); background: var(--raised); padding: 12px 14px; font-size: 17px; line-height: 1.8; resize: vertical; }
 .voice-ctrl { display: flex; align-items: center; gap: 14px; margin: 14px 0 8px; }
 .voice-rec { height: 44px; padding: 0 22px; border-radius: 22px; border: 0; background: var(--danger); color: #fff; font-weight: 600; }

@@ -226,7 +226,7 @@ def test_voice_hint_in_system_prompt(call, fakes):
     c.send_pcm(said())
     c.until("idle")
     system = fakes.llm_requests[-1]["system"]
-    assert "语音通话" in system and "别说你听不到声音" in system
+    assert "语音通话" in system and "不要说听不到声音" in system
 
 
 def test_timing_reported_and_saved(call, fakes):

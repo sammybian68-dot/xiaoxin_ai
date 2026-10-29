@@ -7,6 +7,8 @@ APK 用 Authorization: Bearer <XIAOXIN_KEY>。换 key 后旧链接、旧 cookie 
 
 from __future__ import annotations
 
+import asyncio
+
 import hashlib
 import hmac
 import io
@@ -18,7 +20,8 @@ from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketD
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from server import store, voices
+from server import clock, prompts, store, voices
+from server.tools import registry
 from src.llm import client
 from src.search import web_search
 from src.voice import doubao, paraformer
@@ -39,10 +42,7 @@ VISION = "claude-sonnet-5-5"
 FALLBACK = "claude-sonnet-5-5"  # 选的模型连着失败两次就换它
 NO_VISION = {"deepseek-v4.1-flash", "qwen3.8-27b"}  # 主脑是纯文本模型
 
-SYSTEM = ("你是「小新」，一个亲切、靠谱的中文 AI 助手，平时陪一家人聊天、答疑、帮小朋友看作业。"
-          "回答先说结论，口语化，不啰嗦；需要分步骤时再用列表。给小朋友讲题时引导思路，不直接替他写答案。"
-          "你能联网：新闻、天气、比分、最近的事，或者你拿不准、可能过时的事实，先用 search_web 搜再答，"
-          "别说自己不能联网；用了搜索结果就简单说一句信息来源。")
+# system prompt 按功能拆在 server/prompts/*.md，prompts.build() 拼起来（填上当前时间、闹钟状态）
 MAX_SEARCHES = 2  # 一轮回答最多搜几次，照 carHer2 的 _WEB_SEARCH_TURN_LIMIT
 MAX_TOOL_ROUNDS = MAX_SEARCHES + 1  # 到上限后再给模型一次机会，它还要调工具就算这轮失败
 SEARCH_LIMIT_RESULT = (f"已经搜了 {MAX_SEARCHES} 次，到上限了，这次没有再搜。"
@@ -126,7 +126,7 @@ def health() -> dict:
 
 @app.get("/api/me")
 def me() -> dict:
-    return {"ok": True, "models": MODELS, "default_model": MODELS[0]["id"], "system_prompt": SYSTEM,
+    return {"ok": True, "models": MODELS, "default_model": MODELS[0]["id"], "system_prompt": prompts.build(),
             "vision_model": VISION, "fallback_model": FALLBACK}
 
 
@@ -171,6 +171,65 @@ def voice_pick(request: Request, name: str = "index.html") -> FileResponse:
     if PICK_DIR.resolve() not in path.parents or not path.is_file():
         raise HTTPException(404, "没有这个文件")
     return FileResponse(path, headers={"Cache-Control": "no-cache"})
+
+
+# ---------------------------------------------------------------- 提示词和工具（设置页查看）
+
+@app.get("/api/prompts")
+def prompt_view() -> dict:
+    """每个 md 的原文、当前拼好的完整 system prompt（文字 / 语音两份）、注册的工具。"""
+    return {"parts": prompts.parts(), "system": prompts.build(), "system_voice": prompts.build(voice=True),
+            "tools": registry.listing()}
+
+
+# ---------------------------------------------------------------- 闹钟 / 倒计时 / 正计时
+
+def _clock_call(fn, *args, **kw):
+    try:
+        fn(*args, **kw)
+    except clock.ClockError as e:
+        raise HTTPException(400, str(e))
+    return clock.snapshot()
+
+
+@app.get("/api/clock")
+async def clock_state(since: int = -1, wait: float = 0) -> dict:
+    """since 是上次拿到的 version：有变化马上返回，没有就最多等 wait 秒（pad 长轮询用，最多 55 秒）。"""
+    if since >= 0 and wait > 0:
+        return await asyncio.to_thread(clock.wait_change, since, min(wait, 55.0))
+    return clock.snapshot()
+
+
+@app.post("/api/clock/alarms")
+def alarm_add(body: dict = Body(...)) -> dict:
+    return _clock_call(clock.add_alarm, body.get("time"), body.get("repeat"), body.get("label") or "",
+                       body.get("date"))
+
+
+@app.patch("/api/clock/alarms/{aid}")
+def alarm_edit(aid: str, body: dict = Body(...)) -> dict:
+    fields = {k: body[k] for k in ("time", "repeat", "date", "label", "enabled") if k in body}
+    return _clock_call(clock.update_alarm, aid, **fields)
+
+
+@app.delete("/api/clock/alarms/{aid}")
+def alarm_remove(aid: str) -> dict:
+    return _clock_call(clock.delete_alarms, [aid])
+
+
+@app.post("/api/clock/timers")
+def timer_add(body: dict = Body(...)) -> dict:
+    return _clock_call(clock.start_timer, body.get("seconds"), body.get("label") or "")
+
+
+@app.post("/api/clock/timers/{tid}/{action}")
+def timer_act(tid: str, action: str, body: dict | None = Body(None)) -> dict:
+    return _clock_call(clock.control_timer, tid, action, (body or {}).get("seconds"))
+
+
+@app.post("/api/clock/stopwatch/{action}")
+def stopwatch_act(action: str) -> dict:
+    return _clock_call(clock.control_stopwatch, action)
 
 
 # ---------------------------------------------------------------- 对话
@@ -260,22 +319,16 @@ def _sse(event: str, data) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
 
-def _system() -> str:
-    """人设加上今天的日期：要不然模型不知道「今天」「明天」是哪天，搜新闻也不知道搜哪天的。"""
-    import datetime
-
-    today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
-    week = "一二三四五六日"[today.weekday()]
-    return f"{SYSTEM}\n今天是 {today:%Y-%m-%d}，星期{week}（北京时间）。"
-
-
 def _run_tool(name: str, arguments: str) -> web_search.Result:
     if name != web_search.NAME:
         return web_search.Result(False, f"没有这个工具：{name}")
     return web_search.search(arguments)
 
 
-def _llm_thread(model: str, history: list[dict], q, loop, extra_system: str = "") -> None:
+MAX_CLOCK_CALLS = 8  # 一轮里本地工具（时间、闹钟）最多调几次（「把闹钟全删了再设两个」也够）
+
+
+def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -> None:
     """在线程里跑同步的流式请求，每个事件丢回事件循环的队列。
 
     工具循环：模型要搜就搜（发 search 事件），把结果接在后面再问一次，一轮最多搜 MAX_SEARCHES 次。
@@ -289,7 +342,7 @@ def _llm_thread(model: str, history: list[dict], q, loop, extra_system: str = ""
 
     tries = [model, model] + ([FALLBACK] if model != FALLBACK else [])
     got, usage, served, last = False, {}, model, ""
-    msgs, searches, searched, rounds = list(history), 0, [], 0
+    msgs, searches, searched, rounds, clock_calls = list(history), 0, [], 0, 0
     attempt = 0
     while attempt < len(tries):
         m = tries[attempt]
@@ -298,9 +351,9 @@ def _llm_thread(model: str, history: list[dict], q, loop, extra_system: str = ""
         served = m
         calls: list[dict] = []
         text = ""
-        tools = [web_search.SPEC]
+        tools = registry.SPECS
         try:
-            system = _system() + ("\n" + extra_system if extra_system else "")
+            system = prompts.build(voice=voice)  # 每次现拼：闹钟刚被工具改过，下一次请求就看到新状态
             for kind, value in client.iter_stream(m, msgs, system=system, max_tokens=4096, timeout=180,
                                                   tools=tools):
                 if kind == "model":
@@ -335,6 +388,14 @@ def _llm_thread(model: str, history: list[dict], q, loop, extra_system: str = ""
                 {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}}
                 for c in calls]})
             for c in calls:
+                if c["name"] in registry.LOCAL:
+                    clock_calls += 1
+                    out = (registry.run_local(c["name"], c["arguments"]) if clock_calls <= MAX_CLOCK_CALLS
+                           else "失败：这一轮调太多次了，先停下，告诉用户已经做了什么")
+                    log.info("tool %s %s -> %s", c["name"], c["arguments"][:120], out[:120])
+                    put("tool", {"name": c["name"], "result": out})
+                    msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
+                    continue
                 if searches >= MAX_SEARCHES:
                     msgs.append({"role": "tool", "tool_call_id": c["id"], "content": SEARCH_LIMIT_RESULT})
                     continue

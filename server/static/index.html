@@ -97,6 +97,7 @@
       <button type="button" role="tab" data-pane="talk">语音对话</button>
       <button type="button" role="tab" data-pane="wake">唤醒</button>
       <button type="button" role="tab" data-pane="voice">音色</button>
+      <button type="button" role="tab" data-pane="prompt">提示词与工具</button>
       <button type="button" role="tab" data-pane="account">登录与设备</button>
     </nav>
 
@@ -114,10 +115,17 @@
         <label for="set-enter"><b>回车直接发送</b><small>关掉后用 Ctrl / ⌘ + 回车发送</small></label>
         <input id="set-enter" type="checkbox" class="switch">
       </div>
-      <h3>小新的人设（system prompt）</h3>
-      <p class="voice-tip">每次对话都会先发给模型这段话。改它在 <code>server/main.py</code> 的 <code>SYSTEM</code>，改完跑一次部署。</p>
-      <pre id="set-system" class="sys-prompt"></pre>
       <p id="set-routing" class="voice-tip"></p>
+    </section>
+
+    <section class="pane" role="tabpanel" data-pane="prompt" hidden>
+      <p class="voice-tip">每个功能一个 md，在 <code>server/prompts/</code>，按顺序拼成 system prompt；<code>{now}</code> 这类占位符每次请求时现填。改完跑一次部署。</p>
+      <div class="seg" role="tablist" aria-label="查看哪部分">
+        <button type="button" data-view="parts" aria-selected="true">分模块</button>
+        <button type="button" data-view="system">完整 prompt</button>
+        <button type="button" data-view="tools">工具</button>
+      </div>
+      <div id="prompt-view"></div>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="talk" hidden>

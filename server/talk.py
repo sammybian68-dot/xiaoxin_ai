@@ -51,10 +51,7 @@ from server.vad import Vad
 
 log = logging.getLogger("xiaoxin.talk")
 
-# 加在人设后面：不然模型以为自己在打字聊天，会说「我听不到声音，请打字」（2026-10-29 实测 deepseek 这么回过）
-VOICE_HINT = ("现在是语音通话：用户的话是语音识别出来的文字（可能有错字，按意思理解），你的回答会被念出来。"
-              "所以要短，像打电话说话一样，一般一两句、不超过 80 个字；别用列表、表格、markdown、表情符号；"
-              "别说你听不到声音或者让用户打字。")
+# 语音通话额外拼上 server/prompts/voice.md：不然模型以为在打字聊天，会说「我听不到声音，请打字」（deepseek 实测这么回过）
 
 
 WAKE_ACK = "我在的。"  # 端侧没缓存时（浏览器）服务端合成；pad 用本机缓存的同一句（/api/cue/zai）
@@ -270,7 +267,7 @@ class Talk:
 
         loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
-        worker = loop.run_in_executor(None, self._llm_thread, model, history, q, loop, VOICE_HINT)
+        worker = loop.run_in_executor(None, self._llm_thread, model, history, q, loop, True)
         tts.start()
         parts, end, speaking = [], None, False
         try:

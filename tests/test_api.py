@@ -333,7 +333,7 @@ def test_chat_offers_search_tool_and_tells_date(client, fakes):
     chat(client)
     req = fakes.llm_requests[0]
     assert req["tools"][0]["function"]["name"] == "search_web"
-    assert "今天是 20" in req["system"] and "search_web" in req["system"]
+    assert "现在是 20" in req["system"] and "search_web" in req["system"]
 
 
 def test_chat_search_then_answer(client, fakes):
