@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cut, interactive-widget=resizes-content">
+<meta name="theme-color" content="#0f1115">
+<title>小新</title>
+<link rel="icon" href="static/icon.png">
+<link rel="apple-touch-icon" href="static/icon.png">
+<link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <div class="login-card">
+    <img src="static/icon.png" alt="" class="login-avatar">
+    <h1>小新</h1>
+    <p class="login-tip">用免密链接打开一次就行，之后这个浏览器会记住。<br>链接找家里管电脑的人要。</p>
+  </div>
+</div>
+
+<div id="app" class="app" hidden>
+  <aside id="side" class="side" aria-label="对话列表">
+    <div class="side-head">
+      <img src="static/icon.png" alt="" class="avatar">
+      <span class="side-name">小新</span>
+    </div>
+    <button id="new-chat" class="new-chat" type="button">＋ 新对话</button>
+    <nav id="conv-list" class="conv-list"></nav>
+    <div class="side-foot">
+      <button id="open-settings" type="button" class="side-link">⚙ 设置</button>
+    </div>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <main class="main">
+    <header class="top">
+      <button id="menu" class="icon-btn only-narrow" type="button" aria-label="打开对话列表">☰</button>
+      <div class="top-title">
+        <img src="static/icon.png" alt="" class="avatar sm only-narrow">
+        <span id="conv-title">小新</span>
+      </div>
+      <label class="model-pick">
+        <span class="sr-only">模型</span>
+        <select id="model"></select>
+      </label>
+      <button id="autoread" class="icon-btn" type="button" aria-pressed="true" title="回答完自动朗读">🔊</button>
+      <button id="free-talk" class="free-talk" type="button" title="下一期上线">📞 自由对话</button>
+    </header>
+
+    <section id="chat" class="chat" aria-live="polite">
+      <div id="messages" class="messages"></div>
+    </section>
+
+    <footer class="composer-wrap">
+      <div id="pending" class="pending"></div>
+      <div class="composer">
+        <button id="mode" class="icon-btn" type="button" aria-label="切换到按住说话">🎤</button>
+        <textarea id="input" rows="1" placeholder="发消息，或点左边按住说话" aria-label="消息"></textarea>
+        <button id="hold" class="hold" type="button" hidden>按住 说话</button>
+        <button id="plus" class="icon-btn" type="button" aria-label="添加图片或文件" aria-expanded="false">＋</button>
+        <button id="send" class="send" type="button" aria-label="发送" disabled>➤</button>
+      </div>
+      <div id="tray" class="tray" hidden>
+        <label class="tray-item"><input id="pick-camera" type="file" accept="image/*" capture="environment" hidden>📷<span>拍照</span></label>
+        <label class="tray-item"><input id="pick-image" type="file" accept="image/*" multiple hidden>🖼<span>相册</span></label>
+        <label class="tray-item"><input id="pick-file" type="file" multiple hidden>📄<span>文件</span></label>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<div id="rec-overlay" class="rec-overlay" hidden>
+  <div class="rec-card">
+    <p id="rec-live" class="rec-live" aria-live="polite">正在听…</p>
+    <canvas id="rec-wave" width="320" height="64" aria-hidden="true"></canvas>
+    <p id="rec-hint">松开发送 · 上滑取消</p>
+  </div>
+</div>
+
+<dialog id="settings" class="settings" aria-labelledby="settings-title">
+  <div class="settings-head">
+    <h2 id="settings-title">设置</h2>
+    <button id="settings-close" class="icon-btn" type="button" aria-label="关闭">✕</button>
+  </div>
+  <div class="settings-body">
+    <nav class="settings-nav" role="tablist" aria-label="设置分类">
+      <button type="button" role="tab" data-pane="general">通用</button>
+      <button type="button" role="tab" data-pane="voice">音色</button>
+      <button type="button" role="tab" data-pane="account">登录与设备</button>
+    </nav>
+
+    <section class="pane" role="tabpanel" data-pane="general" hidden>
+      <h3>对话</h3>
+      <div class="row">
+        <label for="set-model"><b>默认模型</b><small>新对话用这个。顶栏也可以临时切换</small></label>
+        <select id="set-model"></select>
+      </div>
+      <div class="row">
+        <label for="set-autoread"><b>回答完自动朗读</b><small>用当前的小新音色</small></label>
+        <input id="set-autoread" type="checkbox" class="switch">
+      </div>
+      <div class="row">
+        <label for="set-enter"><b>回车直接发送</b><small>关掉后用 Ctrl / ⌘ + 回车发送</small></label>
+        <input id="set-enter" type="checkbox" class="switch">
+      </div>
+      <h3>小新的人设（system prompt）</h3>
+      <p class="voice-tip">每次对话都会先发给模型这段话。改它在 <code>server/main.py</code> 的 <code>SYSTEM</code>，改完跑一次部署。</p>
+      <pre id="set-system" class="sys-prompt"></pre>
+      <p id="set-routing" class="voice-tip"></p>
+    </section>
+
+    <section class="pane" role="tabpanel" data-pane="voice" hidden>
+      <h3>小新用哪个声音</h3>
+      <p class="voice-tip">点一下就换，全家的设备一起生效。▶ 是试听。</p>
+      <div id="voice-current" class="voice-current" role="status"></div>
+      <div id="voice-groups"></div>
+      <details class="add-voice">
+        <summary>添加豆包音色 ID</summary>
+        <p class="voice-tip">列表里没有你想要的（比如「桃子」），就去火山引擎控制台「豆包语音 → 音色列表」复制那个音色 ID 填进来。加之前会先试合成一句，确认能用。</p>
+        <div class="add-voice-row">
+          <label class="sr-only" for="custom-speaker">音色 ID</label>
+          <input id="custom-speaker" placeholder="音色 ID，如 zh_female_xxx_uranus_bigtts" autocomplete="off" spellcheck="false">
+          <label class="sr-only" for="custom-name">显示名</label>
+          <input id="custom-name" placeholder="显示名，如 桃子" autocomplete="off">
+          <button id="custom-add" type="button" class="primary-btn">添加</button>
+        </div>
+        <p id="custom-msg" class="voice-msg" role="status"></p>
+      </details>
+
+      <h3>录一个新声音</h3>
+      <p class="voice-tip">找个安静的地方，用正常语速把下面这段读一遍，20–30 秒。保存后会自动挑出 6–10 秒最干净的一段做克隆参考，出现在上面「我的声音」里。</p>
+      <label for="voice-name" class="sr-only">名字</label>
+      <input id="voice-name" class="voice-name" placeholder="给这个声音起个名字，如 爸爸" maxlength="20" autocomplete="off">
+      <label for="voice-text" class="sr-only">朗读文字</label>
+      <textarea id="voice-text" class="voice-text" rows="6"></textarea>
+      <div class="voice-ctrl">
+        <button id="voice-rec" type="button" class="voice-rec">● 开始录</button>
+        <span id="voice-time" class="voice-time">0.0 s</span>
+      </div>
+      <canvas id="voice-wave" width="560" height="56" aria-hidden="true"></canvas>
+      <div id="voice-take" class="voice-take" hidden>
+        <audio id="voice-audio" controls></audio>
+        <div class="voice-take-btns">
+          <button id="voice-redo" type="button">重录</button>
+          <button id="voice-save" type="button" class="primary">保存</button>
+        </div>
+      </div>
+      <p id="voice-msg" class="voice-msg" role="status"></p>
+    </section>
+
+    <section class="pane" role="tabpanel" data-pane="account" hidden>
+      <h3>这个浏览器</h3>
+      <p class="voice-tip">已登录，一年内不用再登录。清掉浏览器数据之后，用免密链接重新打开一次就行。</p>
+      <div class="row">
+        <span><b>在这个浏览器退出</b><small>共用的电脑用完记得退出</small></span>
+        <button id="logout" type="button" class="danger-btn">退出</button>
+      </div>
+      <h3>别的设备</h3>
+      <p class="voice-tip">免密链接在电脑上的仓库 <code>.env</code> 里（<code>XIAOXIN_KEY</code>），拼法见 <code>server/README.md</code>。只私下发给家里人，拿到链接就等于拿到了全部权限。</p>
+    </section>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="static/app.js"></script>
+</body>
+</html>

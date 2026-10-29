@@ -1,1 +1,10 @@
 tmp/
+android/build/
+android/debug.keystore
+.env
+.venv/
+__pycache__/
+*.pyc
+logs/
+# 作业汇总里有班级、老师、其他孩子的名字和学号，照片和原件也在这，只留本机
+docs/worklog/
