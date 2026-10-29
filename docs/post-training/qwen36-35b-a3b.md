@@ -2,7 +2,7 @@
 
 要训 35B-A3B 主脑时先读这份。内容来自 2026-10-26 至 27 的讨论，以及在 H100.2 上实测的模型结构和模板哈希。**训练本身还没跑过**，命令参数以当时的框架版本为准。
 
-数据怎么造、配比、风格宪法不在这里，见 gpu2 上的 `/Data/cmbian/codes/mainbrain_27B_model/docs/sft_data_plan.md` 和 `data_pipeline.md`。本文只写换成 35B-A3B 以后怎么训、怎么测。登录见 [../gpu2-h100.2-login.md](../gpu2-h100.2-login.md)。
+数据怎么造、配比、风格宪法不在这里，见 gpu2 上的 `/Data/cmbian/codes/mainbrain_27B_model/docs/sft_data_plan.md` 和 `data_pipeline.md`。本文只写换成 35B-A3B 以后怎么训、怎么测。长上下文工具调用漂移见 [long-context-tool-drift.md](long-context-tool-drift.md)。登录见 [../gpu2-h100.2-login.md](../gpu2-h100.2-login.md)。
 
 ## 0. 结论
 
