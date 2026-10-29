@@ -146,6 +146,20 @@ def voice_page() -> RedirectResponse:
     return RedirectResponse("./#settings/voice")
 
 
+# 挑 CosyVoice 男声用的试听页：页面和音频放在数据目录 voice/pick/ 下，不进仓库。和 /api 一样要登录。
+PICK_DIR = store.DATA / "voice" / "pick"
+
+
+@app.get("/pick/{name}")
+def voice_pick(request: Request, name: str = "index.html") -> FileResponse:
+    if not _authed(request):
+        raise HTTPException(401, "要先用免密链接打开一次")
+    path = (PICK_DIR / name).resolve()
+    if PICK_DIR.resolve() not in path.parents or not path.is_file():
+        raise HTTPException(404, "没有这个文件")
+    return FileResponse(path, headers={"Cache-Control": "no-cache"})
+
+
 # ---------------------------------------------------------------- 对话
 
 @app.get("/api/conversations")
