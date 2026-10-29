@@ -10,6 +10,12 @@ Triton 只在 gpu2 本机：gRPC 127.0.0.1:18001，HTTP 健康检查 127.0.0.1:1
 
 2026-10-29 在 gpu2 实测（参考段 8 秒）：热的时候首块 0.4 秒，34 个字合成 11.6 秒音频用 1.9 秒。
 
+首响慢不是算得慢（每块 0.15–0.2 秒就出来了），是两种静音（2026-10-30 实测）：
+  - 前导静音：先吐 0.5–2 秒静音才开口。原样放出去用户就在静音里等着。现在开头只留 0.15 秒。
+  - 整段无声：参考是豆包念的那段时 25–40% 一个音都不出（录的真人声音和官方参考 0/12），
+    原来要等到 30 秒上限。现在 1.5 秒没声就取消重来一次，再不行跳过这句。
+  根子和下面的跑飞一样，在 Triton 版的采样。
+
 偶尔停不下来：大约每 10–16 次有一次，话念完以后一直出静音，直到 30 秒。原因在 Triton 版的 model.py：
 LLM 固定 max_tokens=750（25 token/s 正好 30 秒），用普通 top-k/top-p 采样。官方 cosyvoice/llm/llm.py
 是按字数算 max_len（字数 × 20），用 RAS 采样跳出重复，Triton 版这两样都没有，EOS 偶尔出不来。
@@ -47,6 +53,17 @@ def ready(timeout: float = 1.0) -> bool:
             return r.status == 200
     except Exception:
         return False
+
+
+def resample_s16(raw: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """s16le 单声道线性插值重采样。官方素材是 22.05 / 24 kHz，参考音要 16 kHz。"""
+    import numpy as np
+
+    x = np.frombuffer(raw[:len(raw) // 2 * 2], np.int16).astype(np.float32)
+    if src_rate == dst_rate or x.size == 0:
+        return x.astype(np.int16).tobytes()
+    pos = np.arange(0, x.size, src_rate / dst_rate)
+    return np.interp(pos, np.arange(x.size), x).round().clip(-32768, 32767).astype(np.int16).tobytes()
 
 
 def load_reference(path: str | Path):

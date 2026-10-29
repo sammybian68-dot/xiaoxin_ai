@@ -1127,11 +1127,11 @@ function renderVoices(cat) {
   $("voice-current").innerHTML = `现在用：<b>${esc(cur?.name || "-")}</b>`
     + `（${cosy ? "CosyVoice" : "豆包"} 念）`
     + (cosy && !cat.clone_ready ? "，CosyVoice 没起来，先用豆包念" : "");
-  // 豆包音色两个引擎都能念；录的声音只有 CosyVoice 能念，豆包引擎下点它会切到 CosyVoice
+  // 每个音色只属于一个引擎，点哪个就切到它那边
   const groups = [
-    ["我的声音" + (cosy ? "" : "（只能 CosyVoice 念，点一下会切过去）"), cat.voices.filter((v) => v.kind === "clone")],
+    ["CosyVoice（本机）", cat.voices.filter((v) => v.engine === "cosyvoice")],
     ["自己加的豆包音色", cat.voices.filter((v) => v.custom)],
-    ["豆包音色", cat.voices.filter((v) => v.kind === "doubao" && !v.custom)],
+    ["豆包音色（云端）", cat.voices.filter((v) => v.kind === "doubao" && !v.custom)],
   ];
   const box = $("voice-groups");
   box.innerHTML = "";

@@ -45,8 +45,22 @@ def isolate_env(request, tmp_path, monkeypatch):
     monkeypatch.setattr(doubao, "ROOT", tmp_path)  # .env 从这里读，这里没有
     for name in ("DOUBAO_TTS_API_KEY", "DOUBAO_API_KEY", "XIAOXIN_ORIGINS"):
         monkeypatch.delenv(name, raising=False)
+    from server import voices
+
+    monkeypatch.setattr(voices, "COSYVOICE_ASSET", request.getfixturevalue("fake_cosyvoice_asset"))
     monkeypatch.setenv("XIAOXIN_KEY", TEST_KEY)
     monkeypatch.setenv("DOUBAO_TTS_API_KEY", "fake-doubao-key")
+
+
+@pytest.fixture(scope="session")
+def fake_cosyvoice_asset(tmp_path_factory):
+    """CosyVoice 官方素材：造一段 22.05 kHz、14 秒的「男声」，不依赖 gpu2 上的 carHer2。整个测试只造一次。"""
+    from server import voices
+    from tests.audio import tone, wav_bytes
+
+    asset = tmp_path_factory.mktemp("cosyvoice_asset")
+    (asset / voices.BUILTIN_MALE_SOURCE).write_bytes(wav_bytes(tone(14.0, rate=22050, freq=150), rate=22050))
+    return asset
 
 
 @pytest.fixture

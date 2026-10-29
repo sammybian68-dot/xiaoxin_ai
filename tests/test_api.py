@@ -265,22 +265,23 @@ def test_chat_speak_cosyvoice_when_engine_selected(client, fakes):
     assert end["error"] == "" and end["sample_rate"] == 24000
 
 
-def test_chat_speak_cosyvoice_with_doubao_voice(client, fakes):
-    """切到 CosyVoice 后选豆包音色：用豆包念的参考段，CosyVoice 合成，不走豆包流式。"""
-    client.put("/api/engines", json={"tts": "cosyvoice"})
-    xiaohe = "doubao:" + voices.PRESETS[1][0]
-    assert client.put("/api/voices/current", json={"voice": xiaohe}).json()["engines"]["tts"] == "cosyvoice"
+def test_chat_speak_cosyvoice_builtin_male(client, fakes):
+    """切到 CosyVoice 默认就是官方男声：参考是官方素材，不拿豆包念参考、不走豆包流式。"""
+    assert client.put("/api/engines", json={"tts": "cosyvoice"}).json()["tts"] == "cosyvoice"
+    assert client.get("/api/voices").json()["current"] == voices.BUILTIN
     cid, ev = chat(client, speak=True)
     assert audio_seconds(ev) > 0
     cosy = [c for c in fakes.calls if c[0] == "cosyvoice"]
-    assert cosy and all(c[2] == voices.preset_text("小何") for c in cosy)
-    assert "doubao.bidir" not in fakes.names()
+    assert cosy and all(c[2] == voices.BUILTIN_MALE_TEXT for c in cosy)
+    assert "doubao.bidir" not in fakes.names() and "doubao.tts" not in fakes.names()
 
 
-def test_tts_preview_follows_engine(client, fakes):
+def test_selecting_doubao_voice_switches_back_to_doubao(client, fakes):
     client.put("/api/engines", json={"tts": "cosyvoice"})
+    cat = client.put("/api/voices/current", json={"voice": "doubao:" + voices.PRESETS[1][0]}).json()
+    assert cat["engines"]["tts"] == "doubao"
     r = client.post("/api/voices/preview", json={"voice": "doubao:" + voices.PRESETS[1][0]})
-    assert r.status_code == 200 and fakes.calls[-1][0] == "cosyvoice"
+    assert r.status_code == 200 and fakes.calls[-1][0] == "doubao.tts"
 
 
 def test_chat_speak_cosyvoice_down_falls_back_with_note(client, fakes):

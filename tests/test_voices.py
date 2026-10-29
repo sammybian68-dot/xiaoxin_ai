@@ -49,52 +49,54 @@ def test_unknown_engine_in_settings_file_falls_back(fakes):
 XIAOHE = "doubao:" + voices.PRESETS[1][0]
 
 
-def test_doubao_voices_work_on_both_engines(fakes):
+def test_each_voice_belongs_to_one_engine(fakes):
     cat = voices.catalog()
-    preset = next(v for v in cat["voices"] if v["id"] == XIAOHE)
-    assert preset["engines"] == ["doubao", "cosyvoice"]
-    clone = voices.find(add_clone())
-    assert clone["engines"] == ["cosyvoice"]
+    by_id = {v["id"]: v for v in cat["voices"]}
+    assert by_id[XIAOHE]["engine"] == "doubao"
+    assert by_id[voices.BUILTIN]["engine"] == "cosyvoice" and by_id[voices.BUILTIN]["kind"] == "builtin"
+    assert voices.find(add_clone())["engine"] == "cosyvoice"
 
 
-def test_selecting_doubao_voice_keeps_cosyvoice_engine(fakes):
+def test_cosyvoice_defaults_to_builtin_male(fakes):
+    voices.set_engines(tts="cosyvoice")
+    assert voices.catalog()["current"] == voices.BUILTIN
+    v, engine, note = voices.resolve()
+    assert (v["id"], engine, note) == (voices.BUILTIN, "cosyvoice", "")
+
+
+def test_selecting_switches_engine_to_the_voices_engine(fakes):
     voices.set_engines(tts="cosyvoice")
     cat = voices.select(XIAOHE)
-    assert cat["engines"]["tts"] == "cosyvoice" and cat["current"] == XIAOHE
-    v, engine, note = voices.resolve()
-    assert (v["id"], engine, note) == (XIAOHE, "cosyvoice", "")
-
-
-def test_selecting_clone_switches_doubao_engine_to_cosyvoice(fakes):
+    assert cat["engines"]["tts"] == "doubao" and cat["current"] == XIAOHE
+    cat = voices.select(voices.BUILTIN)
+    assert cat["engines"]["tts"] == "cosyvoice" and cat["current"] == voices.BUILTIN
     clone = add_clone()
     cat = voices.select(clone)
     assert cat["engines"]["tts"] == "cosyvoice" and cat["current"] == clone
 
 
-def test_switching_to_doubao_with_clone_selected_restores_last_doubao_voice(fakes):
+def test_each_engine_remembers_its_own_voice(fakes):
     clone = add_clone()
     voices.select(XIAOHE)
     voices.select(clone)
     voices.set_engines(tts="doubao")
-    cat = voices.catalog()
-    assert cat["current"] == XIAOHE  # 豆包念不了录的声音，换回上次的豆包音色
-    assert store.settings()["voice"] == XIAOHE
-
-
-def test_switching_engine_keeps_doubao_voice(fakes):
-    voices.select(XIAOHE)
+    assert voices.catalog()["current"] == XIAOHE
     voices.set_engines(tts="cosyvoice")
-    assert voices.catalog()["current"] == XIAOHE
-    voices.set_engines(tts="doubao")
-    assert voices.catalog()["current"] == XIAOHE
+    assert voices.catalog()["current"] == clone
 
 
-def test_deleted_clone_voice_falls_back(fakes):
+def test_old_settings_with_doubao_voice_on_cosyvoice_use_builtin(fakes):
+    """老数据：以前允许 CosyVoice + 豆包音色，现在 CosyVoice 下就落到官方男声。"""
+    store.update_settings(tts_engine="cosyvoice", voice=XIAOHE)
+    cat = voices.catalog()
+    assert cat["current"] == voices.BUILTIN and cat["doubao_voice"] == XIAOHE
+
+
+def test_deleted_clone_voice_falls_back_to_builtin(fakes):
     clone = add_clone()
-    voices.select(XIAOHE)
     voices.select(clone)
     store.delete_sample(clone.split(":")[1])
-    assert voices.catalog()["current"] == XIAOHE
+    assert voices.catalog()["current"] == voices.BUILTIN
 
 
 def test_unknown_voice_rejected(fakes):
@@ -124,13 +126,13 @@ def test_resolve_clone_falls_back_to_last_doubao_voice_when_triton_down(fakes):
     assert "没起来" in note
 
 
-def test_resolve_doubao_voice_on_cosyvoice_falls_back_to_doubao_engine(fakes):
-    voices.set_engines(tts="cosyvoice")
+def test_resolve_builtin_falls_back_to_doubao_when_triton_down(fakes):
     voices.select(XIAOHE)
+    voices.select(voices.BUILTIN)
     fakes.cosyvoice_ready = False
     voices._probe.update(at=0.0)
     v, engine, note = voices.resolve()
-    assert (v["id"], engine) == (XIAOHE, "doubao") and "豆包念" in note
+    assert (v["id"], engine) == (XIAOHE, "doubao") and "没起来" in note
 
 
 def test_probe_is_cached_for_10_seconds(fakes, monkeypatch):
@@ -161,41 +163,36 @@ def test_synth_cosyvoice_passes_reference_text(fakes):
     assert fakes.calls[-1] == ("cosyvoice", "你好", "放学回家先写作业")
 
 
-def test_synth_doubao_voice_on_cosyvoice_uses_doubao_reference(fakes):
-    voices.set_engines(tts="cosyvoice")
-    speaker = XIAOHE.split(":")[1]
-    speech, used, note = voices.synth("你好", XIAOHE)
-    ref_text = voices.preset_text("小何")
-    # 先让豆包念参考（16 kHz），再用 CosyVoice 合成目标文字
-    assert fakes.calls[-2] == ("doubao.tts", speaker, ref_text)
-    assert fakes.calls[-1] == ("cosyvoice", "你好", ref_text)
-    assert used == XIAOHE and speech.sample_rate == 24000
-    assert (store.VOICE / "presets" / f"{speaker}.wav").is_file()
+def test_synth_builtin_male_uses_official_reference(fakes):
+    speech, used, note = voices.synth("你好", voices.BUILTIN)
+    assert used == voices.BUILTIN and speech.sample_rate == 24000 and note == ""
+    assert fakes.calls[-1] == ("cosyvoice", "你好", voices.BUILTIN_MALE_TEXT)
+    assert "doubao.tts" not in fakes.names()  # 不再拿豆包念参考
 
 
-def test_preset_reference_is_cached_on_disk(fakes):
-    voices.preset_reference("spk_a", "甲")
-    voices.preset_reference("spk_a", "甲")
-    assert [c[0] for c in fakes.calls].count("doubao.tts") == 1
+def test_builtin_reference_cut_from_official_asset_at_16k(fakes):
+    ref, text = voices.builtin_reference()
+    a, b = voices.BUILTIN_MALE_SPAN
+    assert text == voices.BUILTIN_MALE_TEXT
+    assert ref.size == pytest.approx((b - a) * 16000, abs=2)
+    assert (store.VOICE / "builtin" / "cosyvoice_male.wav").is_file()
 
 
-def test_preset_reference_texts_differ_per_voice(fakes):
-    """Triton 按参考文字缓存说话人，两个音色参考文字一样就会串成同一个声音。"""
-    texts = {voices.preset_text(name) for _, name, _ in voices.PRESETS}
-    assert len(texts) == len(voices.PRESETS)
+def test_builtin_reference_cached(fakes, monkeypatch):
+    voices.builtin_reference()
+    monkeypatch.setattr(voices, "COSYVOICE_ASSET", voices.COSYVOICE_ASSET / "gone")
+    voices.builtin_reference()  # 切好的在数据目录里，第二次不再读素材
 
 
-def test_preset_reference_regenerated_when_text_changes(fakes, monkeypatch):
-    voices.preset_reference("spk_a", "甲")
-    monkeypatch.setattr(voices, "preset_text", lambda name: "换了一段参考文字。")
-    _, text = voices.preset_reference("spk_a", "甲")
-    assert text == "换了一段参考文字。" and [c[0] for c in fakes.calls].count("doubao.tts") == 2
+def test_builtin_reference_missing_asset(fakes, monkeypatch, tmp_path):
+    monkeypatch.setattr(voices, "COSYVOICE_ASSET", tmp_path / "nope")
+    with pytest.raises(voices.VoiceError, match="官方男声素材"):
+        voices.builtin_reference()
 
 
-def test_preset_reference_doubao_failure(fakes):
-    fakes.doubao_tts_error = "quota"
-    with pytest.raises(voices.VoiceError, match="参考音"):
-        voices.preset_reference("spk_a", "甲")
+def test_doubao_voice_cannot_be_read_by_cosyvoice(fakes):
+    with pytest.raises(voices.VoiceError, match="豆包音色"):
+        voices.reference(voices.find(XIAOHE))
 
 
 def test_synth_cosyvoice_failure_is_voice_error(fakes):
