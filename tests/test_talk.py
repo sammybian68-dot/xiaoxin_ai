@@ -259,6 +259,58 @@ def test_vad_end_ms_setting_applies_to_new_call(call, fakes):
     assert [k for k, _ in vad.feed(gap)] == ["start", "end", "start", "end"]
 
 
+@pytest.mark.parametrize("text,rest", [
+    ("小新同学明天北京会下雨吗", "明天北京会下雨吗"),          # 端侧小模型：没标点
+    ("小新同学，明天北京会下雨吗？", "明天北京会下雨吗？"),    # 豆包：有标点，保留后面的
+    ("嘿小新同学帮我开一下空调", "帮我开一下空调"),
+    ("嘿，小新同学，帮我开空调。", "帮我开空调。"),
+    ("小新同学", ""),
+    ("小新同学。", ""),
+    ("明天会下雨吗", "明天会下雨吗"),                          # 不是唤醒词开头：原样
+])
+def test_strip_wake_word(text, rest):
+    from server.talk import strip_wake_word
+
+    assert strip_wake_word(text, "小新同学") == rest
+
+
+def test_wake_with_question_skips_cloud_asr(call, fakes):
+    """pad 唤醒后发来端侧认好的整句：去掉唤醒词直接问模型，不再上云识别。"""
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学明天北京会下雨吗"}))
+    assert c.until("heard")["text"] == "明天北京会下雨吗"
+    c.until("idle")
+    assert "doubao.asr" not in fakes.names() and "paraformer.transcribe" not in fakes.names()
+    first_user = fakes.llm_requests[0]["messages"][-1]
+    assert first_user["content"] == "明天北京会下雨吗"
+
+
+def test_wake_word_only_replies_ack_without_llm(call, fakes):
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学。"}))
+    c.until("idle")
+    assert "llm" not in fakes.names() and "heard" not in c.kinds()
+    assert ("doubao.bidir.append", "我在。") in fakes.calls
+    assert c.audio > 0
+    assert store.get(c.msgs[0]["conversation"])["messages"] == []  # 应答不进对话记录
+
+
+def test_wake_uses_custom_wake_word(call, fakes):
+    voices.set_engines(wake_word="你好小新")
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "你好小新今天作业是什么"}))
+    assert c.until("heard")["text"] == "今天作业是什么"
+
+
+def test_after_wake_follow_up_goes_through_vad(call, fakes):
+    """唤醒后接着说（不用再喊唤醒词）：走正常的 VAD + 识别。"""
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学"}))
+    c.until("idle")
+    c.send_pcm(said())
+    assert c.until("heard")["text"] == fakes.doubao_text
+
+
 def test_stop_closes(call, fakes):
     c = call()
     c.ws.send_text(json.dumps({"type": "stop"}))

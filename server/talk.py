@@ -5,6 +5,8 @@
         文本帧 {"type":"hello","conversation":"<id 可空>","model":"<可空>"}  连上后第一条，可省
         文本帧 {"type":"stop"}  挂断
         文本帧 {"type":"model","model":"<id>"}  换模型，下一句起生效
+        文本帧 {"type":"wake","text":"<端侧认出的整句>"}  pad 待命唤醒后发的第一句：端侧 Paraformer 已经认好了，
+                 服务端去掉开头的唤醒词，剩下有内容就直接当这一轮的问题（省掉云端识别）；只喊了唤醒词就回一句「我在」
   下行  文本帧 JSON：
         ready      {conversation, asr, tts, voice}           准备好了，可以说话
         listening  {}                                         用户开口了（VAD start）
@@ -46,6 +48,28 @@ log = logging.getLogger("xiaoxin.talk")
 VOICE_HINT = ("现在是语音通话：用户的话是语音识别出来的文字（可能有错字，按意思理解），你的回答会被念出来。"
               "所以要短，像打电话说话一样，一般一两句、不超过 80 个字；别用列表、表格、markdown、表情符号；"
               "别说你听不到声音或者让用户打字。")
+
+
+WAKE_ACK = "我在。"
+_PUNCT = "，。！？、；：,.!?;: 　"
+
+
+def strip_wake_word(text: str, wake: str) -> str:
+    """去掉开头的唤醒词（前面可以带「嘿 / 哎」这类语气词），返回剩下的话；不是以唤醒词开头就原样返回。
+
+    比对时不看标点空格：端侧小模型认出来没有标点，豆包认出来有。
+    """
+    bare = "".join(c for c in text if c not in _PUNCT)
+    for lead in ("", "嘿", "哎", "喂", "嗨", "hi", "hey"):
+        if bare.lower().startswith(lead + wake):
+            # 在原文里找到唤醒词最后一个字的位置，从后面切，保留原文的标点
+            seen, need = 0, len(lead + wake)
+            for i, c in enumerate(text):
+                if c not in _PUNCT:
+                    seen += 1
+                    if seen == need:
+                        return text[i + 1:].lstrip(_PUNCT)
+    return text.strip()
 
 
 class Talk:
@@ -105,6 +129,8 @@ class Talk:
                 if cmd.get("type") == "model" and cmd.get("model") in self._models:
                     self.model = cmd["model"]  # 下一轮起生效，正在答的这一轮不换
                     await self.send("model", model=self.model)
+                elif cmd.get("type") == "wake":
+                    await self.on_wake(str(cmd.get("text") or ""))
         finally:
             self.closed = True
             await self.cancel_turn()
@@ -121,6 +147,16 @@ class Talk:
                 self.turn_id += 1
                 self.turn = asyncio.create_task(self.answer(self.turn_id, utt))
 
+    async def on_wake(self, text: str) -> None:
+        rest = strip_wake_word(text, voices.engines()["wake_word"])
+        log.info("talk wake: %r -> %r", text, rest)
+        await self.cancel_turn()
+        self.turn_id += 1
+        if rest:
+            self.turn = asyncio.create_task(self.answer(self.turn_id, b"", text=rest))
+        else:
+            self.turn = asyncio.create_task(self.answer(self.turn_id, b"", text=WAKE_ACK, ack=True))
+
     @property
     def busy(self) -> bool:
         return self.turn is not None and not self.turn.done()
@@ -135,13 +171,18 @@ class Talk:
                 pass
 
     # ---------------------------------------------------------------- 一轮
-    async def answer(self, turn_id: int, utt: bytes) -> None:
+    async def answer(self, turn_id: int, utt: bytes, text: str | None = None, ack: bool = False) -> None:
+        """一轮：识别（端侧已经认好就跳过）→ 模型 → 朗读。ack=True 时 text 是固定应答，不问模型。"""
         t0 = time.monotonic()
-        try:
-            text = (await asyncio.to_thread(self._transcribe, self.asr_engine, utt)).strip()
-        except Exception as e:
-            await self.send("error", detail=f"识别失败：{str(e)[:120]}")
+        if ack:
+            await self.speak_only(text)
             return
+        if text is None:
+            try:
+                text = (await asyncio.to_thread(self._transcribe, self.asr_engine, utt)).strip()
+            except Exception as e:
+                await self.send("error", detail=f"识别失败：{str(e)[:120]}")
+                return
         t_asr = time.monotonic() - t0
         log.info("talk turn %d heard %.1fs audio in %.2fs: %s", turn_id, len(utt) / 32000, t_asr, text[:60])
         if not text:
@@ -223,6 +264,28 @@ class Talk:
             task = asyncio.get_running_loop().create_task(self._save_late(worker, q, parts, end))
             _BACKGROUND.add(task)
             task.add_done_callback(_BACKGROUND.discard)
+            raise
+
+    async def speak_only(self, text: str) -> None:
+        """只喊了唤醒词：念一句固定应答，不进对话记录、不问模型。"""
+        tts, _ = self._make_speech()
+        tts.start()
+        try:
+            await tts.feed(text)
+            await tts.finish_text()
+            speaking = False
+            while not tts.audio_done:
+                for chunk in tts.take_audio_bytes():
+                    if not speaking:
+                        speaking = True
+                        await self.send("speaking", sample_rate=24000)
+                    await self.send_audio(chunk)
+                await asyncio.sleep(tts.next_wait())
+            for chunk in tts.take_audio_bytes():
+                await self.send_audio(chunk)
+            await self.send("idle")
+        except asyncio.CancelledError:
+            await tts.cancel()
             raise
 
     async def _save_late(self, worker, q, parts, end) -> None:

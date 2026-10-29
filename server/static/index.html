@@ -44,6 +44,8 @@
         <select id="model"></select>
       </label>
       <button id="autoread" class="icon-btn" type="button" aria-pressed="true" title="回答完自动朗读">🔊</button>
+      <button id="standby" class="standby" type="button" aria-pressed="false" hidden
+              title="pad 本机一直听唤醒词，听到才连云端，不唤醒不上传">💤 待命</button>
       <button id="free-talk" class="free-talk" type="button" title="像打电话一样一直说，小新说话时可以直接插话">📞 自由对话</button>
     </header>
 
@@ -125,6 +127,10 @@
       <div class="row">
         <label for="set-tts"><b>朗读（TTS）</b><small id="tts-desc"></small></label>
         <select id="set-tts"></select>
+      </div>
+      <div class="row">
+        <label for="set-wake"><b>唤醒词（pad 待命用）</b><small>pad 本机先听，认出这句开头才连云端，不唤醒不上传、不花钱。至少 4 个字</small></label>
+        <input id="set-wake" class="wake-input" type="text" maxlength="8" autocomplete="off" spellcheck="false">
       </div>
       <div class="row">
         <label for="set-vad-end"><b>自由对话：停多久算说完</b><small>短了反应快，但说话中间停顿稍长就会被打断；长了更稳，回答慢一点。下一通电话生效</small></label>

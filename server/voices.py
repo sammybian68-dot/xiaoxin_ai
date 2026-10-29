@@ -65,6 +65,12 @@ BUILTIN_MALE_SOURCE = "prompt_speech_zh_m.wav"
 BUILTIN_MALE_SPAN = (0.04, 4.53)
 BUILTIN_MALE_TEXT = "养殖场的工作人员说，猪尾巴甩起来，就说明猪高兴。"
 BUILTIN = "cosyvoice:male"
+
+# pad 待命唤醒：端侧 Paraformer 小模型认出这句话以唤醒词开头，才连服务端。没唤醒时一个字节都不上传。
+# 2026-10-30 在 pad 上测：4 种声音念「小新同学…」16/16 认对；只喊「小新」两个字 4 次里认错 1 次（小心 / 小谢），
+# 所以唤醒词至少 4 个字。
+WAKE_WORD = "小新同学"
+WAKE_IDLE_S = 20  # 唤醒后这么久没人说话就回去待命
 PREVIEW = "你好，我是小新。今天的作业写完了吗？有不会的题可以来问我。"
 
 
@@ -87,13 +93,27 @@ def engines() -> dict:
     asr = s.get("asr_engine") if s.get("asr_engine") in ASR_IDS else "doubao"
     tts = s.get("tts_engine") if s.get("tts_engine") in TTS_IDS else "doubao"
     end_ms = s.get("vad_end_ms") if isinstance(s.get("vad_end_ms"), int) else vad.END_MS
+    wake = s.get("wake_word") if isinstance(s.get("wake_word"), str) and s.get("wake_word") else WAKE_WORD
     return {"asr": asr, "tts": tts, "vad_end_ms": end_ms, "vad_end_ms_range": list(vad.END_MS_RANGE),
+            "wake_word": wake, "wake_idle_s": WAKE_IDLE_S,
             "asr_options": [{"id": i, "name": n, "desc": d} for i, n, d in ASR_ENGINES],
             "tts_options": [{"id": i, "name": n, "desc": d} for i, n, d in TTS_ENGINES]}
 
 
-def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None) -> dict:
+def check_wake_word(word) -> str:
+    """唤醒词：2–8 个汉字（可以夹字母数字），不能有标点空格。pad 端侧识别出来没有标点，比对时也不看标点。"""
+    word = str(word or "").strip()
+    if not 2 <= len(word) <= 8 or not all(c.isalnum() for c in word):
+        raise VoiceError("唤醒词要 2–8 个字，不带标点和空格，比如：小新同学")
+    if len(word) < 4:
+        raise VoiceError("唤醒词至少 4 个字：两个字的（比如「小新」）容易认成「小心」「小谢」，也容易误唤醒")
+    return word
+
+
+def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None, wake_word=None) -> dict:
     fields = {}
+    if wake_word is not None:
+        fields["wake_word"] = check_wake_word(wake_word)
     if vad_end_ms is not None:
         lo, hi = vad.END_MS_RANGE
         try:

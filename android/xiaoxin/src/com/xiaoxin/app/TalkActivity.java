@@ -26,7 +26,9 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
 
+import com.xiaoxin.util.LocalAsr;
 import com.xiaoxin.util.Talk;
+import com.xiaoxin.util.WakeListener;
 
 import org.json.JSONObject;
 
@@ -52,6 +54,15 @@ public class TalkActivity extends Activity {
     private SharedPreferences prefs;
     private WebView web;
     private Talk talk;
+    // 待命唤醒：本机模型认出唤醒词才连服务端。standbyOn 是用户开没开；woken 表示这通电话是唤醒起来的，挂断后回待命
+    private LocalAsr localAsr;
+    private WakeListener wake;
+    private volatile boolean standbyOn;
+    private volatile boolean woken;
+    private String wakeWord = "小新同学";
+    private String talkUrl = "";
+    private long lastActivity;
+    private final android.os.Handler idle = new android.os.Handler(android.os.Looper.getMainLooper());
     private byte[] pinnedSha256;
     private ValueCallback<Uri[]> pendingFiles;
 
@@ -79,6 +90,9 @@ public class TalkActivity extends Activity {
             return;
         }
 
+        // debug 包允许用 chrome://inspect 调网页（打包签的是 debug.keystore）
+        WebView.setWebContentsDebuggingEnabled(
+                (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0);
         web = new WebView(this);
         web.setBackgroundColor(Color.parseColor("#0f1115"));
         WebSettings s = web.getSettings();
@@ -131,10 +145,26 @@ public class TalkActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
-        stopTalk();  // 切到后台就挂断：麦克风和通话模式不该一直开着
+        // 切到后台就挂断、停待命：麦克风和通话模式不该在后台一直开着（熄屏待命要做成前台服务，还没做）
+        boolean wasStandby = standbyOn;
+        stopTalk();
+        WakeListener w = wake;
+        wake = null;
+        if (w != null) {
+            new Thread(w::stop, "wake-stop").start();
+        }
+        standbyOn = wasStandby;  // 回到前台时网页会重新开待命
         if (web != null) {
             web.evaluateJavascript("window.xiaoxinTalkEvent && window.xiaoxinTalkEvent("
                     + "{type:'native_closed',reason:'切到后台，挂断了'})", null);
+        }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (standbyOn) {
+            startStandby();
         }
     }
 
@@ -150,6 +180,13 @@ public class TalkActivity extends Activity {
     @Override
     protected void onDestroy() {
         stopTalk();
+        standbyOn = false;
+        if (wake != null) {
+            wake.stop();
+        }
+        if (localAsr != null) {
+            localAsr.release();
+        }
         if (web != null) {
             web.destroy();
         }
@@ -162,40 +199,31 @@ public class TalkActivity extends Activity {
         /** 网页点「自由对话」：wsUrl 是 https://…/api/talk?… 的页面地址，这里换成 wss 自己连。 */
         @JavascriptInterface
         public void start(String pageUrl) {
-            String url = pageUrl.replaceFirst("^http", "ws");
+            runOnUiThread(() -> openTalk(pageUrl, null));
+        }
+
+        /** 网页的「待命」开关。wakeWord 从设置里来；talkUrl 是唤醒后要连的 /api/talk 地址（带对话 id、模型）。 */
+        @JavascriptInterface
+        public void standby(boolean on, String word, String pageUrl) {
             runOnUiThread(() -> {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, 1);
-                    emit("{\"type\":\"native_closed\",\"reason\":\"要先允许麦克风\"}");
-                    return;
+                wakeWord = word == null || word.isEmpty() ? wakeWord : word;
+                talkUrl = pageUrl;
+                standbyOn = on;
+                if (on) {
+                    startStandby();
+                } else {
+                    stopStandby();
                 }
-                stopTalk();
-                talk = new Talk(TalkActivity.this, new Talk.Listener() {
-                    @Override
-                    public void onEvent(JSONObject event) {
-                        emit(event.toString());
-                    }
-
-                    @Override
-                    public void onLevel(int level) {
-                        emit("{\"type\":\"native_level\",\"level\":" + level + "}");
-                    }
-
-                    @Override
-                    public void onClosed(String reason) {
-                        emit("{\"type\":\"native_closed\",\"reason\":" + JSONObject.quote(reason) + "}");
-                    }
-                });
-                Talk t = talk;
-                new Thread(() -> {
-                    try {
-                        t.start(url, key());
-                    } catch (Exception e) {
-                        emit("{\"type\":\"native_closed\",\"reason\":"
-                                + JSONObject.quote("连不上：" + e.getMessage()) + "}");
-                    }
-                }, "talk-connect").start();
             });
+        }
+
+        @JavascriptInterface
+        public void setWakeWord(String word) {
+            wakeWord = word;
+            WakeListener w = wake;
+            if (w != null) {
+                w.setWakeWord(word);
+            }
         }
 
         /** 网页发给服务端的控制消息（比如通话中换模型）。 */
@@ -209,7 +237,10 @@ public class TalkActivity extends Activity {
 
         @JavascriptInterface
         public void stop() {
-            runOnUiThread(TalkActivity.this::stopTalk);
+            runOnUiThread(() -> {
+                stopTalk();
+                afterTalk();  // 开着待命就回去待命
+            });
         }
     }
 
@@ -221,7 +252,140 @@ public class TalkActivity extends Activity {
         });
     }
 
+    /** 开一通电话。wakeText 不空时是唤醒起来的：连上先把这句发过去（one-shot）。 */
+    private void openTalk(String pageUrl, String wakeText) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, 1);
+            emit("{\"type\":\"native_closed\",\"reason\":\"要先允许麦克风\"}");
+            return;
+        }
+        String url = pageUrl.replaceFirst("^http", "ws");
+        stopTalk();
+        woken = wakeText != null;
+        lastActivity = System.currentTimeMillis();
+        talk = new Talk(TalkActivity.this, new Talk.Listener() {
+            @Override
+            public void onEvent(JSONObject event) {
+                String type = event.optString("type");
+                if (!"native_play".equals(type)) {
+                    lastActivity = System.currentTimeMillis();
+                }
+                emit(event.toString());
+            }
+
+            @Override
+            public void onLevel(int level) {
+                emit("{\"type\":\"native_level\",\"level\":" + level + "}");
+            }
+
+            @Override
+            public void onClosed(String reason) {
+                emit("{\"type\":\"native_closed\",\"reason\":" + JSONObject.quote(reason) + "}");
+                runOnUiThread(TalkActivity.this::afterTalk);
+            }
+        });
+        Talk t = talk;
+        new Thread(() -> {
+            try {
+                if (wakeText != null) {
+                    t.startWoken(url, key(), wakeText);
+                } else {
+                    t.start(url, key());
+                }
+            } catch (Exception e) {
+                emit("{\"type\":\"native_closed\",\"reason\":" + JSONObject.quote("连不上：" + e.getMessage()) + "}");
+                runOnUiThread(TalkActivity.this::afterTalk);
+            }
+        }, "talk-connect").start();
+        if (woken) {
+            idle.removeCallbacks(idleCheck);
+            idle.postDelayed(idleCheck, 2000);
+        }
+    }
+
+    /** 唤醒起来的电话：WAKE_IDLE_S 秒没动静（没人说、小新也不在说）就挂断，回去待命。 */
+    private static final long WAKE_IDLE_MS = 20_000;
+    private final Runnable idleCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (talk == null || !woken) {
+                return;
+            }
+            if (System.currentTimeMillis() - lastActivity >= WAKE_IDLE_MS) {
+                emit("{\"type\":\"native_closed\",\"reason\":\"一会儿没说话，回去待命了\"}");
+                stopTalk();
+                afterTalk();
+            } else {
+                idle.postDelayed(this, 1000);
+            }
+        }
+    };
+
+    /** 电话挂了：开着待命就回去待命。 */
+    private void afterTalk() {
+        woken = false;
+        if (standbyOn && talk == null) {
+            startStandby();
+        }
+    }
+
+    private void startStandby() {
+        if (!standbyOn || talk != null) {
+            return;
+        }
+        if (wake != null && wake.isRunning()) {
+            return;
+        }
+        emit("{\"type\":\"standby\",\"state\":\"loading\"}");
+        new Thread(() -> {
+            try {
+                if (localAsr == null) {
+                    localAsr = LocalAsr.load(this);  // 第一次 3 秒左右
+                }
+            } catch (Exception e) {
+                emit("{\"type\":\"standby\",\"state\":\"error\",\"detail\":"
+                        + JSONObject.quote("端侧识别加载失败：" + e.getMessage()) + "}");
+                return;
+            }
+            runOnUiThread(() -> {
+                if (!standbyOn || talk != null) {
+                    return;
+                }
+                wake = new WakeListener(this, localAsr, wakeWord, new WakeListener.Listener() {
+                    @Override
+                    public void onWake(String text) {
+                        emit("{\"type\":\"standby\",\"state\":\"woken\",\"text\":" + JSONObject.quote(text) + "}");
+                        runOnUiThread(() -> openTalk(talkUrl, text));
+                    }
+
+                    @Override
+                    public void onHeard(String text, long millis) {
+                        emit("{\"type\":\"standby\",\"state\":\"heard\",\"text\":" + JSONObject.quote(text)
+                                + ",\"ms\":" + millis + "}");
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        emit("{\"type\":\"standby\",\"state\":\"error\",\"detail\":" + JSONObject.quote(message) + "}");
+                    }
+                });
+                wake.start();
+                emit("{\"type\":\"standby\",\"state\":\"listening\",\"wake_word\":" + JSONObject.quote(wakeWord) + "}");
+            });
+        }, "wake-load").start();
+    }
+
+    private void stopStandby() {
+        WakeListener w = wake;
+        wake = null;
+        if (w != null) {
+            new Thread(w::stop, "wake-stop").start();
+        }
+        emit("{\"type\":\"standby\",\"state\":\"off\"}");
+    }
+
     private void stopTalk() {
+        idle.removeCallbacks(idleCheck);
         Talk t = talk;
         talk = null;
         if (t != null) {

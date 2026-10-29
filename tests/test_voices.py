@@ -54,6 +54,19 @@ def test_vad_end_ms_rejects_out_of_range(fakes, bad):
     assert voices.engines()["vad_end_ms"] == 800
 
 
+def test_wake_word_default_and_change(fakes):
+    assert voices.engines()["wake_word"] == "小新同学"
+    assert voices.set_engines(wake_word=" 小新小新 ")["wake_word"] == "小新小新"
+
+
+@pytest.mark.parametrize("bad,msg", [("小新", "至少 4 个字"), ("小新，同学", "不带标点"), ("", "2–8"),
+                                     ("小新同学你好呀朋友们", "2–8")])
+def test_wake_word_validation(fakes, bad, msg):
+    with pytest.raises(voices.VoiceError, match=msg):
+        voices.set_engines(wake_word=bad)
+    assert voices.engines()["wake_word"] == "小新同学"
+
+
 def test_unknown_engine_in_settings_file_falls_back(fakes):
     store.update_settings(asr_engine="gone", tts_engine="gone")
     assert (voices.engines()["asr"], voices.engines()["tts"]) == ("doubao", "doubao")

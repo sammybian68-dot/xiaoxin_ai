@@ -71,6 +71,13 @@ button { cursor: pointer; }
   background: var(--accent); color: #062b16; font-weight: 600;
 }
 .free-talk.on { background: var(--danger); color: #fff; }
+.standby {
+  height: 38px; padding: 0 14px; border-radius: 19px; border: 1px solid var(--line); white-space: nowrap;
+  background: var(--raised); color: var(--muted); font-weight: 600;
+}
+.standby[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.standby[hidden] { display: none; }
+.wake-input { width: 150px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--text); padding: 0 10px; font: inherit; font-size: 15px; }
 .vad-end { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .vad-end input { width: 84px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--text); padding: 0 10px; font: inherit; font-size: 15px; }
 .talk-bar {

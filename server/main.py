@@ -744,7 +744,8 @@ def engine_settings() -> dict:
 @app.put("/api/engines")
 def engine_select(body: dict = Body(...)) -> dict:
     try:
-        voices.set_engines(asr=body.get("asr"), tts=body.get("tts"), vad_end_ms=body.get("vad_end_ms"))
+        voices.set_engines(asr=body.get("asr"), tts=body.get("tts"), vad_end_ms=body.get("vad_end_ms"),
+                           wake_word=body.get("wake_word"))
     except voices.VoiceError as e:
         raise HTTPException(400, str(e))
     return engine_settings()

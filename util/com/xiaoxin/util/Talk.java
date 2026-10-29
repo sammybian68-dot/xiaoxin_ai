@@ -80,6 +80,19 @@ public final class Talk {
         this.listener = listener;
     }
 
+    /**
+     * 待命唤醒后用：连上就把端侧认出的那句发过去（服务端去掉唤醒词直接回答，one-shot），再开音频接着聊。
+     * 连接和录音都在这里开，所以从听到唤醒词到问题送到服务端只差一次握手。
+     */
+    public void startWoken(String url, String key, String wakeText) throws IOException {
+        start(url, key);
+        try {
+            sendText(new JSONObject().put("type", "wake").put("text", wakeText).toString());
+        } catch (JSONException e) {
+            throw new IOException(e);
+        }
+    }
+
     /** 在后台线程调：连上服务端、开音频。url 形如 wss://host:8183/xiaoxin/api/talk?model=… */
     public void start(String url, String key) throws IOException {
         Map<String, String> headers = new HashMap<>();

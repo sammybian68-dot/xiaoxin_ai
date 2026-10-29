@@ -788,11 +788,57 @@ function talkSend(obj) {
   else if (talk.ws?.readyState === WebSocket.OPEN) talk.ws.send(s);
 }
 
-function hangUp() {
+// ---------------------------------------------------------------- 待命唤醒（只在 pad 的 APK 里有）
+// 原生用本机 Paraformer 一直听，认出唤醒词开头才连 /api/talk，并把那句发过去（one-shot：「小新同学现在几点」直接答）。
+// 唤醒后就是一通普通的自由对话，20 秒没动静自动挂断回待命。
+const standby = { on: false };
+
+function standbyUrl() {
+  const q = new URLSearchParams({ model: state.model });
+  if (state.conv) q.set("conversation", state.conv.id);
+  return new URL(`api/talk?${q}`, location.href).href;
+}
+
+async function setStandby(on) {
+  standby.on = on;
+  localSet("standby", on ? "1" : "");
+  $("standby").setAttribute("aria-pressed", String(on));
+  $("standby").textContent = on ? "👂 待命中" : "💤 待命";
+  let word = "小新同学";
+  try { word = (await api("api/engines").then(json)).wake_word; } catch (_) { /* 用默认 */ }
+  native.standby(on, word, standbyUrl());
+  if (on) toast(`说「${word}」就能叫我，比如「${word}，现在几点」`);
+}
+
+function onStandby(ev) {
+  switch (ev.state) {
+    case "loading": if (!talk.on) { $("talk-bar").hidden = false; talkStatus("加载本机识别…"); } break;
+    case "listening": if (!talk.on) { $("talk-bar").hidden = false; talkStatus(`待命中，说「${ev.wake_word}」叫我`); } break;
+    case "heard": break;  // 没唤醒的话不显示，免得屏幕上一直滚别人的话
+    case "woken":
+      // 原生已经在连了：网页这边切到「通话中」，事件照常从 xiaoxinTalkEvent 来
+      talk.on = true;
+      talkUi(true);
+      talkStatus("我在…");
+      break;
+    case "error": toast(ev.detail); break;
+    case "off": if (!talk.on) $("talk-bar").hidden = true; break;
+    default: break;
+  }
+}
+
+if (native?.standby) {
+  $("standby").hidden = false;
+  $("standby").addEventListener("click", () => setStandby(!standby.on));
+  if (localGet("standby")) setTimeout(() => setStandby(true), 800);  // 上次开着，打开 app 就接着待命
+}
+
+function hangUp(fromNative = false) {
   if (!talk.on) return;
   talk.on = false;
   talkUi(false);
-  if (native) native.stop();
+  if (native && !fromNative) native.stop();
+  if (standby.on) { $("talk-bar").hidden = false; talkStatus("待命中"); }
   try { talk.ws?.send(JSON.stringify({ type: "stop" })); } catch (_) { /* 已断 */ }
   talk.ws?.close();
   talk.rec?.stop().catch(() => {});
@@ -906,7 +952,10 @@ function onTalkEvent(ev) {
     case "error": toast(ev.detail); talkStatus(ev.detail); break;
     // 原生那边自己的状态
     case "native_level": drawTalkLevel(ev.level / 100); break;
-    case "native_closed": if (talk.on) { toast(ev.reason || "自由对话断开了"); hangUp(); } break;
+    case "native_closed":
+      if (talk.on) { toast(ev.reason || "自由对话断开了"); hangUp(true); }
+      break;
+    case "standby": onStandby(ev); break;
     default: break;
   }
 }
@@ -1159,6 +1208,7 @@ function renderEngines(e) {
     $(sel).value = cur;
   };
   $("set-vad-end").value = e.vad_end_ms;
+  if (document.activeElement !== $("set-wake")) $("set-wake").value = e.wake_word;
   [$("set-vad-end").min, $("set-vad-end").max] = e.vad_end_ms_range || [300, 2000];
   fill("set-asr", e.asr_options, e.asr, { paraformer: e.paraformer_ready });
   fill("set-tts", e.tts_options, e.tts, { cosyvoice: e.cosyvoice_ready });
@@ -1179,6 +1229,15 @@ async function setEngine(kind, value) {
     if (kind === "tts") loadVoices();
   } catch (err) { toast(err.message); loadEngines(); }
 }
+$("set-wake").addEventListener("change", async () => {
+  try {
+    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wake_word: $("set-wake").value.trim() }) }).then(json);
+    renderEngines(e);
+    toast(`唤醒词改成「${e.wake_word}」，pad 待命下次打开生效`);
+    native?.setWakeWord?.(e.wake_word);
+  } catch (err) { toast(err.message); loadEngines(); }
+});
 $("set-vad-end").addEventListener("change", async () => {
   try {
     const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },

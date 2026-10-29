@@ -8,3 +8,6 @@ __pycache__/
 logs/
 # 作业汇总里有班级、老师、其他孩子的名字和学号，照片和原件也在这，只留本机
 docs/worklog/
+
+# pad 端侧识别的库和模型，android/xiaoxin/fetch_asr.sh 下载
+android/xiaoxin/third_party/
