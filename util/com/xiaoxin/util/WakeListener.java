@@ -23,11 +23,6 @@ public final class WakeListener {
         void onError(String message);
     }
 
-    private static final String PUNCT = "，。！？、；：,.!?;: 　";
-    private static final String[] LEADS = {"", "嘿", "哎", "喂", "嗨"};
-    // 「小新」常被认成同音的「小心」，只在比对唤醒词时当成一回事。和服务端 talk._XIAOXIN_ALIASES 同一张表
-    private static final String[] XIAOXIN_ALIASES = {"小心", "小欣", "小鑫"};
-
     private final Context context;
     private final Listener listener;
     private final LocalAsr asr;
@@ -46,34 +41,6 @@ public final class WakeListener {
         wakeWords = words;
     }
 
-    /** 和服务端 talk.strip_wake_word 同一个判断：去掉标点空格后以（语气词 +）某个唤醒词开头，「小新」认成「小心」也算。 */
-    public static boolean startsWithWake(String text, String[] wakes) {
-        StringBuilder bare = new StringBuilder();
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (PUNCT.indexOf(c) < 0) {
-                bare.append(Character.toLowerCase(c));
-            }
-        }
-        String b = bare.toString();
-        for (String wake : wakes) {
-            java.util.List<String> forms = new java.util.ArrayList<>();
-            forms.add(wake);
-            if (wake.contains("小新")) {
-                for (String a : XIAOXIN_ALIASES) {
-                    forms.add(wake.replace("小新", a));
-                }
-            }
-            for (String form : forms) {
-                for (String lead : LEADS) {
-                    if (b.startsWith(lead + form)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
-    }
 
     public synchronized void start() {
         if (running) {
@@ -129,7 +96,7 @@ public final class WakeListener {
                     String text = asr.decode(pcm, pcm.length);
                     long ms = (System.nanoTime() - t0) / 1_000_000;
                     listener.onHeard(text, ms);
-                    if (!text.isEmpty() && startsWithWake(text, wakeWords)) {
+                    if (!text.isEmpty() && Keywords.startsWithAny(text, wakeWords)) {
                         running = false;  // 交给 Talk，先松开麦克风
                         listener.onWake(text);
                     }

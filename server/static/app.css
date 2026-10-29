@@ -77,6 +77,18 @@ button { cursor: pointer; }
 }
 .standby[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 .standby[hidden] { display: none; }
+.words { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
+.word { display: flex; align-items: center; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; }
+.word input { width: 128px; height: 38px; border: 0; background: transparent; color: var(--text); padding: 0 4px 0 12px; font: inherit; font-size: 15px; }
+.word input:focus { outline: none; }
+.word:focus-within { border-color: var(--accent); }
+.word-del { width: 32px; height: 38px; border: 0; background: none; color: var(--muted); cursor: pointer; }
+.word-del:hover { color: var(--danger); }
+.word-add { height: 40px; padding: 0 14px; border-radius: 10px; border: 1px dashed var(--line); background: none; color: var(--accent); cursor: pointer; font: inherit; }
+.tone-pick { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.tone { height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid var(--line); background: var(--raised); color: var(--text); cursor: pointer; font: inherit; font-size: 13px; white-space: nowrap; }
+.tone[aria-checked="true"] { border-color: var(--accent); color: var(--accent); }
+.word-del:focus-visible, .word-add:focus-visible, .tone:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .talk-countdown { color: #ffd48a; font-weight: 600; font-variant-numeric: tabular-nums; }
 .talk-countdown[hidden] { display: none; }
 .wake-input { width: 220px; max-width: 100%; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--text); padding: 0 10px; font: inherit; font-size: 15px; }

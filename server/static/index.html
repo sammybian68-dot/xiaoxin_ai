@@ -93,7 +93,9 @@
   </div>
   <div class="settings-body">
     <nav class="settings-nav" role="tablist" aria-label="设置分类">
-      <button type="button" role="tab" data-pane="general">通用</button>
+      <button type="button" role="tab" data-pane="general">对话</button>
+      <button type="button" role="tab" data-pane="talk">语音对话</button>
+      <button type="button" role="tab" data-pane="wake">唤醒</button>
       <button type="button" role="tab" data-pane="voice">音色</button>
       <button type="button" role="tab" data-pane="account">登录与设备</button>
     </nav>
@@ -118,9 +120,9 @@
       <p id="set-routing" class="voice-tip"></p>
     </section>
 
-    <section class="pane" role="tabpanel" data-pane="voice" hidden>
-      <h3>语音引擎</h3>
-      <p class="voice-tip">全家的设备一起生效，平板 APK 也按这里的来。本机引擎跑在 gpu2 的 A100 上。</p>
+    <section class="pane" role="tabpanel" data-pane="talk" hidden>
+      <h3>识别和朗读</h3>
+      <p class="voice-tip">全家的设备一起生效，pad 也按这里的来。本机引擎跑在 gpu2 的 A100 上。</p>
       <div class="row">
         <label for="set-asr"><b>识别（ASR）</b><small id="asr-desc"></small></label>
         <select id="set-asr"></select>
@@ -129,25 +131,34 @@
         <label for="set-tts"><b>朗读（TTS）</b><small id="tts-desc"></small></label>
         <select id="set-tts"></select>
       </div>
+      <h3>自由对话</h3>
       <div class="row">
-        <label for="set-wake"><b>唤醒词（pad 待命用）</b><small>pad 本机先听，认出这句开头才连云端，不唤醒不上传、不花钱。每个至少 4 个字，几个用逗号隔开</small></label>
-        <input id="set-wake" class="wake-input" type="text" maxlength="40" autocomplete="off" spellcheck="false">
+        <label for="set-vad-end"><b>停多久算说完</b><small>短了反应快，但说话中间停顿稍长就会被打断；长了更稳，回答慢一点。下一通电话生效</small></label>
+        <span class="vad-end"><input id="set-vad-end" type="number" min="300" max="2000" step="50" inputmode="numeric"><span>毫秒</span></span>
       </div>
       <div class="row">
-        <label for="set-exit"><b>退出词</b><small>唤醒后整句只说这个（不能多一个字）就退回待命，比如「退下」；「你先退下吧」不算</small></label>
-        <input id="set-exit" class="wake-input" type="text" maxlength="30" autocomplete="off" spellcheck="false">
-      </div>
-      <div class="row">
-        <label for="set-wake-idle"><b>唤醒后多久没说话回待命</b><small>小新说完才开始算，有人开口就重新算；最后 10 秒 pad 上倒计时</small></label>
+        <label for="set-wake-idle"><b>多久没说话自动挂断</b><small>小新说完才开始算，有人开口就重新算；最后 10 秒倒计时。唤醒的和手动开的都一样</small></label>
         <span class="vad-end"><input id="set-wake-idle" type="number" min="10" max="300" step="5" inputmode="numeric"><span>秒</span></span>
       </div>
       <div class="row">
-        <label for="set-vad-end"><b>自由对话：停多久算说完</b><small>短了反应快，但说话中间停顿稍长就会被打断；长了更稳，回答慢一点。下一通电话生效</small></label>
-        <span class="vad-end"><input id="set-vad-end" type="number" min="300" max="2000" step="50" inputmode="numeric"><span>毫秒</span></span>
+        <span><b>挂断提示音</b><small>每次挂断（退出词、超时、点挂断）都响一下，听到就知道要再叫才行。▶ 试听</small></span>
+        <span class="tone-pick" id="tone-pick" role="radiogroup" aria-label="挂断提示音"></span>
       </div>
+    </section>
 
+    <section class="pane" role="tabpanel" data-pane="wake" hidden>
+      <h3>唤醒词</h3>
+      <p class="voice-tip">pad 开着「待命」时，本机一直听，一句话以其中任意一个开头就叫醒小新，后面可以直接接问题（「小新同学，现在几点」）。没叫醒时不上传、不花钱。每个至少 4 个字。</p>
+      <div class="words" id="wake-list" data-kind="wake"></div>
+      <h3>退出词</h3>
+      <p class="voice-tip">通话中，一句话正好是其中任意一个（不能多一个字），就立刻挂断回待命，在 pad 本机判断，不等云端。「你先退下吧」这种不算。和唤醒词一样，「小新」被认成「小心」也算。</p>
+      <div class="words" id="exit-list" data-kind="exit"></div>
+      <p id="words-msg" class="voice-msg" role="status"></p>
+    </section>
+
+    <section class="pane" role="tabpanel" data-pane="voice" hidden>
       <h3>小新用哪个声音</h3>
-      <p class="voice-tip">点哪个音色，上面的朗读引擎就跟着切过去。CosyVoice 用内置男声，或者下面自己录的声音；豆包有一整排云端音色。▶ 是试听。</p>
+      <p class="voice-tip">点哪个音色，「语音对话」里的朗读引擎就跟着切过去。CosyVoice 用内置男声，或者下面自己录的声音；豆包有一整排云端音色。▶ 是试听。</p>
       <div id="voice-current" class="voice-current" role="status"></div>
       <div id="voice-groups"></div>
       <details class="add-voice">

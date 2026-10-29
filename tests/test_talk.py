@@ -299,10 +299,10 @@ def test_is_exit_exact(text, ok):
 
 
 def test_exit_word_ends_talk_without_llm(call, fakes):
-    fakes.doubao_text = "退下吧。"
+    fakes.doubao_text = "小新退下。"
     c = call()
     c.send_pcm(said())
-    assert c.until("exit")["text"] == "退下吧。"
+    assert c.until("exit")["text"] == "小新退下。"
     c.until("bye")
     assert "llm" not in fakes.names()
     assert ("doubao.bidir.append", "好的，有事再叫我。") in fakes.calls
@@ -311,7 +311,7 @@ def test_exit_word_ends_talk_without_llm(call, fakes):
 
 
 def test_exit_word_inside_sentence_is_a_normal_question(call, fakes):
-    fakes.doubao_text = "你先退下吧"
+    fakes.doubao_text = "小新退下吧"
     c = call()
     c.send_pcm(said())
     c.until("idle")
@@ -322,7 +322,7 @@ def test_wake_then_exit(call, fakes):
     c = call()
     c.ws.send_text(json.dumps({"type": "wake", "text": "你好小新"}))
     c.until("idle")
-    fakes.doubao_text = "退下"
+    fakes.doubao_text = "小心退下"  # 「小新」认成「小心」也算
     c.send_pcm(said())
     c.until("bye")
 

@@ -804,10 +804,21 @@ async function setStandby(on) {
   localSet("standby", on ? "1" : "");
   $("standby").setAttribute("aria-pressed", String(on));
   $("standby").textContent = on ? "👂 待命中" : "💤 待命";
-  let words = ["小新同学", "你好小新"], idleS = 30;
-  try { ({ wake_words: words, wake_idle_s: idleS } = await api("api/engines").then(json)); } catch (_) { /* 用默认 */ }
-  native.standby(on, words.join(","), standbyUrl(), idleS);
-  if (on) toast(`说「${words.join("」或「")}」就能叫我，比如「${words[0]}，现在几点」`);
+  const e = await loadVoiceSettings();
+  native.standby(on, e.wake_words.join(","), e.exit_words.join(","), standbyUrl(), e.wake_idle_s, e.vad_end_ms, e.hangup_tone);
+  if (on) toast(`说「${e.wake_words.join("」或「")}」就能叫我，比如「${e.wake_words[0]}，现在几点」`);
+}
+
+// 语音相关设置（唤醒词、退出词、超时、提示音…）：读一次缓存起来，改了就推给 pad 原生，立刻生效
+let voiceSettings = null;
+async function loadVoiceSettings() {
+  try { voiceSettings = await api("api/engines").then(json); }
+  catch (_) { voiceSettings = voiceSettings || { wake_words: ["小新同学", "你好小新"], exit_words: ["小新退下", "没事了小新"], wake_idle_s: 30, vad_end_ms: 800, hangup_tone: "down" }; }
+  return voiceSettings;
+}
+function pushVoiceSettings(e) {
+  voiceSettings = e;
+  native?.setWords?.(e.wake_words.join(","), e.exit_words.join(","), e.wake_idle_s, e.vad_end_ms, e.hangup_tone);
 }
 
 function onStandby(ev) {
@@ -843,6 +854,7 @@ function showCountdown(left) {
 
 function hangUp(fromNative = false) {
   showCountdown(-1);
+  if (!fromNative && talk.on && !native) playTone(voiceSettings?.hangup_tone || "down");
   if (!talk.on) return;
   talk.on = false;
   talkUi(false);
@@ -981,7 +993,7 @@ const vrec = { rec: null, blob: null, levels: [], timer: null };
 
 // ---------------------------------------------------------------- 设置
 
-const PANES = ["general", "voice", "account"];
+const PANES = ["general", "talk", "wake", "voice", "account"];
 
 function openSettings(pane = "general") {
   closeSide();
@@ -1001,6 +1013,7 @@ function openSettings(pane = "general") {
 function showPane(name) {
   for (const b of document.querySelectorAll(".settings-nav button")) b.setAttribute("aria-selected", String(b.dataset.pane === name));
   for (const p of document.querySelectorAll(".pane")) p.hidden = p.dataset.pane !== name;
+  if (name === "talk" || name === "wake") loadEngines();
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
     loadEngines();
@@ -1212,6 +1225,111 @@ async function loadVoices() {
   try { renderVoices(await api("api/voices").then(json)); } catch (err) { toast(err.message); }
 }
 
+// ---------------------------------------------------------------- 唤醒词 / 退出词：一行一个，＋ 添加，命中任意一个就算
+
+const WORD_KIND = { "wake-list": { key: "wake_words", name: "唤醒词", hint: "比如：小新同学" },
+                    "exit-list": { key: "exit_words", name: "退出词", hint: "比如：小新退下" } };
+
+function renderWords(id, words) {
+  const box = $(id);
+  if (!box || box.contains(document.activeElement)) return;  // 正在输入就别刷掉
+  const k = WORD_KIND[id];
+  box.innerHTML = "";
+  (words || []).forEach((w, i) => box.appendChild(wordRow(id, w, i, words.length)));
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "word-add";
+  add.textContent = `＋ 添加${k.name}`;
+  add.addEventListener("click", () => {
+    const row = wordRow(id, "", box.querySelectorAll(".word").length, 99);
+    box.insertBefore(row, add);
+    row.querySelector("input").focus();
+  });
+  box.appendChild(add);
+}
+
+function wordRow(id, word, i, total) {
+  const k = WORD_KIND[id];
+  const row = document.createElement("div");
+  row.className = "word";
+  row.innerHTML = `<input type="text" maxlength="8" autocomplete="off" spellcheck="false" aria-label="${k.name} ${i + 1}" placeholder="${k.hint}">`
+    + `<button type="button" class="word-del" aria-label="删掉这个${k.name}">✕</button>`;
+  const input = row.querySelector("input");
+  input.value = word;
+  input.addEventListener("change", () => saveWords(id));
+  input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); input.blur(); } });
+  row.querySelector(".word-del").addEventListener("click", () => {
+    if ($(id).querySelectorAll(".word").length <= 1) { $("words-msg").textContent = `至少留一个${k.name}`; return; }
+    row.remove();
+    saveWords(id);
+  });
+  return row;
+}
+
+async function saveWords(id) {
+  const k = WORD_KIND[id];
+  const words = [...$(id).querySelectorAll(".word input")].map((x) => x.value.trim()).filter(Boolean);
+  if (!words.length) return;
+  try {
+    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [k.key]: words }) }).then(json);
+    $("words-msg").textContent = `${k.name}：${e[k.key].join("、")}`;
+    pushVoiceSettings(e);
+    document.activeElement?.blur?.();
+    renderWords(id, e[k.key]);
+  } catch (err) { $("words-msg").textContent = err.message; }
+}
+
+// 挂断提示音：和 pad 原生（Earcon.java）同一组参数，[起始 Hz, 结束 Hz, 秒, 之后停顿秒]
+const TONES = {
+  down: [[659.25, 659.25, 0.14, 0.03], [440, 440, 0.20, 0]],
+  drop: [[1200, 500, 0.18, 0]],
+  soft: [[440, 440, 0.12, 0]],
+  chime: [[783.99, 783.99, 0.11, 0.02], [659.25, 659.25, 0.11, 0.02], [523.25, 523.25, 0.22, 0]],
+  none: [],
+};
+function playTone(id) {
+  if (native?.playTone) { native.playTone(id); return; }
+  const ctx = getAudioCtx();
+  let t = ctx.currentTime + 0.02;
+  for (const [f0, f1, dur, gap] of TONES[id] || TONES.down) {
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.frequency.setValueAtTime(f0, t);
+    osc.frequency.linearRampToValueAtTime(f1, t + dur);
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.3, t + 0.012);
+    gain.gain.linearRampToValueAtTime(0, t + dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur);
+    t += dur + gap;
+  }
+}
+
+function renderTones(e) {
+  const box = $("tone-pick");
+  if (!box) return;
+  box.innerHTML = "";
+  for (const tone of e.hangup_tones || []) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tone";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(tone.id === e.hangup_tone));
+    b.textContent = (tone.id === "none" ? "" : "▶ ") + tone.name;
+    b.addEventListener("click", async () => {
+      playTone(tone.id);
+      try {
+        const n = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hangup_tone: tone.id }) }).then(json);
+        pushVoiceSettings(n);
+        renderTones(n);
+      } catch (err) { toast(err.message); }
+    });
+    box.appendChild(b);
+  }
+}
+
 // ---------------------------------------------------------------- 语音引擎
 
 function renderEngines(e) {
@@ -1220,8 +1338,9 @@ function renderEngines(e) {
     $(sel).value = cur;
   };
   $("set-vad-end").value = e.vad_end_ms;
-  if (document.activeElement !== $("set-wake")) $("set-wake").value = (e.wake_words || [e.wake_word]).join("，");
-  if (document.activeElement !== $("set-exit")) $("set-exit").value = (e.exit_words || []).join("，");
+  renderWords("wake-list", e.wake_words);
+  renderWords("exit-list", e.exit_words);
+  renderTones(e);
   $("set-wake-idle").value = e.wake_idle_s;
   [$("set-wake-idle").min, $("set-wake-idle").max] = e.wake_idle_s_range || [10, 300];
   [$("set-vad-end").min, $("set-vad-end").max] = e.vad_end_ms_range || [300, 2000];
@@ -1244,30 +1363,13 @@ async function setEngine(kind, value) {
     if (kind === "tts") loadVoices();
   } catch (err) { toast(err.message); loadEngines(); }
 }
-$("set-wake").addEventListener("change", async () => {
-  try {
-    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ wake_words: $("set-wake").value.trim() }) }).then(json);
-    renderEngines(e);
-    toast(`唤醒词：${e.wake_words.join("、")}`);
-    native?.setWakeWord?.(e.wake_words.join(","));
-  } catch (err) { toast(err.message); loadEngines(); }
-});
-$("set-exit").addEventListener("change", async () => {
-  try {
-    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ exit_words: $("set-exit").value.trim() }) }).then(json);
-    renderEngines(e);
-    toast(`退出词：${e.exit_words.join("、")}（整句只说这个才退出）`);
-  } catch (err) { toast(err.message); loadEngines(); }
-});
 $("set-wake-idle").addEventListener("change", async () => {
   try {
     const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ wake_idle_s: Number($("set-wake-idle").value) }) }).then(json);
     renderEngines(e);
-    native?.setWakeIdle?.(e.wake_idle_s);
-    toast(`唤醒后 ${e.wake_idle_s} 秒没说话就回去待命`);
+    pushVoiceSettings(e);
+    toast(`${e.wake_idle_s} 秒没说话就挂断`);
   } catch (err) { toast(err.message); loadEngines(); }
 });
 $("set-vad-end").addEventListener("change", async () => {
@@ -1275,6 +1377,7 @@ $("set-vad-end").addEventListener("change", async () => {
     const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ vad_end_ms: Number($("set-vad-end").value) }) }).then(json);
     renderEngines(e);
+    pushVoiceSettings(e);
     toast(`停 ${e.vad_end_ms} 毫秒算说完，下一通电话起生效`);
   } catch (err) { toast(err.message); loadEngines(); }
 });

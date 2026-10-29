@@ -37,7 +37,6 @@ public final class Talk {
     }
 
     public static final int PLAY_RATE = 24000;
-    private static final int CALL_VOLUME_FLOOR = 8;  // 通话音量默认偏小（实测 5/15），开始时至少调到这么大
 
     private final Context context;
     private final Listener listener;
@@ -47,7 +46,6 @@ public final class Talk {
     private WebSocket ws;
     private volatile boolean running;
     private int oldMode = AudioManager.MODE_NORMAL;
-    private int oldVolume = -1;
     private volatile boolean firstAudio;
 
     /**
@@ -149,12 +147,7 @@ public final class Talk {
                 break;
             }
         }
-        int vol = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL);
-        int max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL);
-        if (vol < CALL_VOLUME_FLOOR) {
-            oldVolume = vol;
-            am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, Math.min(CALL_VOLUME_FLOOR, max), 0);
-        }
+        // 音量用用户自己调的（通话音量，pad 侧边键在通话中调的就是它），不替用户改
 
         track = new AudioTrack.Builder()
                 .setAudioAttributes(new AudioAttributes.Builder()
@@ -180,6 +173,28 @@ public final class Talk {
         up.start();
     }
 
+    /**
+     * 通话中本机也听退出词：麦克风这一路一边上传，一边过本机断句 + Paraformer，整句是退出词就回调 onExit，
+     * 不等云端（云端识别要 0.5–0.8 秒，还可能认成别的字）。和待命听唤醒词是同一个模型、同一套比对（Keywords）。
+     */
+    public void watchExit(LocalAsr asr, String[] exitWords, int endMs, Runnable onExit) {
+        this.exitAsr = asr;
+        this.exitWords = exitWords;
+        this.onExit = onExit;
+        this.exitVad = new Vad(endMs);
+    }
+
+    private volatile LocalAsr exitAsr;
+    private volatile String[] exitWords = new String[0];
+    private volatile Runnable onExit;
+    private Vad exitVad;
+    private final java.util.concurrent.ExecutorService exitPool =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "talk-exit-asr");
+                t.setDaemon(true);
+                return t;
+            });
+
     private void uplink() {
         byte[] frame = new byte[Pcm.FRAME_BYTES];  // 100 ms
         while (running) {
@@ -189,6 +204,19 @@ public final class Talk {
             }
             Pcm.Level level = Pcm.level(frame, n);
             listener.onLevel(Math.min(100, level.rms * 100 / 3000));
+            Vad v = exitVad;
+            if (v != null && exitAsr != null) {
+                v.feed(frame, n, pcm -> exitPool.execute(() -> {
+                    // 退出词都很短：超过 3 秒的句子不可能是，省得每句话都识别一遍
+                    if (pcm.length > Pcm.SAMPLE_RATE * 2 * 3 || !running) {
+                        return;
+                    }
+                    String text = exitAsr.decode(pcm, pcm.length);
+                    if (Keywords.equalsAny(text, exitWords) && running && onExit != null) {
+                        onExit.run();
+                    }
+                }));
+            }
             try {
                 ws.sendBinary(frame, n);
             } catch (IOException e) {
@@ -219,6 +247,31 @@ public final class Talk {
         }
     }
 
+    /**
+     * 立刻、同步地闭麦和静音：这一行返回时麦克风已经不往上送、喇叭已经不出声，排队的音频全丢。
+     * 「退出」和「不拾音」必须同一刻发生，不然会出现「看着退了还在听」「还在念半句」的怪感觉。连接留给 stop() 慢慢关。
+     */
+    public void stopNow() {
+        running = false;
+        AudioTrack t = track;
+        if (t != null) {
+            try {
+                t.pause();
+                t.flush();
+            } catch (IllegalStateException ignored) {
+                // 已经停了
+            }
+        }
+        AudioRecord r = rec;
+        if (r != null) {
+            try {
+                r.stop();
+            } catch (IllegalStateException ignored) {
+                // 已经停了
+            }
+        }
+    }
+
     public void stop() {
         WebSocket w = ws;
         if (w != null) {
@@ -235,10 +288,11 @@ public final class Talk {
     }
 
     private synchronized void stopAudio() {
-        if (!running && rec == null) {
+        if (rec == null && track == null) {
             return;
         }
         running = false;
+        exitPool.shutdownNow();
         if (rec != null) {
             try {
                 rec.stop();
@@ -255,10 +309,6 @@ public final class Talk {
             track = null;
         }
         if (am != null) {
-            if (oldVolume >= 0) {
-                am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, oldVolume, 0);
-                oldVolume = -1;
-            }
             am.clearCommunicationDevice();
             am.setMode(oldMode);
         }

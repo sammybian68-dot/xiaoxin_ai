@@ -33,6 +33,9 @@ TTS_ENGINES = [
     ("doubao", "豆包", "云端，音色多"),
     ("cosyvoice", "CosyVoice", "gpu2 本机 CosyVoice3，内置男声或自己录的声音"),
 ]
+# 挂断提示音：网页（app.js 的 TONES）和 pad（Earcon.java）各自现场合成，这里只记选了哪个
+HANGUP_TONES = [("down", "下行两声"), ("drop", "水滴"), ("soft", "轻敲"), ("chime", "三音下行"), ("none", "不响")]
+TONE_IDS = {t[0] for t in HANGUP_TONES}
 ASR_IDS = {e[0] for e in ASR_ENGINES}
 TTS_IDS = {e[0] for e in TTS_ENGINES}
 
@@ -73,9 +76,11 @@ BUILTIN = "cosyvoice:male"
 # 所以比对时把「小心」也当「小新」（只在唤醒词里替换，见 talk.wake_forms）。
 WAKE_WORDS = ["小新同学", "你好小新"]
 WAKE_WORD = WAKE_WORDS[0]
-# 退出词：唤醒状态下整句（去掉标点）正好是其中一个才退回待命，「你先退下吧」「我要退下来了」都不算。
-# 端侧小模型和 Paraformer 偶尔把童声的「退下」认成「退一下 / 推一下」，豆包都对；退出词在服务端判，用的是云端识别。
-EXIT_WORDS = ["退下", "退下吧"]
+# 退出词：唤醒后 pad 端侧和唤醒词同一套判断（本机 Paraformer、「小心」当「小新」），但要整句正好是它才退，
+# 「你先退下吧」不算。端侧判、立刻挂断回待命，不等云端。服务端也用同样的规则再兜一次（浏览器里用的时候）。
+# 2026-10-30 端侧 4 种声音实测：小新退下 / 没事了小新 / 小新再见 / 小新拜拜 都 4/4；「退下」「退下吧」只有 2/4
+# （认成 对的 / 推下 / 退一下吧 / 多一下吧），所以默认用带「小新」的。
+EXIT_WORDS = ["小新退下", "没事了小新"]
 WAKE_IDLE_S = 30  # 唤醒后这么久没人说话（小新也不在说）就挂断回待命；设置里可调。最后 10 秒 pad 上倒计时
 WAKE_IDLE_RANGE = (10, 300)
 PREVIEW = "你好，我是小新。今天的作业写完了吗？有不会的题可以来问我。"
@@ -107,6 +112,8 @@ def engines() -> dict:
     exits = s.get("exit_words") if isinstance(s.get("exit_words"), list) and s.get("exit_words") else list(EXIT_WORDS)
     return {"asr": asr, "tts": tts, "vad_end_ms": end_ms, "vad_end_ms_range": list(vad.END_MS_RANGE),
             "wake_words": words, "wake_word": words[0], "exit_words": exits,
+            "hangup_tone": s.get("hangup_tone") if s.get("hangup_tone") in TONE_IDS else "down",
+            "hangup_tones": [{"id": i, "name": n} for i, n in HANGUP_TONES],
             "wake_idle_s": s.get("wake_idle_s") if isinstance(s.get("wake_idle_s"), int) else WAKE_IDLE_S,
             "wake_idle_s_range": list(WAKE_IDLE_RANGE),
             "asr_options": [{"id": i, "name": n, "desc": d} for i, n, d in ASR_ENGINES],
@@ -126,10 +133,8 @@ def _split_words(value) -> list[str]:
 
 
 def check_wake_word(word) -> str:
-    """一个唤醒词：4–8 个字（可以夹字母数字），不能有标点空格。pad 端侧识别出来没有标点，比对时也不看标点。"""
-    word = str(word or "").strip()
-    if not 2 <= len(word) <= 8 or not all(c.isalnum() for c in word):
-        raise VoiceError("唤醒词每个 2–8 个字，不带标点和空格，比如：小新同学")
+    """唤醒词比退出词多一条：至少 4 个字。唤醒词是开头匹配，短了一句话里随便带到就会误唤醒。"""
+    word = _check_word(word, "唤醒词")
     if len(word) < 4:
         raise VoiceError("唤醒词至少 4 个字：两个字的（比如「小新」）容易认成「小心」「小谢」，也容易误唤醒")
     return word
@@ -137,19 +142,26 @@ def check_wake_word(word) -> str:
 
 def check_wake_words(value) -> list[str]:
     words = [check_wake_word(w) for w in _split_words(value)]
-    if not 1 <= len(words) <= 4:
-        raise VoiceError("唤醒词 1–4 个，用逗号隔开")
+    if not 1 <= len(words) <= MAX_WORDS:
+        raise VoiceError(f"唤醒词 1–{MAX_WORDS} 个")
     return words
 
 
+MAX_WORDS = 8  # 唤醒词、退出词各最多几个
+
+
+def _check_word(word, what: str) -> str:
+    """唤醒词、退出词同一个规则：2–8 个字，不带标点空格。两个字的给出提醒但允许（用户自己的选择）。"""
+    word = str(word or "").strip()
+    if not 2 <= len(word) <= 8 or not all(c.isalnum() for c in word):
+        raise VoiceError(f"{what}每个 2–8 个字，不带标点和空格")
+    return word
+
+
 def check_exit_words(value) -> list[str]:
-    """退出词：2–6 个字，整句精确匹配才算，所以短一点没关系；1–4 个。"""
-    words = _split_words(value)
-    if not 1 <= len(words) <= 4:
-        raise VoiceError("退出词 1–4 个，用逗号隔开")
-    for w in words:
-        if not 2 <= len(w) <= 6 or not all(c.isalnum() for c in w):
-            raise VoiceError("退出词每个 2–6 个字，不带标点，比如：退下")
+    words = [_check_word(w, "退出词") for w in _split_words(value)]
+    if not 1 <= len(words) <= MAX_WORDS:
+        raise VoiceError(f"退出词 1–{MAX_WORDS} 个")
     return words
 
 
@@ -164,8 +176,12 @@ def _int_in(value, lo: int, hi: int, what: str) -> int:
 
 
 def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None, wake_word=None,
-                wake_idle_s=None, wake_words=None, exit_words=None) -> dict:
+                wake_idle_s=None, wake_words=None, exit_words=None, hangup_tone=None) -> dict:
     fields = {}
+    if hangup_tone is not None:
+        if hangup_tone not in TONE_IDS:
+            raise VoiceError(f"没有这个提示音：{hangup_tone}")
+        fields["hangup_tone"] = hangup_tone
     if wake_words is not None or wake_word is not None:
         fields["wake_words"] = check_wake_words(wake_words if wake_words is not None else wake_word)
     if exit_words is not None:

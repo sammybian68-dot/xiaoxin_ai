@@ -66,8 +66,8 @@ def test_old_single_wake_word_setting_still_read(fakes):
     assert voices.engines()["wake_words"] == ["小新小新"]
 
 
-@pytest.mark.parametrize("bad,msg", [("小新", "至少 4 个字"), ("小新同学，小新", "至少 4 个字"), ("", "1–4"),
-                                     ("小新同学你好呀朋友们", "2–8"), ("一二三四,五六七八,甲乙丙丁,子丑寅卯,东南西北", "1–4")])
+@pytest.mark.parametrize("bad,msg", [("小新", "至少 4 个字"), ("小新同学，小新", "至少 4 个字"), ("", "1–8"),
+                                     ("小新同学你好呀朋友们", "2–8"), (",".join(["小新同学" + str(i) for i in range(9)]), "1–8")])
 def test_wake_words_validation(fakes, bad, msg):
     with pytest.raises(voices.VoiceError, match=msg):
         voices.set_engines(wake_words=bad)
@@ -75,10 +75,23 @@ def test_wake_words_validation(fakes, bad, msg):
 
 
 def test_exit_words_default_and_change(fakes):
-    assert voices.engines()["exit_words"] == ["退下", "退下吧"]
-    assert voices.set_engines(exit_words="再见小新, 拜拜")["exit_words"] == ["再见小新", "拜拜"]
+    assert voices.engines()["exit_words"] == ["小新退下", "没事了小新"]
+    assert voices.set_engines(exit_words=["小新再见", "退下吧"])["exit_words"] == ["小新再见", "退下吧"]
     with pytest.raises(voices.VoiceError):
         voices.set_engines(exit_words="退")
+
+
+def test_words_accept_list_from_ui(fakes):
+    """设置页是一行一个、＋ 添加，传过来是列表。"""
+    assert voices.set_engines(wake_words=["小新同学", "你好小新", "小新小新"])["wake_words"] == ["小新同学", "你好小新", "小新小新"]
+
+
+def test_hangup_tone_default_and_change(fakes):
+    e = voices.engines()
+    assert e["hangup_tone"] == "down" and {t["id"] for t in e["hangup_tones"]} >= {"down", "drop", "none"}
+    assert voices.set_engines(hangup_tone="chime")["hangup_tone"] == "chime"
+    with pytest.raises(voices.VoiceError):
+        voices.set_engines(hangup_tone="boom")
 
 
 def test_wake_idle_default_30_and_adjustable(fakes):

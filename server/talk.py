@@ -96,9 +96,10 @@ def strip_wake_word(text: str, wakes) -> str:
 
 
 def is_exit(text: str, exits) -> bool:
-    """整句（去掉标点空格）正好是某个退出词。「你先退下吧」「我要退下来了」都不算。"""
+    """整句（去掉标点空格）正好是某个退出词，「小新」认成「小心」也算（和唤醒词同一套）。「你先退下吧」不算。
+    pad 上是 Keywords.equalsAny 在本机先判；这里给浏览器和本机没判到的兜底。"""
     bare = _bare(text)
-    return bool(bare) and bare in {_bare(e) for e in exits}
+    return bool(bare) and any(bare == _bare(f) for e in exits for f in wake_forms(e))
 
 
 class Talk:
