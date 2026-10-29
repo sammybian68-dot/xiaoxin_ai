@@ -6,16 +6,27 @@ Triton 只在 gpu2 本机：gRPC 127.0.0.1:18001，HTTP 健康检查 127.0.0.1:1
 
 服务端按 reference_text 缓存参考音频的特征，同一个人的参考文字不变，第二次起就不再重新提取。
 所以 reference_text 必须和这段参考音频一一对应：换了参考音频就得换文字，不然会用到旧的缓存。
+两段录音认出来的参考文字一模一样时，后一段会用到前一段的声音，这是 Triton 那边的缓存键决定的。
+
+2026-10-29 在 gpu2 实测（参考段 8 秒）：热的时候首块 0.4 秒，34 个字合成 11.6 秒音频用 1.9 秒。
+
+偶尔停不下来：大约每 10–16 次有一次，话念完以后一直出静音，直到 30 秒。原因在 Triton 版的 model.py：
+LLM 固定 max_tokens=750（25 token/s 正好 30 秒），用普通 top-k/top-p 采样。官方 cosyvoice/llm/llm.py
+是按字数算 max_len（字数 × 20），用 RAS 采样跳出重复，Triton 版这两样都没有，EOS 偶尔出不来。
+那个服务是 carHer2 的，这里不改它，只在客户端兜底：说过话以后连着静音 1 秒就停、取消请求，
+静音不往外发；另外按字数设时长上限。
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import queue
+import threading
 import time
 import uuid
 import wave
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 GRPC_URL = os.environ.get("COSYVOICE_GRPC_URL", "127.0.0.1:18001")
@@ -49,8 +60,62 @@ def load_reference(path: str | Path):
     return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
 
-def stream(text: str, reference, reference_text: str, *, timeout: float = 60) -> Iterator[bytes]:
-    """逐块 yield 24 kHz s16le PCM。reference 是 load_reference() 的结果。"""
+SILENCE_LEVEL = 300   # s16 绝对值低于这个算静音（正常说话段的逐秒 RMS 在 1500–3000）
+SILENCE_STOP_S = 1.0  # 说过话以后连着静音这么久就停
+
+
+def max_seconds(text: str) -> float:
+    """一段话最多念多久。正常大约每字 0.35 秒，给到 0.6 秒再加 3 秒余量。"""
+    return 3 + 0.6 * len(text)
+
+
+def trim_runaway(chunks: Iterable, max_samples: int) -> Iterator[bytes]:
+    """把 Triton 吐出的 float32 波形块变成 s16le PCM，顺带处理跑飞：
+
+    - 静音先压着，后面又出声了再一起放出去；开头那块（约 0.4 秒）基本是静音，也压着，第一句出声时一起发
+    - 说过话以后连着静音 SILENCE_STOP_S 秒就当念完了，后面的不要
+    - 总长到 max_samples 就截断
+    调用方停止迭代时要关掉 chunks，让上游取消请求。
+    """
+    import numpy as np
+
+    sent = 0
+    held, spoken = bytearray(), False
+    for audio in chunks:
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)[:max(0, max_samples - sent)]
+        sent += audio.size
+        pcm = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+        loud = np.abs(pcm) > SILENCE_LEVEL
+        if loud.any():
+            last = int(np.nonzero(loud)[0][-1]) + 1
+            out = bytes(held) + pcm[:last].tobytes()
+            held = bytearray(pcm[last:].tobytes())
+            spoken = True
+            yield out
+        elif pcm.size:
+            held += pcm.tobytes()
+            if spoken and len(held) >= SILENCE_STOP_S * SAMPLE_RATE * 2:
+                return
+        if sent >= max_samples:
+            return
+
+
+def stream(text: str, reference, reference_text: str, *, timeout: float = 60,
+           stop: threading.Event | None = None) -> Iterator[bytes]:
+    """逐块 yield 24 kHz s16le PCM。reference 是 load_reference() 的结果。
+
+    stop 置位就不再往外给；超过 max_seconds(text) 或念完后一直静音就截断。这几种情况都会让 Triton 取消这个请求。
+    """
+    chunks = _triton_chunks(text, reference, reference_text, timeout=timeout, stop=stop)
+    try:
+        yield from trim_runaway(chunks, int(max_seconds(text) * SAMPLE_RATE))
+    finally:
+        chunks.close()
+
+
+def _triton_chunks(text: str, reference, reference_text: str, *, timeout: float,
+                   stop: threading.Event | None) -> Iterator:
+    """gRPC 流式请求，逐块 yield float32 波形。没收到 final 就被关掉时取消请求。"""
     import numpy as np
     import tritonclient.grpc as grpcclient
     from tritonclient.utils import InferenceServerException, np_to_triton_dtype
@@ -68,6 +133,7 @@ def stream(text: str, reference, reference_text: str, *, timeout: float = 60) ->
     inputs[2].set_data_from_numpy(np.array([reference_text], dtype=object).reshape(1, 1))
     inputs[3].set_data_from_numpy(np.array([text], dtype=object).reshape(1, 1))
 
+    finished = False
     q: queue.Queue = queue.Queue()
     client = grpcclient.InferenceServerClient(url=GRPC_URL, verbose=False)
     client.start_stream(callback=lambda result, error: q.put(error or result))
@@ -75,7 +141,7 @@ def stream(text: str, reference, reference_text: str, *, timeout: float = 60) ->
         client.async_stream_infer(MODEL, inputs, request_id=uuid.uuid4().hex,
                                   outputs=[grpcclient.InferRequestedOutput("waveform")],
                                   enable_empty_final_response=True)
-        while True:
+        while not (stop and stop.is_set()):
             try:
                 item = q.get(timeout=timeout)
             except queue.Empty:
@@ -83,16 +149,15 @@ def stream(text: str, reference, reference_text: str, *, timeout: float = 60) ->
             if isinstance(item, InferenceServerException):
                 raise CosyVoiceError(str(item))
             if item.get_response().parameters["triton_final_response"].bool_param:
+                finished = True
                 return
-            audio = item.as_numpy("waveform").reshape(-1)
-            if audio.size:
-                yield (audio * 32767).clip(-32768, 32767).astype(np.int16).tobytes()
+            yield item.as_numpy("waveform")
     finally:
-        client.stop_stream()
+        client.stop_stream(cancel_requests=not finished)
         client.close()
 
 
-def tts(text: str, reference, reference_text: str) -> tuple[bytes, float, float]:
+def tts(text: str, reference, reference_text: str, *, retry: bool = True) -> tuple[bytes, float, float]:
     """整段合成。返回 (PCM, 首块秒数, 总秒数)。"""
     t0 = time.monotonic()
     first = None
@@ -102,5 +167,71 @@ def tts(text: str, reference, reference_text: str) -> tuple[bytes, float, float]
             first = time.monotonic() - t0
         parts.append(chunk)
     if not parts:
+        # 偶发（25 次里见过 1 次），整段只出了静音；重来一次通常就好
+        if retry:
+            return tts(text, reference, reference_text, retry=False)
         raise CosyVoiceError("CosyVoice 没出声")
     return b"".join(parts), first, time.monotonic() - t0
+
+
+class CosyVoiceSession:
+    """和 doubao_bidir.BidirSession 一样的用法，给一轮回答的流式朗读用：
+    await open() → append(text)… → finish()；PCM 每到一块就调 on_pcm(bytes)，念完调 on_end(错误或 "")。
+
+    CosyVoice 没有一条连接念多句的接口，这里按句排队，一句一个 gRPC 流，前一句念完再合成下一句。
+    合成比实时快 5 倍左右，前一句还在播的时候下一句就出来了。
+    """
+
+    def __init__(self, reference, reference_text: str, on_pcm: Callable[[bytes], None],
+                 on_end: Callable[[str], None]):
+        self.reference, self.reference_text = reference, reference_text
+        self.on_pcm, self.on_end = on_pcm, on_end
+        self.done = False
+        self._stop = threading.Event()
+        self._q: asyncio.Queue | None = None
+        self._task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    async def open(self) -> None:
+        if not await asyncio.to_thread(ready):
+            raise CosyVoiceError("CosyVoice 没起来（gpu2 Triton 18100）")
+        self._loop = asyncio.get_running_loop()
+        self._q = asyncio.Queue()
+        self._task = asyncio.create_task(self._run())
+
+    async def append(self, text: str) -> None:
+        if not self.done and text.strip():
+            self._q.put_nowait(text)
+
+    async def finish(self) -> None:
+        if not self.done:
+            self._q.put_nowait(None)
+
+    async def cancel(self) -> None:
+        if self.done:
+            return
+        self.done = True  # 先置位，_run 收尾时就不再回调 on_end，和 BidirSession 一致
+        self._stop.set()
+        if self._task:
+            self._task.cancel()
+
+    def _synth(self, text: str) -> None:
+        for chunk in stream(text, self.reference, self.reference_text, stop=self._stop):
+            self._loop.call_soon_threadsafe(self.on_pcm, chunk)
+
+    async def _run(self) -> None:
+        err = ""
+        try:
+            while not self._stop.is_set():
+                text = await self._q.get()
+                if text is None:
+                    break
+                await asyncio.to_thread(self._synth, text)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # CosyVoiceError 或 gRPC 断开
+            err = f"CosyVoice 失败：{e}"[:200]
+        finally:
+            if not self.done:
+                self.done = True
+                self.on_end(err)

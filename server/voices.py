@@ -1,15 +1,36 @@
-"""小新的音色：豆包官方音色 + 自己加的豆包音色 ID + 自己录的克隆音色。
+"""小新的引擎和音色：ASR 豆包 / Paraformer，TTS 豆包 / CosyVoice。
 
 音色 id 的写法：
   doubao:<speaker>   豆包音色，speaker 就是火山控制台里的音色 ID
-  clone:<sample id>  自己录的声音，走 CosyVoice zero-shot；克隆服务没起来时先用默认音色顶上
-当前选中的音色存在 store.settings()["voice"]，全家共用（平板、手机、电脑听到的是同一个小新）。
+  clone:<sample id>  自己录的声音，走 gpu2 本机 CosyVoice zero-shot；CosyVoice 没起来时先用豆包音色顶上
+设置都存在 store.settings()，全家共用（平板、手机、电脑听到的是同一个小新）：
+  asr_engine   doubao | paraformer
+  tts_engine   doubao | cosyvoice
+  voice         当前音色，哪种都行
+  doubao_voice  最近选的豆包音色：引擎切回豆包、手上却是录的声音时用它
+引擎和音色分开选：豆包音色两个引擎都能念，CosyVoice 用豆包念的一段参考来模仿它（存在 voice/presets/）；
+录的声音只能 CosyVoice，选它时引擎自动切到 CosyVoice。
 """
 
 from __future__ import annotations
 
+import json
+import threading
+import time
+
 from server import store
-from src.voice import doubao
+from src.voice import cosyvoice, doubao
+
+ASR_ENGINES = [
+    ("doubao", "豆包", "云端流式，边说边出字"),
+    ("paraformer", "Paraformer", "gpu2 本机 SeACo-Paraformer，松手后整段识别，带热词"),
+]
+TTS_ENGINES = [
+    ("doubao", "豆包", "云端，音色多"),
+    ("cosyvoice", "CosyVoice", "gpu2 本机 CosyVoice3，用自己录的声音"),
+]
+ASR_IDS = {e[0] for e in ASR_ENGINES}
+TTS_IDS = {e[0] for e in TTS_ENGINES}
 
 # 2026-10-28 用这个 key 逐个合成过，都能出声。中文名按音色 ID 意译，以试听为准。
 PRESETS = [
@@ -37,27 +58,69 @@ class VoiceError(ValueError):
     pass
 
 
+_probe = {"at": 0.0, "ok": False}
+
+
 def clone_ready() -> bool:
-    """CosyVoice 起来之前一直是 False；接好后改成探活。"""
-    return False
+    """CosyVoice 的 Triton 起没起来。列音色、每轮朗读都要问，探活结果留 10 秒。"""
+    if time.monotonic() - _probe["at"] > 10:
+        _probe.update(at=time.monotonic(), ok=cosyvoice.ready(timeout=0.5))
+    return _probe["ok"]
+
+
+def engines() -> dict:
+    s = store.settings()
+    asr = s.get("asr_engine") if s.get("asr_engine") in ASR_IDS else "doubao"
+    tts = s.get("tts_engine") if s.get("tts_engine") in TTS_IDS else "doubao"
+    return {"asr": asr, "tts": tts,
+            "asr_options": [{"id": i, "name": n, "desc": d} for i, n, d in ASR_ENGINES],
+            "tts_options": [{"id": i, "name": n, "desc": d} for i, n, d in TTS_ENGINES]}
+
+
+def set_engines(asr: str | None = None, tts: str | None = None) -> dict:
+    fields = {}
+    if asr is not None:
+        if asr not in ASR_IDS:
+            raise VoiceError(f"没有这个 ASR 引擎：{asr}")
+        fields["asr_engine"] = asr
+    if tts is not None:
+        if tts not in TTS_IDS:
+            raise VoiceError(f"没有这个 TTS 引擎：{tts}")
+        fields["tts_engine"] = tts
+        # 切回豆包时手上是录的声音：豆包念不了，换回豆包音色里上次选的那个
+        if tts == "doubao" and str(store.settings().get("voice") or "").startswith("clone:"):
+            fields["voice"] = store.settings().get("doubao_voice") or DEFAULT
+    store.update_settings(**fields)
+    return engines()
 
 
 def catalog() -> dict:
     s = store.settings()
     custom = s.get("custom_voices") or []
-    out = [{"id": "doubao:" + sp, "kind": "doubao", "name": name, "desc": desc} for sp, name, desc in PRESETS]
+    ready = clone_ready()
+    eng = engines()
+    # 豆包音色两个引擎都能用（CosyVoice 拿豆包念的一段当参考）；录的声音只能 CosyVoice（豆包复刻没开通）
+    both = ["doubao", "cosyvoice"]
+    out = [{"id": "doubao:" + sp, "kind": "doubao", "name": name, "desc": desc, "engines": both}
+           for sp, name, desc in PRESETS]
     out += [{"id": "doubao:" + c["speaker"], "kind": "doubao", "name": c["name"], "desc": "自己加的豆包音色",
-             "custom": True} for c in custom]
+             "custom": True, "engines": both} for c in custom]
+    for v in out:
+        v["ready"] = eng["tts"] == "doubao" or ready  # 在当前引擎上能不能念
     for m in store.list_samples():
         ref = m.get("ref") or {}
         out.append({"id": "clone:" + m["id"], "kind": "clone", "name": m.get("name") or "我的声音",
                     "desc": f"自己录的 · {m['seconds']} 秒"
                             + (f"，参考段 {ref['seconds']} 秒" if ref.get("seconds") else ""),
-                    "sample": m["id"], "ready": clone_ready() and bool(ref)})
-    current = s.get("voice") or DEFAULT
-    if not any(v["id"] == current for v in out):
-        current = DEFAULT
-    return {"voices": out, "current": current, "default": DEFAULT, "clone_ready": clone_ready()}
+                    "sample": m["id"], "engines": ["cosyvoice"], "ready": ready and bool(ref.get("text"))})
+    by_id = {v["id"]: v for v in out}
+    doubao_ids = {i for i, v in by_id.items() if v["kind"] == "doubao"}
+    doubao_voice = next((x for x in (s.get("doubao_voice"), s.get("voice")) if x in doubao_ids), DEFAULT)
+    current = s.get("voice") if s.get("voice") in by_id else doubao_voice
+    if eng["tts"] == "doubao" and current not in doubao_ids:  # 豆包引擎上不能是录的声音
+        current = doubao_voice
+    return {"voices": out, "current": current, "default": DEFAULT, "clone_ready": ready,
+            "doubao_voice": doubao_voice, "engines": eng}
 
 
 def find(voice_id: str) -> dict:
@@ -68,8 +131,12 @@ def find(voice_id: str) -> dict:
 
 
 def select(voice_id: str) -> dict:
-    find(voice_id)
-    store.update_settings(voice=voice_id)
+    """换音色，引擎不动；只有选了录的声音、而现在是豆包引擎时，才切到 CosyVoice（豆包念不了录的声音）。"""
+    v = find(voice_id)
+    if v["kind"] == "clone":
+        store.update_settings(voice=voice_id, tts_engine="cosyvoice")
+    else:
+        store.update_settings(voice=voice_id, doubao_voice=voice_id)
     return catalog()
 
 
@@ -97,18 +164,76 @@ def remove_custom(speaker: str) -> dict:
     return catalog()
 
 
-def synth(text: str, voice_id: str | None = None) -> tuple[doubao.Speech, str, str]:
-    """合成一段话。返回 (音频, 实际用的音色 id, 说明)。克隆音色没就绪时用默认音色，说明里写原因。"""
-    voice_id = voice_id or catalog()["current"]
-    note = ""
-    v = find(voice_id)
+def clone_reference(sid: str) -> tuple:
+    """录的声音给 CosyVoice 用的 (参考音频, 参考文字)。"""
+    ref = store.sample_meta(sid).get("ref") or {}
+    path = store.sample_path(sid).with_suffix(".ref.wav")
+    if not ref.get("text") or not path.is_file():
+        raise VoiceError("这段录音还没切出参考段，或者参考段没认出字，重录一次")
+    return cosyvoice.load_reference(path), ref["text"]
+
+
+def preset_text(name: str) -> str:
+    """豆包音色当 CosyVoice 参考时念的那段话，6–7 秒。
+
+    带上音色名是为了每个音色的参考文字都不一样：Triton 按参考文字缓存说话人特征，文字一样就会串成同一个声音。
+    """
+    return f"你好，我是{name}。今天天气不错，放学回家先把作业写完，有不会的题就来问我。"
+
+
+_preset_lock = threading.Lock()
+
+
+def preset_reference(speaker: str, name: str) -> tuple:
+    """豆包音色给 CosyVoice 用的 (参考音频, 参考文字)。第一次用时让豆包念一段 16 kHz 的参考存下来，之后直接读。"""
+    text = preset_text(name)
+    path = store.VOICE / "presets" / f"{speaker}.wav"
+    meta = path.with_suffix(".json")
+    with _preset_lock:
+        fresh = path.is_file() and meta.is_file() and json.loads(meta.read_text(encoding="utf-8")).get("text") == text
+        if not fresh:
+            try:
+                speech = doubao.tts(text, speaker=speaker, sample_rate=16000)
+            except doubao.DoubaoError as e:
+                raise VoiceError(f"豆包没念出参考音：{str(e)[:80]}") from e
+            doubao.write_wav(path, speech.pcm, 16000)
+            meta.write_text(json.dumps({"speaker": speaker, "text": text}, ensure_ascii=False), encoding="utf-8")
+    return cosyvoice.load_reference(path), text
+
+
+def reference(v: dict) -> tuple:
+    """任一音色给 CosyVoice 用的 (参考音频, 参考文字)。"""
     if v["kind"] == "clone":
-        if not v["ready"]:
-            note = "克隆服务还没接好，先用默认音色"
-            voice_id = DEFAULT
-        else:  # pragma: no cover - CosyVoice 接好后在这里调用
-            raise VoiceError("克隆合成还没实现")
-    return doubao.tts(text, speaker=voice_id.split(":", 1)[1]), voice_id, note
+        return clone_reference(v["sample"])
+    return preset_reference(v["id"].split(":", 1)[1], v["name"])
+
+
+def resolve(voice_id: str | None = None) -> tuple[dict, str, str]:
+    """这次用哪个音色、哪个引擎。返回 (音色, 引擎, 说明)。
+
+    引擎按设置；CosyVoice 用不了时换豆包念：豆包音色照用，录的声音换成豆包引擎上次选的音色，说明里写原因。
+    """
+    cat = catalog()
+    v = find(voice_id or cat["current"])
+    engine = cat["engines"]["tts"] if "doubao" in v["engines"] else "cosyvoice"
+    if engine == "cosyvoice" and not v["ready"]:
+        why = "CosyVoice 没起来" if not cat["clone_ready"] else "这段录音的参考段没认出字"
+        if v["kind"] == "clone":
+            return find(cat["doubao_voice"]), "doubao", f"{why}，先用豆包音色"
+        return v, "doubao", f"{why}，这次用豆包念"
+    return v, engine, ""
+
+
+def synth(text: str, voice_id: str | None = None) -> tuple[doubao.Speech, str, str]:
+    """合成一段话。返回 (音频, 实际用的音色 id, 说明)。"""
+    v, engine, note = resolve(voice_id)
+    if engine == "cosyvoice":
+        try:
+            pcm, first, total = cosyvoice.tts(text, *reference(v))
+        except cosyvoice.CosyVoiceError as e:
+            raise VoiceError(f"CosyVoice 合成失败：{e}") from e
+        return doubao.Speech(pcm, cosyvoice.SAMPLE_RATE, first, total), v["id"], note
+    return doubao.tts(text, speaker=v["id"].split(":", 1)[1]), v["id"], note
 
 
 def prepare_clone(sid: str) -> dict:

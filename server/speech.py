@@ -15,7 +15,7 @@ import asyncio
 import base64
 import time
 
-from src.voice.doubao_bidir import SAMPLE_RATE, BidirSession
+from src.voice.doubao_bidir import SAMPLE_RATE, BidirSession  # CosyVoice 也是 24 kHz
 
 LEAD_S = 2.0
 BYTES_PER_S = SAMPLE_RATE * 2
@@ -58,11 +58,19 @@ def speakable(text: str) -> str:
 
 
 class TurnSpeech:
-    """feed(delta) 喂模型正文；events() 产出 ("audio", base64) / ("audio_end", info)。"""
+    """feed(delta) 喂模型正文；take_audio() 取能下发的 PCM 块。
 
-    def __init__(self, speaker: str, *, lead_s: float = LEAD_S):
+    speaker 是豆包音色 ID；给了 cosyvoice=(参考音频, 参考文字) 就改走 gpu2 本机的 CosyVoice。
+    """
+
+    def __init__(self, speaker: str = "", *, cosyvoice: tuple | None = None, lead_s: float = LEAD_S):
         self.lead_s = lead_s
-        self.session = BidirSession(speaker, self._on_pcm, self._on_end)
+        if cosyvoice:
+            from src.voice.cosyvoice import CosyVoiceSession
+
+            self.session = CosyVoiceSession(*cosyvoice, self._on_pcm, self._on_end)
+        else:
+            self.session = BidirSession(speaker, self._on_pcm, self._on_end)
         self._buf = ""
         self._buf_since = 0.0
         self._first_sent = False
@@ -94,7 +102,7 @@ class TurnSpeech:
         async def _open():
             try:
                 await self.session.open()
-            except Exception as e:  # DoubaoError 或网络错误：这轮就不出声，文字照常
+            except Exception as e:  # DoubaoError / CosyVoiceError 或网络错误：这轮就不出声，文字照常
                 self._open_error = str(e)[:200]
                 self._ended.set()
                 self._kick.set()

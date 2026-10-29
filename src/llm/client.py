@@ -232,9 +232,15 @@ def iter_stream(
     max_tokens: int = 1024,
     temperature: float | None = None,
     timeout: float = 300,
+    tools: list[dict] | None = None,
 ):
     """单个模型，一次流式请求，不重试。逐块 yield (kind, value)：
-    ('model', 实际模型名)、('reasoning', 推理文本)、('content', 正文)、('usage', dict)。"""
+    ('model', 实际模型名)、('reasoning', 推理文本)、('content', 正文)、('usage', dict)，
+    给了 tools 时流结束前还有 ('tool_calls', [{id, name, arguments}])，arguments 是拼好的 JSON 字符串。
+
+    2026-10-29 实测 deepseek / claude / grok / 主脑 27B 都能流式调工具。两个坑：
+    - 工具别叫 web_search：代理会把它换成 Claude 自带的服务端搜索，参数是空的，回答是编的。
+    - 把工具结果发回去时，assistant 那条不要带 reasoning_content：deepseek 带了会一直重复调工具。"""
     if isinstance(messages, str):
         messages = [{"role": "user", "content": messages}]
     if system:
@@ -244,6 +250,8 @@ def iter_stream(
                   "stream_options": {"include_usage": True}}
     if temperature is not None:
         body["temperature"] = temperature
+    if tools:
+        body["tools"] = tools
     url, headers, body = _endpoint(model, body)
     try:
         r = requests.post(url, headers=headers, json=body, stream=True, timeout=timeout)
@@ -252,6 +260,7 @@ def iter_stream(
     if r.status_code != 200:
         raise ProxyError(f"HTTP {r.status_code}: {r.text[:500]}")
     served = None
+    calls: dict[int, dict] = {}  # 工具调用按 index 一段段拼起来
     with r:
         for line in r.iter_lines():
             if not line.startswith(b"data:"):
@@ -272,6 +281,14 @@ def iter_stream(
                     yield "reasoning", reasoning
                 if delta.get("content"):
                     yield "content", delta["content"]
+                for tc in delta.get("tool_calls") or []:
+                    c = calls.setdefault(tc.get("index", len(calls)), {"id": "", "name": "", "arguments": ""})
+                    fn = tc.get("function") or {}
+                    c["id"] += tc.get("id") or ""
+                    c["name"] += fn.get("name") or ""
+                    c["arguments"] += fn.get("arguments") or ""
+    if calls:
+        yield "tool_calls", [c for _, c in sorted(calls.items()) if c["name"]]
 
 
 def chat_stream(

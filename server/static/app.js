@@ -167,15 +167,35 @@ function appendMessage(m) {
       + `${m.via === "voice" ? '<div class="via">🎤 语音输入</div>' : ""}</div>`;
   } else {
     row.innerHTML = `<img src="static/icon.png" alt="" class="avatar sm"><div class="bubble"><div class="text"></div>`
+      + `<div class="sources" hidden></div>`
       + `<div class="actions"><button type="button" data-act="copy">复制</button><button type="button" data-act="read">朗读</button></div>`
       + `<div class="meta"></div></div>`;
     row.querySelector(".text").innerHTML = renderText(m.text || "");
     row.querySelector(".meta").textContent = m.model || "";
+    renderSources(row, m.searches);
     row.dataset.reply = m.text || "";
     wireActions(row);
   }
   box.appendChild(row);
   return row;
+}
+
+// 联网搜过的回答，下面列出处（同一个网址只列一次，最多 6 条），点开是原网页
+function renderSources(row, searches) {
+  const box = row.querySelector(".sources");
+  const seen = new Set();
+  const list = [];
+  for (const s of searches || []) for (const src of s.sources || []) {
+    if (!/^https?:\/\//.test(src.url || "") || seen.has(src.url)) continue;
+    seen.add(src.url);
+    list.push(src);
+  }
+  if (!searches?.length) { box.hidden = true; return; }
+  const queries = searches.flatMap((s) => s.queries || []);
+  box.hidden = false;
+  box.innerHTML = `<div class="src-head">🔎 搜了：${esc(queries.join("、"))}</div>`
+    + list.slice(0, 6).map((s, i) => `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">`
+      + `${i + 1}. ${esc(s.title || s.url)}${s.site ? ` <small>${esc(s.site)}</small>` : ""}</a>`).join("");
 }
 
 // 只绑一次；读的是 row.dataset.reply，流式写完后更新它就行
@@ -311,6 +331,7 @@ async function send(text, via = "text") {
   textEl.classList.add("cursor");
   textEl.innerHTML = '<span class="thinking">小新在想…</span>';
   let reply = "", reasoning = 0;
+  const searches = [];
   // 开着自动朗读就让服务端边出字边合成，音频跟着 SSE 一起下来；打断（停止、发新消息、按住说话）就断开这条流。
   const speakNow = prefs.autoread;
   const readBtn = row.querySelector('[data-act="read"]');
@@ -348,6 +369,14 @@ async function send(text, via = "text") {
         } else if (ev === "reasoning") {
           reasoning += data.length;
           if (!reply) textEl.innerHTML = `<span class="thinking">小新在想…（${reasoning} 字）</span>`;
+        } else if (ev === "search") {
+          if (data.state === "start") {
+            if (!reply) textEl.innerHTML = `<span class="thinking">🔎 正在搜：${esc(data.queries.join("、"))}…</span>`;
+          } else {
+            searches.push(data);
+            renderSources(row, searches);
+            if (!reply) textEl.innerHTML = `<span class="thinking">${data.ok ? "搜到了，在整理…" : "没搜到，小新先按知道的说…"}</span>`;
+          }
         } else if (ev === "delta") {
           reply += data;
           textEl.innerHTML = renderText(reply);
@@ -361,6 +390,7 @@ async function send(text, via = "text") {
         } else if (ev === "done") {
           reply = data.text;
           textEl.innerHTML = renderText(reply);
+          if (data.searches) renderSources(row, data.searches);
           finishText();  // 文字完了就能发下一条；音频还在这条流里接着下来
         } else if (ev === "error") {
           throw new Error(data);
@@ -596,7 +626,8 @@ holdBtn.addEventListener("pointerdown", (e) => {
     ws.onopen = () => { for (const b of hold.pendingAudio) ws.send(b); hold.pendingAudio = []; };
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
-      if (m.type === "partial") { if (hold.ws === ws) showLive(m.text); }
+      if (m.type === "ready") { if (hold.ws === ws && !m.partials && !hold.text) $("rec-live").textContent = "正在听…（Paraformer 松手后出字）"; }
+      else if (m.type === "partial") { if (hold.ws === ws) showLive(m.text); }
       else if (m.type === "final") resolve(m);
       else if (m.type === "error") reject(new Error(m.detail));
     };
@@ -701,6 +732,7 @@ function showPane(name) {
   for (const p of document.querySelectorAll(".pane")) p.hidden = p.dataset.pane !== name;
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
+    loadEngines();
     loadVoices();
   }
   history.replaceState(null, "", "#settings/" + name);
@@ -837,8 +869,9 @@ async function selectVoice(id) {
     const cat = await api("api/voices/current", { method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ voice: id }) }).then(json);
     renderVoices(cat);
+    loadEngines();  // 选录的声音会把引擎切到 CosyVoice
     const v = cat.voices.find((x) => x.id === id);
-    if (v?.kind === "clone" && !v.ready) toast("已选上。克隆服务接好之前，朗读会先用默认音色");
+    if (v && !v.ready) toast("已选上。CosyVoice 用不了的时候，先用豆包念");
   } catch (err) { toast(err.message); }
 }
 
@@ -848,7 +881,7 @@ function voiceCard(v, current) {
   card.setAttribute("role", "radio");
   card.setAttribute("aria-checked", String(v.id === current));
   card.tabIndex = 0;
-  const tag = v.kind === "clone" && !v.ready ? '<span class="tag">等克隆服务</span>' : "";
+  const tag = !v.ready ? '<span class="tag">CosyVoice 用不了</span>' : "";
   card.innerHTML = `<div class="vtext"><b>${esc(v.name)}</b><small>${esc(v.desc)} ${tag}</small></div>`
     + `<button type="button" class="vbtn" aria-label="试听 ${esc(v.name)}">▶</button>`
     + (v.custom || v.kind === "clone" ? `<button type="button" class="vbtn vmore" aria-label="更多">⋯</button>` : "");
@@ -880,10 +913,13 @@ async function voiceMenu(v) {
 
 function renderVoices(cat) {
   const cur = cat.voices.find((v) => v.id === cat.current);
+  const cosy = cat.engines?.tts === "cosyvoice";
   $("voice-current").innerHTML = `现在用：<b>${esc(cur?.name || "-")}</b>`
-    + (cur?.kind === "clone" && !cur.ready ? "（克隆服务接好之前，朗读先用默认音色）" : "");
+    + `（${cosy ? "CosyVoice" : "豆包"} 念）`
+    + (cosy && !cat.clone_ready ? "，CosyVoice 没起来，先用豆包念" : "");
+  // 豆包音色两个引擎都能念；录的声音只有 CosyVoice 能念，豆包引擎下点它会切到 CosyVoice
   const groups = [
-    ["我的声音", cat.voices.filter((v) => v.kind === "clone")],
+    ["我的声音" + (cosy ? "" : "（只能 CosyVoice 念，点一下会切过去）"), cat.voices.filter((v) => v.kind === "clone")],
     ["自己加的豆包音色", cat.voices.filter((v) => v.custom)],
     ["豆包音色", cat.voices.filter((v) => v.kind === "doubao" && !v.custom)],
   ];
@@ -904,6 +940,35 @@ function renderVoices(cat) {
 async function loadVoices() {
   try { renderVoices(await api("api/voices").then(json)); } catch (err) { toast(err.message); }
 }
+
+// ---------------------------------------------------------------- 语音引擎
+
+function renderEngines(e) {
+  const fill = (sel, options, cur, ready) => {
+    $(sel).innerHTML = options.map((o) => `<option value="${o.id}">${esc(o.name)}${ready[o.id] === false ? "（没起来）" : ""}</option>`).join("");
+    $(sel).value = cur;
+  };
+  fill("set-asr", e.asr_options, e.asr, { paraformer: e.paraformer_ready });
+  fill("set-tts", e.tts_options, e.tts, { cosyvoice: e.cosyvoice_ready });
+  $("asr-desc").textContent = e.asr_options.find((o) => o.id === e.asr)?.desc || "";
+  $("tts-desc").textContent = e.tts_options.find((o) => o.id === e.tts)?.desc || "";
+}
+
+async function loadEngines() {
+  try { renderEngines(await api("api/engines").then(json)); } catch (err) { toast(err.message); }
+}
+
+async function setEngine(kind, value) {
+  try {
+    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [kind]: value }) }).then(json);
+    renderEngines(e);
+    if (kind === "asr" && value === "paraformer" && !e.paraformer_ready) toast("Paraformer 第一次用要加载十几秒，之后就快了");
+    if (kind === "tts") loadVoices();
+  } catch (err) { toast(err.message); loadEngines(); }
+}
+$("set-asr").addEventListener("change", () => setEngine("asr", $("set-asr").value));
+$("set-tts").addEventListener("change", () => setEngine("tts", $("set-tts").value));
 
 $("custom-add").addEventListener("click", async () => {
   const speaker = $("custom-speaker").value.trim();

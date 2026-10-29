@@ -20,7 +20,8 @@ from fastapi.staticfiles import StaticFiles
 
 from server import store, voices
 from src.llm import client
-from src.voice import doubao
+from src.search import web_search
+from src.voice import doubao, paraformer
 
 STATIC = Path(__file__).resolve().parent / "static"
 PORT = 8184
@@ -39,7 +40,13 @@ FALLBACK = "claude-sonnet-5-5"  # 选的模型连着失败两次就换它
 NO_VISION = {"deepseek-v4.1-flash", "qwen3.8-27b"}  # 主脑是纯文本模型
 
 SYSTEM = ("你是「小新」，一个亲切、靠谱的中文 AI 助手，平时陪一家人聊天、答疑、帮小朋友看作业。"
-          "回答先说结论，口语化，不啰嗦；需要分步骤时再用列表。给小朋友讲题时引导思路，不直接替他写答案。")
+          "回答先说结论，口语化，不啰嗦；需要分步骤时再用列表。给小朋友讲题时引导思路，不直接替他写答案。"
+          "你能联网：新闻、天气、比分、最近的事，或者你拿不准、可能过时的事实，先用 search_web 搜再答，"
+          "别说自己不能联网；用了搜索结果就简单说一句信息来源。")
+MAX_SEARCHES = 2  # 一轮回答最多搜几次，照 carHer2 的 _WEB_SEARCH_TURN_LIMIT
+MAX_TOOL_ROUNDS = MAX_SEARCHES + 1  # 到上限后再给模型一次机会，它还要调工具就算这轮失败
+SEARCH_LIMIT_RESULT = (f"已经搜了 {MAX_SEARCHES} 次，到上限了，这次没有再搜。"
+                       "请基于上面已有的搜索结果直接回答用户；查不到就如实说。")
 
 log = logging.getLogger("xiaoxin")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -214,20 +221,48 @@ def _sse(event: str, data) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode()
 
 
+def _system() -> str:
+    """人设加上今天的日期：要不然模型不知道「今天」「明天」是哪天，搜新闻也不知道搜哪天的。"""
+    import datetime
+
+    today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    week = "一二三四五六日"[today.weekday()]
+    return f"{SYSTEM}\n今天是 {today:%Y-%m-%d}，星期{week}（北京时间）。"
+
+
+def _run_tool(name: str, arguments: str) -> web_search.Result:
+    if name != web_search.NAME:
+        return web_search.Result(False, f"没有这个工具：{name}")
+    return web_search.search(arguments)
+
+
 def _llm_thread(model: str, history: list[dict], q, loop) -> None:
-    """在线程里跑同步的流式请求，每个事件丢回事件循环的队列。带重试和兜底，规则同前：
-    还没吐出正文就失败（报错或空回答）就同一个模型再试一次，再不行换 FALLBACK；已经吐了字就不换，免得前后两截。"""
+    """在线程里跑同步的流式请求，每个事件丢回事件循环的队列。
+
+    工具循环：模型要搜就搜（发 search 事件），把结果接在后面再问一次，一轮最多搜 MAX_SEARCHES 次。
+    到了上限工具照样给，只是不真搜，回一句「到上限了，用已有结果回答」（照 carHer2）。
+    不能直接把 tools 拿掉：主脑 27B 看到历史里有工具调用还会接着调，vLLM 没收到 tools 就不解析，
+    <tool_call> 被当特殊 token 过滤掉，正文是空的（2026-10-29 复现 6 次空 4 次）。
+    重试和兜底：还没吐出正文、也还没搜过就失败（报错或空回答），同一个模型再试一次，再不行换 FALLBACK；
+    已经吐了字或搜过了就不换，免得前后两截、重复搜。"""
     def put(*item):
         loop.call_soon_threadsafe(q.put_nowait, item)
 
     tries = [model, model] + ([FALLBACK] if model != FALLBACK else [])
     got, usage, served, last = False, {}, model, ""
-    for attempt, m in enumerate(tries):
+    msgs, searches, searched, rounds = list(history), 0, [], 0
+    attempt = 0
+    while attempt < len(tries):
+        m = tries[attempt]
         if attempt and m != tries[attempt - 1]:
             put("model", m)
         served = m
+        calls: list[dict] = []
+        text = ""
+        tools = [web_search.SPEC]
         try:
-            for kind, value in client.iter_stream(m, history, system=SYSTEM, max_tokens=4096, timeout=180):
+            for kind, value in client.iter_stream(m, msgs, system=_system(), max_tokens=4096, timeout=180,
+                                                  tools=tools):
                 if kind == "model":
                     served = value
                     put("model", value)
@@ -235,20 +270,61 @@ def _llm_thread(model: str, history: list[dict], q, loop) -> None:
                     usage = value
                 elif kind == "reasoning":
                     put("reasoning", value)
+                elif kind == "tool_calls":
+                    calls = value
                 else:
                     got = True
+                    text += value
                     put("delta", value)
         except client.ProxyError as e:
             last = str(e)[:300]
-            log.warning("chat %s attempt=%d failed (got text=%s): %s", m, attempt + 1, got, last)
-            if got:
+            log.warning("chat %s attempt=%d failed (got text=%s, searches=%d): %s", m, attempt + 1, got,
+                        searches, last)
+            if got or searches:
                 break
+            attempt += 1
             continue
+        if calls:
+            rounds += 1
+            if rounds > MAX_TOOL_ROUNDS:
+                last = f"{served} 到了搜索上限还在调工具"
+                log.warning("chat %s keeps calling tools after limit; give up", m)
+                break
+            # assistant 那条只带正文和 tool_calls，不带 reasoning_content（deepseek 带了会一直重复调工具）
+            msgs.append({"role": "assistant", "content": text or None, "tool_calls": [
+                {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}}
+                for c in calls]})
+            for c in calls:
+                if searches >= MAX_SEARCHES:
+                    msgs.append({"role": "tool", "tool_call_id": c["id"], "content": SEARCH_LIMIT_RESULT})
+                    continue
+                searches += 1
+                queries = [q for q, _ in web_search.parse_queries(c["arguments"])]
+                put("search", {"queries": queries, "state": "start"})
+                res = _run_tool(c["name"], c["arguments"])
+                log.info("search %s ok=%s sources=%d", queries, res.ok, len(res.sources))
+                put("search", {"queries": res.queries or queries, "state": "done", "ok": res.ok,
+                               "sources": res.sources})
+                searched.append({"queries": res.queries or queries, "ok": res.ok, "sources": res.sources})
+                msgs.append({"role": "tool", "tool_call_id": c["id"], "content": res.content})
+            continue  # 带着搜索结果再问一次，模型不变、不算重试
         if got:
             break
         last = f"{served} 回了空内容"
         log.warning("chat %s attempt=%d empty reply usage=%s", m, attempt + 1, usage)
-    put("end", {"served": served, "usage": usage, "error": "" if got else (last or "没收到回答")})
+        if searches:
+            break
+        attempt += 1
+    put("end", {"served": served, "usage": usage, "error": "" if got else (last or "没收到回答"),
+                "searches": searched})
+
+
+def _reply_record(text: str, end: dict) -> dict:
+    """存进对话的那条 assistant 消息。搜过就带上搜了什么、出处，界面上列来源用。"""
+    rec = {"role": "assistant", "text": text, "model": end["served"], "usage": end["usage"]}
+    if end.get("searches"):
+        rec["searches"] = end["searches"]
+    return rec
 
 
 _BACKGROUND: set = set()  # 后台收尾任务，留着引用免得被回收
@@ -276,16 +352,16 @@ async def _after_turn(cid, model, tts, worker, q, parts, end) -> None:
     reply = "".join(parts)
     log.info("chat client left mid-text; saved full reply %d chars", len(reply))
     if reply:
-        end = end or {"served": model, "usage": {}}
-        store.append(cid, {"role": "assistant", "text": reply, "model": end["served"], "usage": end["usage"]})
+        store.append(cid, _reply_record(reply, end or {"served": model, "usage": {}}))
 
 
 @app.post("/api/conversations/{cid}/messages")
 async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingResponse:
     """存用户消息，再流式返回小新的回答（SSE）。
 
-    事件：user / model / reasoning / delta（正文） / audio（base64 的 24 kHz s16le PCM，约 100 ms 一块） /
-          audio_end / done / error。done 在文字结束时就发（不等音频念完），之后 audio 继续，最后 audio_end。
+    事件：user / model / reasoning / search（联网搜索，{queries, state: start|done, ok, sources}） /
+          delta（正文） / audio（base64 的 24 kHz s16le PCM，约 100 ms 一块） / audio_end / done / error。
+          done 在文字结束时就发（不等音频念完），之后 audio 继续，最后 audio_end。done 里的消息搜过就带 searches。
     body.speak=true 时边出字边合成：攒够一句就送豆包双向流式 TTS，PCM 节流下发，最多领先播放 2 秒。
     客户端断开（用户打断、关页面）就停止下发并取消 TTS；模型那边的回答照样存下来。
     """
@@ -309,17 +385,20 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
     user = store.append(cid, {"role": "user", "text": text, "files": files, "via": body.get("via") or "text"})
     history = _llm_messages(store.get(cid))
 
-    # 克隆音色还没接流式，先用默认豆包音色念；note 给前端提示
+    # 设置里选的 TTS 引擎和音色；CosyVoice 用不了时换成豆包，note 给前端提示
     voice_note = ""
     tts = None
     if body.get("speak"):
-        cur = voices.find(voices.catalog()["current"])
-        if cur["kind"] == "clone":
-            voice_note = "克隆音色的流式朗读还在做，先用默认音色"
-            speaker = voices.DEFAULT.split(":", 1)[1]
-        else:
-            speaker = cur["id"].split(":", 1)[1]
-        tts = speech.TurnSpeech(speaker)
+        cur, engine, voice_note = voices.resolve()
+        if engine == "cosyvoice":
+            try:
+                tts = speech.TurnSpeech(cosyvoice=voices.reference(cur))
+            except (voices.VoiceError, OSError) as e:
+                if cur["kind"] == "clone":
+                    cur = voices.find(voices.catalog()["doubao_voice"])
+                voice_note = f"{e}，这次用豆包念"
+        if tts is None:
+            tts = speech.TurnSpeech(cur["id"].split(":", 1)[1])
 
     async def events():
         loop = asyncio.get_running_loop()
@@ -347,7 +426,7 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
                         yield _sse("delta", value)
                         if tts:
                             await tts.feed(value)
-                    elif kind in ("model", "reasoning"):
+                    elif kind in ("model", "reasoning", "search"):
                         yield _sse(kind, value)
                     elif kind == "end":
                         end = value
@@ -359,8 +438,7 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
                         # 文字一完就存、就发 done，前端可以接着发下一条；音频（如果有）在同一条流里继续下来
                         reply = "".join(parts)
                         if reply:
-                            saved = store.append(cid, {"role": "assistant", "text": reply, "model": end["served"],
-                                                       "usage": end["usage"]})
+                            saved = store.append(cid, _reply_record(reply, end))
                             yield _sse("done", saved)
                         else:
                             yield _sse("error", end["error"] or "没收到回答")
@@ -423,21 +501,38 @@ def download(fid: str, download: int = 0) -> FileResponse:
 
 # ---------------------------------------------------------------- 语音
 
+def _asr_engine(override: str = "") -> str:
+    """设置里选的 ASR 引擎；请求里显式给了 engine 就用请求的（调试、对比用）。"""
+    if override:
+        if override not in voices.ASR_IDS:
+            raise HTTPException(400, f"没有这个 ASR 引擎：{override}")
+        return override
+    return voices.engines()["asr"]
+
+
 @app.post("/api/asr")
-async def asr(request: Request) -> dict:
-    """body 是 16 kHz 单声道 16 bit wav（网页按住说话录的），走豆包 ASR。"""
+async def asr(request: Request, engine: str = "") -> dict:
+    """整段识别。body 是 16 kHz 单声道 16 bit wav；Content-Type 给 application/octet-stream 或 audio/L16
+    就当裸 PCM（s16le 16 kHz 单声道），端侧录的 PCM 不用再包 wav。引擎按设置，?engine= 可以临时指定。"""
+    import asyncio
+
     data = await request.body()
-    try:
-        pcm = store.wav_pcm16k(data)
-    except store.StoreError as e:
-        raise HTTPException(400, str(e))
+    ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if ctype in ("application/octet-stream", "audio/l16", "audio/pcm"):
+        pcm = data[:len(data) - len(data) % 2]
+    else:
+        try:
+            pcm = store.wav_pcm16k(data)
+        except store.StoreError as e:
+            raise HTTPException(400, str(e))
     if len(pcm) < 16000 * 2 * 0.3:
         raise HTTPException(400, "太短了，按住多说一会儿")
+    eng = _asr_engine(engine)
     try:
-        rec = doubao.asr(pcm)
-    except doubao.DoubaoError as e:
+        rec = await asyncio.to_thread(paraformer.transcribe if eng == "paraformer" else doubao.asr, pcm)
+    except (doubao.DoubaoError, paraformer.ParaformerError) as e:
         raise HTTPException(502, f"ASR 失败：{e}")
-    return {"text": rec.text, "seconds": round(rec.audio_seconds, 2), "latency": round(rec.final, 3)}
+    return {"text": rec.text, "seconds": round(rec.audio_seconds, 2), "latency": round(rec.final, 3), "engine": eng}
 
 
 def _wav(speech: doubao.Speech) -> bytes:
@@ -484,13 +579,15 @@ def _ws_authed(ws: WebSocket) -> bool:
 
 @app.websocket("/api/asr/stream")
 async def asr_stream(ws: WebSocket) -> None:
-    """按住说话的流式识别。
+    """按住说话的识别，引擎按设置（?engine=doubao|paraformer 可以临时指定）。
 
     客户端 → 服务端：二进制帧是 PCM（s16le 16 kHz 单声道，每帧 100 ms 左右）；
                     文本帧 {"type":"end"} 是松手发送，{"type":"cancel"} 是上滑取消。
-    服务端 → 客户端：{"type":"partial","text"} 边说边出字；{"type":"final","text","seconds","latency"}；
+    服务端 → 客户端：{"type":"ready","engine","partials"} 连上就发；
+                    {"type":"partial","text"} 边说边出字（只有豆包有）；{"type":"final","text","seconds","latency","engine"}；
                     {"type":"error","detail"}。
-    取消、断线都直接关掉豆包连接、不发尾包，那段话不会有最终结果，也不会进对话。
+    豆包是边说边传；Paraformer 是服务端攒着，松手整段识别一次。
+    取消、断线都直接结束，不发尾包，那段话不会有最终结果，也不会进对话。
     """
     import asyncio
     import time
@@ -504,7 +601,15 @@ async def asr_stream(ws: WebSocket) -> None:
         await ws.send_text(json.dumps(msg, ensure_ascii=False))
 
     try:
-        async with doubao.StreamingAsr() as rec:
+        eng = _asr_engine(ws.query_params.get("engine") or "")
+    except HTTPException as e:
+        await say(type="error", detail=e.detail)
+        await ws.close()
+        return
+    # 一开头告诉端侧用的哪个引擎、有没有中间结果，Paraformer 没有 partial，端侧可以换个提示
+    await say(type="ready", engine=eng, partials=eng == "doubao")
+    try:
+        async with (paraformer.StreamingParaformer() if eng == "paraformer" else doubao.StreamingAsr()) as rec:
             async def pump() -> None:
                 while True:
                     await say(type="partial", text=await rec.partials.get())
@@ -529,12 +634,14 @@ async def asr_stream(ws: WebSocket) -> None:
                         t0 = time.monotonic()
                         text = await rec.finish()
                         latency = time.monotonic() - t0
-                        log.info("asr final %.1fs audio, %.0f ms after release", rec.seconds, latency * 1000)
-                        await say(type="final", text=text, seconds=round(rec.seconds, 2), latency=round(latency, 3))
+                        log.info("asr %s final %.1fs audio, %.0f ms after release", eng, rec.seconds,
+                                 latency * 1000)
+                        await say(type="final", text=text, seconds=round(rec.seconds, 2), latency=round(latency, 3),
+                                  engine=eng)
                         return
             finally:
                 pumping.cancel()
-    except doubao.DoubaoError as e:
+    except (doubao.DoubaoError, paraformer.ParaformerError) as e:
         log.warning("asr stream failed: %s", e)
         try:
             await say(type="error", detail=str(e)[:200])
@@ -563,6 +670,21 @@ def tts(body: dict = Body(...)) -> Response:
 @app.get("/api/voices")
 def voice_catalog() -> dict:
     return voices.catalog()
+
+
+@app.get("/api/engines")
+def engine_settings() -> dict:
+    """ASR / TTS 引擎。全家共用，存在服务端；平板 APK 也读这个。"""
+    return {**voices.engines(), "cosyvoice_ready": voices.clone_ready(), "paraformer_ready": paraformer.ready()}
+
+
+@app.put("/api/engines")
+def engine_select(body: dict = Body(...)) -> dict:
+    try:
+        voices.set_engines(asr=body.get("asr"), tts=body.get("tts"))
+    except voices.VoiceError as e:
+        raise HTTPException(400, str(e))
+    return engine_settings()
 
 
 @app.put("/api/voices/current")

@@ -108,6 +108,12 @@ button { cursor: pointer; }
 .actions button { border: 0; background: none; color: var(--muted); font-size: 13px; padding: 2px 8px; border-radius: 8px; }
 .actions button:hover { background: var(--raised); color: var(--text); }
 .meta { color: var(--muted); font-size: 12px; }
+.sources { display: flex; flex-direction: column; gap: 2px; font-size: 13px; padding: 2px 4px; max-width: 100%; }
+.sources[hidden] { display: none; }
+.src-head { color: var(--muted); font-size: 12px; }
+.sources a { color: var(--text); opacity: .85; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sources a:hover, .sources a:focus-visible { opacity: 1; text-decoration: underline; }
+.sources small { color: var(--muted); }
 .via { font-size: 12px; opacity: .75; }
 .error .text { background: #3a1f22; color: #ffc9c9; }
 

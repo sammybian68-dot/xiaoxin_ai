@@ -110,8 +110,19 @@
     </section>
 
     <section class="pane" role="tabpanel" data-pane="voice" hidden>
+      <h3>语音引擎</h3>
+      <p class="voice-tip">全家的设备一起生效，平板 APK 也按这里的来。本机引擎跑在 gpu2 的 A100 上。</p>
+      <div class="row">
+        <label for="set-asr"><b>识别（ASR）</b><small id="asr-desc"></small></label>
+        <select id="set-asr"></select>
+      </div>
+      <div class="row">
+        <label for="set-tts"><b>朗读（TTS）</b><small id="tts-desc"></small></label>
+        <select id="set-tts"></select>
+      </div>
+
       <h3>小新用哪个声音</h3>
-      <p class="voice-tip">点一下就换，全家的设备一起生效。▶ 是试听。</p>
+      <p class="voice-tip">音色和上面的引擎分开选。豆包音色两个引擎都能念：选 CosyVoice 时，小新先让豆包念一小段当参考，再用 CosyVoice 模仿，第一次用某个音色会慢一两秒。自己录的声音只能 CosyVoice 念。▶ 是试听，按当前引擎念。</p>
       <div id="voice-current" class="voice-current" role="status"></div>
       <div id="voice-groups"></div>
       <details class="add-voice">

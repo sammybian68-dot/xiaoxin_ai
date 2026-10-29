@@ -44,10 +44,35 @@ deploy/gpu2.sh
 
 拿到链接的人和你权限完全一样：可以用你的 LLM 和豆包额度，能看全部对话和上传的文件，还能下载你录的声音样本。只发给家里人，最好当面或私聊。
 
+## 测试
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt   # 第一次
+.venv/bin/python -m pytest                      # 单元 + 接口，约 1 秒，不联网、不碰 gpu2
+```
+
+改了 `server/` 或 `src/voice/` 先跑这个，全过了再部署。
+
+| 层 | 文件 | 测什么 |
+|:--|:--|:--|
+| 单元 | `test_store.py` `test_voices.py` `test_speech.py` `test_cosyvoice.py` `test_paraformer.py` | 落盘和 id 校验、引擎与音色联动、降级、切句和节流、CosyVoice 跑飞截停、Paraformer 拉起和加载 |
+| 接口 | `test_api.py` | 用 TestClient 打 `server.main`：鉴权、`/api/engines`、两种 ASR 的 HTTP 和 WebSocket、两种 TTS 的单句和流式朗读 |
+| live | `test_live.py` | 打 gpu2 上真实的 Paraformer、CosyVoice 和豆包，核对假实现和真服务的契约。只在 gpu2 上加 `--live` 才跑，服务不在就 skip |
+
+- 外部服务（豆包、Paraformer、CosyVoice 的 Triton、LLM）都在 `tests/fakes.py` 里换成了假实现，只替换出网那一层，引擎选择、降级、节流、截停跑的都是真代码。
+- 每个测试用一个临时数据目录和测试专用 key，读不到真实的 `.env`，也不会动 `/Data/cmbian/private_data/xiaoxin`。
+- 加新的外部依赖时，先在 `fakes.py` 里补一个假实现，再写 case。
+
+live 测试在 gpu2 上这样跑（先把代码同步过去，`deploy/gpu2.sh` 不传 tests/）：
+
+```bash
+python3 -m pytest tests/test_live.py --live
+```
+
 ## 部署
 
 ```bash
-deploy/gpu2.sh            # 改了 server/、src/llm、src/voice 之后跑这个
+deploy/gpu2.sh            # 改了 server/、src/llm、src/search、src/voice 之后跑这个
 deploy/gpu2.sh --proxy    # 第一次部署，或者改了 deploy/mainbrain_xiaoxin_proxy.py（会重启 8183，训练平台断几秒）
 ```
 

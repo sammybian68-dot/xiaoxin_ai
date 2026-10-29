@@ -8,9 +8,9 @@ HOST="${XIAOXIN_HOST:-gpu2}"
 DEST="/Data/cmbian/codes/ai_xiaoxin"
 MAINBRAIN="/Data/cmbian/codes/mainbrain_27B_model"
 
-# 只传服务端要用的：server/、src/llm、src/voice。APK 源码、tmp、虚拟环境都不传。
+# 只传服务端要用的：server/、src/llm、src/search、src/voice。APK 源码、tmp、虚拟环境都不传。
 rsync -az --delete \
-  --include='/server/***' --include='/src/' --include='/src/llm/***' --include='/src/voice/***' \
+  --include='/server/***' --include='/src/' --include='/src/llm/***' --include='/src/search/***' --include='/src/voice/***' \
   --include='/requirements.txt' --exclude='__pycache__' --exclude='*' \
   "$ROOT/" "$HOST:$DEST/"
 # .env 单独传，权限 600
