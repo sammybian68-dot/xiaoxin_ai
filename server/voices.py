@@ -141,7 +141,9 @@ def check_wake_word(word) -> str:
 
 
 WILDCARD = "*"
-MIN_FIXED = 3  # 带 * 的词，确定的字至少这么多，不然「小**」这种什么都能匹配
+MIN_FIXED = 3  # 带 * 的唤醒词，确定的字至少这么多，不然「小**」这种什么都能匹配
+# 退出词是整句匹配，「退*吧」只命中三个字、退开头吧结尾的一句话，误判面小，所以 2 个确定的字就够
+MIN_FIXED_EXIT = 2
 
 
 def check_wake_words(value) -> list[str]:
@@ -154,18 +156,19 @@ def check_wake_words(value) -> list[str]:
 MAX_WORDS = 8  # 唤醒词、退出词各最多几个
 
 
-def _check_word(word, what: str) -> str:
+def _check_word(word, what: str, min_fixed: int = MIN_FIXED) -> str:
     """唤醒词、退出词同一个规则：2–8 个字，不带标点空格；「*」是通配，匹配恰好一个字。"""
     word = str(word or "").strip()
     if not 2 <= len(word) <= 8 or not all(c.isalnum() or c == WILDCARD for c in word):
         raise VoiceError(f"{what}每个 2–8 个字，不带标点和空格（* 代表任意一个字）")
-    if WILDCARD in word and len(word) - word.count(WILDCARD) < MIN_FIXED:
-        raise VoiceError(f"带 * 的{what}至少要有 {MIN_FIXED} 个确定的字，比如「你好小*」「小*同学」")
+    if WILDCARD in word and len(word) - word.count(WILDCARD) < min_fixed:
+        example = "「你好小*」「小*同学」" if min_fixed >= 3 else "「退*吧」"
+        raise VoiceError(f"带 * 的{what}至少要有 {min_fixed} 个确定的字，比如{example}")
     return word
 
 
 def check_exit_words(value) -> list[str]:
-    words = [_check_word(w, "退出词") for w in _split_words(value)]
+    words = [_check_word(w, "退出词", MIN_FIXED_EXIT) for w in _split_words(value)]
     if not 1 <= len(words) <= MAX_WORDS:
         raise VoiceError(f"退出词 1–{MAX_WORDS} 个")
     return words

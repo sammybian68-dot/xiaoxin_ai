@@ -448,3 +448,20 @@ def test_utterance_audio_bad_ids(client):
 
 def test_utterance_audio_requires_auth(anon):
     assert anon.get("/api/conversations/0123456789abcdef/audio/0123456789abcdef").status_code == 401
+
+
+@pytest.mark.parametrize("text, ok", [
+    ("退了吧", True), ("退下吧。", True), ("推了吧", True),   # 推 = 退
+    ("推一下", True),                                           # 只登记了「退一下」也认
+    ("退吧", False), ("退了好吧", False), ("我推了吧", False),  # 还是整句、恰好一个字
+])
+def test_exit_same_sound_and_wildcard(text, ok):
+    from server.talk import is_exit
+
+    assert is_exit(text, ["退*吧", "退一下"]) is ok
+
+
+def test_same_sound_keeps_original_text_when_stripping_wake():
+    from server.talk import strip_wake_word
+
+    assert strip_wake_word("小新同学，推荐一本书", ["小新同学"]) == "推荐一本书"

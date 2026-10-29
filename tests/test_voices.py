@@ -312,4 +312,8 @@ def test_wildcard_words_validated(fakes):
     with pytest.raises(voices.VoiceError, match="确定的字"):
         voices.set_engines(wake_words=["小***"])
     with pytest.raises(voices.VoiceError, match="确定的字"):
-        voices.set_exit = voices.set_engines(exit_words=["*下"])
+        voices.set_engines(exit_words=["*下"])
+    # 退出词整句匹配，两个确定的字就行
+    assert voices.set_engines(exit_words=["退*吧"])["exit_words"] == ["退*吧"]
+    with pytest.raises(voices.VoiceError, match="确定的字"):
+        voices.set_engines(wake_words=["小*同"])

@@ -7,6 +7,7 @@ import java.util.List;
  * 唤醒词和退出词同一套比对规则（服务端 server/talk.py 的 strip_wake_word / is_exit 是同一套，改一边要改另一边）：
  *   - 去掉标点空格、英文转小写再比
  *   - 「小新」认成同音的「小心 / 小欣 / 小鑫」也算（端侧小模型实测常把小新认成小心）
+ *   - 同音常错的单字当成同一个：「推」=「退」（「退一下」常被认成「推一下」）
  *   - 列表里命中任意一个就算（或的关系）
  *   - 「*」匹配恰好一个字：「你好小*」能命中「你好小婷」「你好小嗯」，「小*同学」能命中「小英同学」
  * 区别只有一个：唤醒词看开头（后面可以接问题，one-shot），退出词要整句正好是它（「你先退下吧」不算）。
@@ -15,6 +16,9 @@ public final class Keywords {
     private static final String PUNCT = "，。！？、；：,.!?;: 　";
     private static final String[] ALIASES = {"小心", "小欣", "小鑫"};
     private static final String[] LEADS = {"", "嘿", "哎", "喂", "嗨"};
+    /** 同音互换的单字：SAME_FROM[i] 当成 SAME_TO[i]。和 server/talk.py 的 _SAME_SOUND 一张表。 */
+    private static final String SAME_FROM = "推";
+    private static final String SAME_TO = "退";
 
     private Keywords() {}
 
@@ -39,7 +43,8 @@ public final class Keywords {
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
             if (PUNCT.indexOf(c) < 0) {
-                b.append(Character.toLowerCase(c));
+                int k = SAME_FROM.indexOf(c);
+                b.append(k >= 0 ? SAME_TO.charAt(k) : Character.toLowerCase(c));
             }
         }
         return b.toString();

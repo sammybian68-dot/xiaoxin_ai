@@ -67,8 +67,13 @@ _XIAOXIN_ALIASES = ("小心", "小欣", "小鑫")
 _LEADS = ("", "嘿", "哎", "喂", "嗨", "hi", "hey")
 
 
+# 读音一样、端侧小模型常互相认错的字，比对时当成同一个（2026-10-30 实测「退一下」被认成「推一下」）。
+# 一个字换一个字，位置不变，strip_wake_word 按字数切原文不受影响。Keywords.java 里是同一张表。
+_SAME_SOUND = str.maketrans({"推": "退"})
+
+
 def _bare(text: str) -> str:
-    return "".join(c for c in text if c not in _PUNCT).lower()
+    return "".join(c for c in text if c not in _PUNCT).lower().translate(_SAME_SOUND)
 
 
 WILDCARD = "*"  # 唤醒词 / 退出词里的「*」匹配恰好一个字：「你好小*」「小*同学」
