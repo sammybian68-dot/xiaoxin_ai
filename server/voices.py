@@ -140,6 +140,10 @@ def check_wake_word(word) -> str:
     return word
 
 
+WILDCARD = "*"
+MIN_FIXED = 3  # 带 * 的词，确定的字至少这么多，不然「小**」这种什么都能匹配
+
+
 def check_wake_words(value) -> list[str]:
     words = [check_wake_word(w) for w in _split_words(value)]
     if not 1 <= len(words) <= MAX_WORDS:
@@ -151,10 +155,12 @@ MAX_WORDS = 8  # 唤醒词、退出词各最多几个
 
 
 def _check_word(word, what: str) -> str:
-    """唤醒词、退出词同一个规则：2–8 个字，不带标点空格。两个字的给出提醒但允许（用户自己的选择）。"""
+    """唤醒词、退出词同一个规则：2–8 个字，不带标点空格；「*」是通配，匹配恰好一个字。"""
     word = str(word or "").strip()
-    if not 2 <= len(word) <= 8 or not all(c.isalnum() for c in word):
-        raise VoiceError(f"{what}每个 2–8 个字，不带标点和空格")
+    if not 2 <= len(word) <= 8 or not all(c.isalnum() or c == WILDCARD for c in word):
+        raise VoiceError(f"{what}每个 2–8 个字，不带标点和空格（* 代表任意一个字）")
+    if WILDCARD in word and len(word) - word.count(WILDCARD) < MIN_FIXED:
+        raise VoiceError(f"带 * 的{what}至少要有 {MIN_FIXED} 个确定的字，比如「你好小*」「小*同学」")
     return word
 
 

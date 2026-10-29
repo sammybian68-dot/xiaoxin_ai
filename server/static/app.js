@@ -1231,7 +1231,7 @@ async function loadVoices() {
 
 // ---------------------------------------------------------------- 唤醒词 / 退出词：一行一个，＋ 添加，命中任意一个就算
 
-const WORD_KIND = { "wake-list": { key: "wake_words", name: "唤醒词", hint: "比如：小新同学" },
+const WORD_KIND = { "wake-list": { key: "wake_words", name: "唤醒词", hint: "比如：小*同学" },
                     "exit-list": { key: "exit_words", name: "退出词", hint: "比如：小新退下" } };
 
 function renderWords(id, words) {

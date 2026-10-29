@@ -8,6 +8,7 @@ import java.util.List;
  *   - 去掉标点空格、英文转小写再比
  *   - 「小新」认成同音的「小心 / 小欣 / 小鑫」也算（端侧小模型实测常把小新认成小心）
  *   - 列表里命中任意一个就算（或的关系）
+ *   - 「*」匹配恰好一个字：「你好小*」能命中「你好小婷」「你好小嗯」，「小*同学」能命中「小英同学」
  * 区别只有一个：唤醒词看开头（后面可以接问题，one-shot），退出词要整句正好是它（「你先退下吧」不算）。
  */
 public final class Keywords {
@@ -16,6 +17,22 @@ public final class Keywords {
     private static final String[] LEADS = {"", "嘿", "哎", "喂", "嗨"};
 
     private Keywords() {}
+
+    private static final char WILDCARD = '*';
+
+    /** b 从 i 开始是不是 pattern（* 当任意一个字）。 */
+    static boolean matchAt(String b, int i, String pattern) {
+        if (i + pattern.length() > b.length()) {
+            return false;
+        }
+        for (int k = 0; k < pattern.length(); k++) {
+            char c = pattern.charAt(k);
+            if (c != WILDCARD && c != b.charAt(i + k)) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     static String bare(String text) {
         StringBuilder b = new StringBuilder();
@@ -51,7 +68,7 @@ public final class Keywords {
         for (String word : words) {
             for (String f : forms(word)) {
                 for (String lead : LEADS) {
-                    if (!f.isEmpty() && b.startsWith(lead + f)) {
+                    if (!f.isEmpty() && b.startsWith(lead) && matchAt(b, lead.length(), f)) {
                         int rest = b.length() - (lead + f).length();
                         best = best < 0 ? rest : Math.min(best, rest);
                     }
@@ -67,7 +84,7 @@ public final class Keywords {
         for (String word : words) {
             for (String f : forms(word)) {
                 for (String lead : LEADS) {
-                    if (!f.isEmpty() && b.startsWith(lead + f)) {
+                    if (!f.isEmpty() && b.startsWith(lead) && matchAt(b, lead.length(), f)) {
                         return true;
                     }
                 }
@@ -84,7 +101,7 @@ public final class Keywords {
         }
         for (String word : words) {
             for (String f : forms(word)) {
-                if (b.equals(f)) {
+                if (b.length() == f.length() && matchAt(b, 0, f)) {
                     return true;
                 }
             }

@@ -390,3 +390,25 @@ def test_bearer_auth_without_origin(anon, fakes):
     """APK 用 Bearer、不带 Origin。"""
     with anon.websocket_connect("/api/talk", headers={"Authorization": f"Bearer {TEST_KEY}"}) as ws:
         assert json.loads(ws.receive_text())["type"] == "ready"
+
+
+# ---------------------------------------------------------------- * 通配：匹配恰好一个字（2026-10-30 用户真人测，小新常被认成别的字）
+
+@pytest.mark.parametrize("text,rest", [
+    ("你好小婷", ""), ("你好小嗯", ""), ("小英同学", ""), ("小安同学", ""),
+    ("你好小婷现在几点", "现在几点"), ("小安同学，帮我开空调", "帮我开空调"),
+    ("是林同学", "是林同学"),      # 第一个字不是「小」：不算
+    ("今天上学的同学", "今天上学的同学"),
+    ("你好", "你好"),              # 短了：不算
+])
+def test_wildcard_wake(text, rest):
+    from server.talk import strip_wake_word
+
+    assert strip_wake_word(text, ["你好小*", "小*同学"]) == rest
+
+
+def test_wildcard_exit_is_still_whole_sentence():
+    from server.talk import is_exit
+
+    assert is_exit("小英退下", ["小*退下"]) and is_exit("小新退下。", ["小*退下"])
+    assert not is_exit("小英退下吧", ["小*退下"]) and not is_exit("小退下", ["小*退下"])

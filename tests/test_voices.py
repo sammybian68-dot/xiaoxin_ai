@@ -305,3 +305,11 @@ def test_prepare_clone_picks_reference_and_recognizes_it(fakes):
     assert 6.0 <= out["ref"]["seconds"] <= 10.5
     assert out["ref"]["text"] == fakes.doubao_text
     assert store.sample_path(meta["id"]).with_suffix(".ref.wav").is_file()
+
+
+def test_wildcard_words_validated(fakes):
+    assert voices.set_engines(wake_words=["小新同学", "你好小*", "小*同学"])["wake_words"] == ["小新同学", "你好小*", "小*同学"]
+    with pytest.raises(voices.VoiceError, match="确定的字"):
+        voices.set_engines(wake_words=["小***"])
+    with pytest.raises(voices.VoiceError, match="确定的字"):
+        voices.set_exit = voices.set_engines(exit_words=["*下"])

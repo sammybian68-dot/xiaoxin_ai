@@ -67,6 +67,16 @@ def _bare(text: str) -> str:
     return "".join(c for c in text if c not in _PUNCT).lower()
 
 
+WILDCARD = "*"  # 唤醒词 / 退出词里的「*」匹配恰好一个字：「你好小*」「小*同学」
+
+
+def _match_at(bare: str, i: int, pattern: str) -> bool:
+    """bare[i:] 开头是不是 pattern（* 当任意一个字）。"""
+    if i + len(pattern) > len(bare):
+        return False
+    return all(p == WILDCARD or p == bare[i + k] for k, p in enumerate(pattern))
+
+
 def wake_forms(wake: str) -> list[str]:
     """一个唤醒词能接受的写法：原样，加上把「小新」换成同音字的。"""
     forms = [wake]
@@ -84,7 +94,7 @@ def strip_wake_word(text: str, wakes) -> str:
     for wake in ([wakes] if isinstance(wakes, str) else wakes):
         for form in wake_forms(wake):
             for lead in _LEADS:
-                if bare.startswith(lead + form):
+                if bare.startswith(lead) and _match_at(bare, len(lead), _bare(form)):
                     # 在原文里找到唤醒词最后一个字的位置，从后面切，保留原文的标点
                     seen, need = 0, len(lead + form)
                     for i, c in enumerate(text):
@@ -99,7 +109,8 @@ def is_exit(text: str, exits) -> bool:
     """整句（去掉标点空格）正好是某个退出词，「小新」认成「小心」也算（和唤醒词同一套）。「你先退下吧」不算。
     pad 上是 Keywords.equalsAny 在本机先判；这里给浏览器和本机没判到的兜底。"""
     bare = _bare(text)
-    return bool(bare) and any(bare == _bare(f) for e in exits for f in wake_forms(e))
+    return bool(bare) and any(len(bare) == len(_bare(f)) and _match_at(bare, 0, _bare(f))
+                              for e in exits for f in wake_forms(e))
 
 
 class Talk:
