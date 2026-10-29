@@ -7,12 +7,12 @@
   asr_engine   doubao | paraformer
   tts_engine   doubao | cosyvoice
   doubao_voice     豆包引擎上选的音色（doubao:…）
-  cosyvoice_voice  CosyVoice 引擎上选的音色（cosyvoice:male 或 clone:…），默认官方男声
+  cosyvoice_voice  CosyVoice 引擎上选的音色（cosyvoice:male 或 clone:…），默认内置男声
   voice            最近选的那个（老数据兼容）
-每个音色只属于一个引擎：豆包音色走豆包；CosyVoice 用官方男声或自己录的声音。点哪个音色，引擎就切到它那边；
+每个音色只属于一个引擎：豆包音色走豆包；CosyVoice 用内置男声或自己录的声音。点哪个音色，引擎就切到它那边；
 切引擎时用那个引擎上次选的音色。
 以前试过拿豆包念的一段当 CosyVoice 的参考，豆包参考 25–40% 整段无声，2026-10-30 去掉了。
-  cosyvoice:male     CosyVoice 官方男声（见 BUILTIN_MALE_*）
+  cosyvoice:male     CosyVoice 内置男声（见 BUILTIN_MALE_*）
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ ASR_ENGINES = [
 ]
 TTS_ENGINES = [
     ("doubao", "豆包", "云端，音色多"),
-    ("cosyvoice", "CosyVoice", "gpu2 本机 CosyVoice3，官方男声或自己录的声音"),
+    ("cosyvoice", "CosyVoice", "gpu2 本机 CosyVoice3，内置男声或自己录的声音"),
 ]
 ASR_IDS = {e[0] for e in ASR_ENGINES}
 TTS_IDS = {e[0] for e in TTS_ENGINES}
@@ -56,14 +56,14 @@ PRESETS = [
 ]
 DEFAULT = "doubao:" + PRESETS[0][0]
 
-# CosyVoice3 没有内置音色（只能 zero-shot），「原生」就是拿官方素材当参考。官方两段素材里唯一的男声是
-# asset/cross_lingual_prompt.wav（13.7 秒，音高约 150 Hz）。整段拿来当参考 15 次里 4 次整段无声，
-# 2026-10-30 在 gpu2 切了几段比：0.3–9.9 秒这段最稳，32 次 0 次无声、0 次跑飞，首个有声样本中位 0.51 秒，
-# 念出来音高约 165 Hz。参考文字是 Paraformer 认的，按原音逐字校过。
-COSYVOICE_ASSET = Path(os.environ.get("COSYVOICE_ASSET", "/Data/cmbian/codes/carHer2/vendor/CosyVoice/asset"))
-BUILTIN_MALE_SOURCE = "cross_lingual_prompt.wav"
-BUILTIN_MALE_SPAN = (0.3, 9.9)
-BUILTIN_MALE_TEXT = "在那之后，完全收购那家公司，因此保持管理层的一致性利益与即将加入家族的资产保持一致。"
+# CosyVoice3 没有内置音色（只能 zero-shot），要给一段男声当参考。2026-10-30 用户在四个候选里试听选了
+# MiMo-Audio 的官方中文男声示例 examples/prompt_speech_zh_m.wav（4.5 秒，24 kHz，音高约 125 Hz）。
+# CosyVoice 官方那段 cross_lingual_prompt.wav 用户嫌口音重，不用了。
+# 切到前后各留 0.1 秒（0.04–4.53 秒）最稳：48 次 0 次无声，首个有声样本中位 0.29 秒、最大 0.60 秒，念出来约 126 Hz。
+COSYVOICE_ASSET = Path(os.environ.get("COSYVOICE_ASSET", "/Data/cmbian/codes/mimo_audio/MiMo-Audio/examples"))
+BUILTIN_MALE_SOURCE = "prompt_speech_zh_m.wav"
+BUILTIN_MALE_SPAN = (0.04, 4.53)
+BUILTIN_MALE_TEXT = "养殖场的工作人员说，猪尾巴甩起来，就说明猪高兴。"
 BUILTIN = "cosyvoice:male"
 PREVIEW = "你好，我是小新。今天的作业写完了吗？有不会的题可以来问我。"
 
@@ -115,7 +115,7 @@ def catalog() -> dict:
     out += [{"id": "doubao:" + c["speaker"], "kind": "doubao", "name": c["name"], "desc": "自己加的豆包音色",
              "custom": True, "engine": "doubao", "ready": True} for c in custom]
     out.append({"id": BUILTIN, "kind": "builtin", "name": "CosyVoice 男声",
-                "desc": "男 · 官方音色（本机，最稳）", "engine": "cosyvoice", "ready": ready})
+                "desc": "男 · 普通话（本机，最稳）", "engine": "cosyvoice", "ready": ready})
     for m in store.list_samples():
         ref = m.get("ref") or {}
         out.append({"id": "clone:" + m["id"], "kind": "clone", "name": m.get("name") or "我的声音",
@@ -184,13 +184,13 @@ _builtin_lock = threading.Lock()
 
 
 def builtin_reference() -> tuple:
-    """CosyVoice 官方男声给 CosyVoice 用的 (参考音频, 参考文字)。
+    """内置男声给 CosyVoice 用的 (参考音频, 参考文字)。
 
-    从官方素材切一次存到数据目录，之后直接读。官方素材是 22.05 kHz s16，这里转 16 kHz。
+    从素材切一次存到数据目录，之后直接读；文件名带上素材名，换了素材会重新切。素材是 s16 wav，这里转 16 kHz。
     """
     import wave
 
-    path = store.VOICE / "builtin" / "cosyvoice_male.wav"
+    path = store.VOICE / "builtin" / f"male_{Path(BUILTIN_MALE_SOURCE).stem}.wav"
     with _builtin_lock:
         if not path.is_file():
             src = COSYVOICE_ASSET / BUILTIN_MALE_SOURCE
@@ -198,7 +198,7 @@ def builtin_reference() -> tuple:
                 with wave.open(str(src), "rb") as w:
                     rate, raw = w.getframerate(), w.readframes(w.getnframes())
             except (OSError, wave.Error) as e:
-                raise VoiceError(f"找不到 CosyVoice 官方男声素材：{src}") from e
+                raise VoiceError(f"找不到 CosyVoice 内置男声素材：{src}") from e
             pcm = cosyvoice.resample_s16(raw, rate, 16000)
             a, b = (int(s * 16000) * 2 for s in BUILTIN_MALE_SPAN)
             doubao.write_wav(path, pcm[a:b], 16000)

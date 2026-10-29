@@ -266,7 +266,7 @@ def test_chat_speak_cosyvoice_when_engine_selected(client, fakes):
 
 
 def test_chat_speak_cosyvoice_builtin_male(client, fakes):
-    """切到 CosyVoice 默认就是官方男声：参考是官方素材，不拿豆包念参考、不走豆包流式。"""
+    """切到 CosyVoice 默认就是内置男声：参考是内置素材，不拿豆包念参考、不走豆包流式。"""
     assert client.put("/api/engines", json={"tts": "cosyvoice"}).json()["tts"] == "cosyvoice"
     assert client.get("/api/voices").json()["current"] == voices.BUILTIN
     cid, ev = chat(client, speak=True)

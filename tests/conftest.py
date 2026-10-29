@@ -54,12 +54,12 @@ def isolate_env(request, tmp_path, monkeypatch):
 
 @pytest.fixture(scope="session")
 def fake_cosyvoice_asset(tmp_path_factory):
-    """CosyVoice 官方素材：造一段 22.05 kHz、14 秒的「男声」，不依赖 gpu2 上的 carHer2。整个测试只造一次。"""
+    """内置男声素材：造一段 24 kHz、5 秒的「男声」（和真素材同采样率），不依赖 gpu2。整个测试只造一次。"""
     from server import voices
     from tests.audio import tone, wav_bytes
 
     asset = tmp_path_factory.mktemp("cosyvoice_asset")
-    (asset / voices.BUILTIN_MALE_SOURCE).write_bytes(wav_bytes(tone(14.0, rate=22050, freq=150), rate=22050))
+    (asset / voices.BUILTIN_MALE_SOURCE).write_bytes(wav_bytes(tone(5.0, rate=24000, freq=125), rate=24000))
     return asset
 
 

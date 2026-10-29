@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from server import store, voices
@@ -86,7 +88,7 @@ def test_each_engine_remembers_its_own_voice(fakes):
 
 
 def test_old_settings_with_doubao_voice_on_cosyvoice_use_builtin(fakes):
-    """老数据：以前允许 CosyVoice + 豆包音色，现在 CosyVoice 下就落到官方男声。"""
+    """老数据：以前允许 CosyVoice + 豆包音色，现在 CosyVoice 下就落到内置男声。"""
     store.update_settings(tts_engine="cosyvoice", voice=XIAOHE)
     cat = voices.catalog()
     assert cat["current"] == voices.BUILTIN and cat["doubao_voice"] == XIAOHE
@@ -175,7 +177,7 @@ def test_builtin_reference_cut_from_official_asset_at_16k(fakes):
     a, b = voices.BUILTIN_MALE_SPAN
     assert text == voices.BUILTIN_MALE_TEXT
     assert ref.size == pytest.approx((b - a) * 16000, abs=2)
-    assert (store.VOICE / "builtin" / "cosyvoice_male.wav").is_file()
+    assert (store.VOICE / "builtin" / f"male_{Path(voices.BUILTIN_MALE_SOURCE).stem}.wav").is_file()
 
 
 def test_builtin_reference_cached(fakes, monkeypatch):
@@ -186,7 +188,7 @@ def test_builtin_reference_cached(fakes, monkeypatch):
 
 def test_builtin_reference_missing_asset(fakes, monkeypatch, tmp_path):
     monkeypatch.setattr(voices, "COSYVOICE_ASSET", tmp_path / "nope")
-    with pytest.raises(voices.VoiceError, match="官方男声素材"):
+    with pytest.raises(voices.VoiceError, match="内置男声素材"):
         voices.builtin_reference()
 
 
