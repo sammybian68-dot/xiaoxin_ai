@@ -104,7 +104,9 @@ async def guard(request: Request, call_next):
         if not ok:
             return Response('{"detail":"要先登录"}', 401, media_type="application/json")
     response = await call_next(request)
-    if response.headers.get("content-type", "").startswith("text/html"):
+    # 页面和 static/ 下的 js / css 都要每次跟服务端确认：不然部署后 pad 的 WebView 还拿着旧的 app.js / app.css，
+    # 新旧混着用，样式和逻辑对不上（2026-10-30 端侧调试列表就因为旧 css 挤成一团）
+    if response.headers.get("content-type", "").startswith("text/html") or path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -128,17 +130,28 @@ def me() -> dict:
             "vision_model": VISION, "fallback_model": FALLBACK}
 
 
+def _index_html() -> Response:
+    """index.html 里的 app.js / app.css 地址带上文件修改时间，部署后浏览器和 pad 一定拿新的。"""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    for name in ("app.js", "app.css"):
+        v = int((STATIC / name).stat().st_mtime)
+        html = html.replace(f'static/{name}"', f'static/{name}?v={v}"')
+    return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/")
 def index(request: Request, k: str = "") -> Response:
     """带 ?k= 是免密链接：对了就种 cookie，再跳回不带 k 的地址，免得 key 留在地址栏和历史记录里。"""
     if k:
         key = _key()
         if not _same(k, key):
-            return FileResponse(STATIC / "index.html", headers={"X-Xiaoxin-Link": "bad"})
+            resp = _index_html()
+            resp.headers["X-Xiaoxin-Link"] = "bad"
+            return resp
         resp = RedirectResponse("./", status_code=303)
         resp.headers["Referrer-Policy"] = "no-referrer"
         return _remember(request, resp, key)
-    return FileResponse(STATIC / "index.html")
+    return _index_html()
 
 
 @app.get("/voice")
