@@ -176,12 +176,18 @@ public final class Talk {
     /**
      * 通话中本机也听退出词：麦克风这一路一边上传，一边过本机断句 + Paraformer，整句是退出词就回调 onExit，
      * 不等云端（云端识别要 0.5–0.8 秒，还可能认成别的字）。和待命听唤醒词是同一个模型、同一套比对（Keywords）。
+     * 每句本机认出的字也发给服务端（{"type":"local"}），存到那条用户消息上，和云端识别、原声对照着查。
      */
     public void watchExit(LocalAsr asr, String[] exitWords, int endMs, Runnable onExit) {
         this.exitAsr = asr;
         this.exitWords = exitWords;
         this.onExit = onExit;
         this.exitVad = new Vad(endMs);
+    }
+
+    /** 通话中改了设置里的退出词，马上生效。 */
+    public void setExitWords(String[] words) {
+        this.exitWords = words;
     }
 
     private volatile LocalAsr exitAsr;
@@ -207,13 +213,20 @@ public final class Talk {
             Vad v = exitVad;
             if (v != null && exitAsr != null) {
                 v.feed(frame, n, pcm -> exitPool.execute(() -> {
-                    // 退出词都很短：超过 3 秒的句子不可能是，省得每句话都识别一遍
-                    if (pcm.length > Pcm.SAMPLE_RATE * 2 * 3 || !running) {
+                    if (!running) {
                         return;
                     }
-                    String text = exitAsr.decode(pcm, pcm.length);
+                    String text = exitAsr.decode(pcm, pcm.length);  // 2 秒一句 0.05 秒，每句都认也不费事
                     if (Keywords.equalsAny(text, exitWords) && running && onExit != null) {
                         onExit.run();
+                        return;
+                    }
+                    if (!text.isEmpty()) {
+                        try {
+                            sendText(new JSONObject().put("type", "local").put("text", text).toString());
+                        } catch (JSONException ignored) {
+                            // 拼 JSON 不会失败
+                        }
                     }
                 }));
             }

@@ -412,3 +412,39 @@ def test_wildcard_exit_is_still_whole_sentence():
 
     assert is_exit("小英退下", ["小*退下"]) and is_exit("小新退下。", ["小*退下"])
     assert not is_exit("小英退下吧", ["小*退下"]) and not is_exit("小退下", ["小*退下"])
+
+
+def test_utterance_audio_saved_and_replayable(call, client, fakes):
+    """用户那句的原声存下来，气泡上的小喇叭能拉回放；端侧认出的字记在消息上。"""
+    c = call()
+    c.ws.send_text(json.dumps({"type": "local", "text": "退一下"}))
+    c.send_pcm(said())
+    h = c.until("heard")
+    c.until("idle")
+    assert h["audio"] is True and h["local"] == "退一下"
+    cid = c.msgs[0]["conversation"]
+    user = store.get(cid)["messages"][0]
+    assert user["id"] == h["id"] and user["local"] == "退一下" and user["audio"] is True
+    r = client.get(f"/api/conversations/{cid}/audio/{h['id']}")
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
+    assert r.content[:4] == b"RIFF" and len(r.content) > 16000  # 至少半秒 16 kHz
+    # 删对话连原声一起删
+    client.delete(f"/api/conversations/{cid}")
+    assert client.get(f"/api/conversations/{cid}/audio/{h['id']}").status_code == 404
+
+
+def test_one_shot_wake_has_no_audio_but_local_text(call, fakes):
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学现在几点"}))
+    h = c.until("heard")
+    c.until("idle")
+    assert h["audio"] is False and h["local"] == "小新同学现在几点"
+
+
+def test_utterance_audio_bad_ids(client):
+    assert client.get("/api/conversations/../audio/x").status_code == 404
+    assert client.get("/api/conversations/0123456789abcdef/audio/0123456789abcdef").status_code == 404
+
+
+def test_utterance_audio_requires_auth(anon):
+    assert anon.get("/api/conversations/0123456789abcdef/audio/0123456789abcdef").status_code == 401

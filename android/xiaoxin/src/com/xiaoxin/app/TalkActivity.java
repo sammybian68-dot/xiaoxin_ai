@@ -310,6 +310,10 @@ public class TalkActivity extends Activity {
         }
         if (exits != null && !exits.isEmpty()) {
             exitWords = Keywords.split(exits);
+            Talk t = talk;
+            if (t != null) {
+                t.setExitWords(exitWords);
+            }
         }
         if (idleS > 0) {
             wakeIdleS = idleS;

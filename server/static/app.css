@@ -154,6 +154,10 @@ button { cursor: pointer; }
 .sources a:hover, .sources a:focus-visible { opacity: 1; text-decoration: underline; }
 .sources small { color: var(--muted); }
 .via { font-size: 12px; opacity: .75; }
+.replay { align-self: flex-end; background: none; border: 0; padding: 2px 6px; font-size: 16px; line-height: 1; cursor: pointer; opacity: .8; }
+.replay:hover { opacity: 1; }
+.asr-cmp { font-size: 13px; line-height: 1.6; padding: 6px 10px; border-radius: 10px; background: var(--raised); max-width: 100%; }
+.asr-cmp b { font-weight: 600; opacity: .7; margin-right: 8px; }
 .error .text { background: #3a1f22; color: #ffc9c9; }
 
 /* 输入 */

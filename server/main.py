@@ -193,6 +193,18 @@ def conversation(cid: str) -> dict:
         raise HTTPException(404, "没有这段对话")
 
 
+@app.get("/api/conversations/{cid}/audio/{mid}")
+def utterance(cid: str, mid: str) -> FileResponse:
+    """自由对话里用户那句的原声（服务端断句后送去识别的那段），气泡上的小喇叭回放用。"""
+    try:
+        path = store.utterance_path(cid, mid)
+    except KeyError:
+        path = None
+    if path is None:
+        raise HTTPException(404, "这句没存原声")
+    return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "private, max-age=86400"})
+
+
 @app.delete("/api/conversations/{cid}")
 def delete_conversation(cid: str) -> dict:
     try:

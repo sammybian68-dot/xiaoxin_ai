@@ -8,11 +8,15 @@
         文本帧 {"type":"wake","text":"<端侧认出的整句>","acked":true}  pad 待命唤醒后发的第一句：端侧 Paraformer 已经认好了，
                  服务端去掉开头的唤醒词，剩下有内容就直接当这一轮的问题（省掉云端识别）；只喊了唤醒词：
                  acked 表示 pad 已经用本机缓存说了「在」，这边就不再合成；没 acked 才合成一句「在」
+        文本帧 {"type":"local","text":"<端侧 Paraformer 认出的一句>"}  pad 通话中本机断句识别的结果（排查用），
+                 记到下一条存下的用户消息上（local 字段），和云端识别、原声放一起对照
   下行  文本帧 JSON：
         ready      {conversation, asr, tts, voice}           准备好了，可以说话
         listening  {}                                         用户开口了（VAD start）
         model      {model}                                    换模型生效了
-        heard      {text, t_asr}                              一句话识别完；t_asr 是说完到识别出来的秒数
+        heard      {text, t_asr, id, local, audio}            一句话识别完；t_asr 是说完到识别出来的秒数；id 是存下的用户消息；
+                                                              local 端侧认出的（没有是空）；audio 有没有存原声
+                                                              （GET /api/conversations/<cid>/audio/<id> 回放）
         thinking   {}                                         送给模型了
         search     {queries, state, ok, sources}              联网搜索，同对话页
         delta      {text}                                     回答正文
@@ -133,6 +137,7 @@ class Talk:
         self.turn_id = 0
         self._send_lock = asyncio.Lock()
         self.closed = False
+        self._local: list[str] = []  # 端侧认出、还没对上用户消息的句子
 
     # ---------------------------------------------------------------- 下行
     async def send(self, kind: str, **data) -> None:
@@ -170,6 +175,10 @@ class Talk:
                 if cmd.get("type") == "model" and cmd.get("model") in self._models:
                     self.model = cmd["model"]  # 下一轮起生效，正在答的这一轮不换
                     await self.send("model", model=self.model)
+                elif cmd.get("type") == "local":
+                    text = str(cmd.get("text") or "").strip()[:200]
+                    if text:
+                        self._local = (self._local + [text])[-4:]
                 elif cmd.get("type") == "wake":
                     await self.on_wake(str(cmd.get("text") or ""), quiet=bool(cmd.get("acked")))
         finally:
@@ -195,6 +204,7 @@ class Talk:
         await self.cancel_turn()
         self.turn_id += 1
         if rest:
+            self._local = [text]  # one-shot：这句本来就是端侧认的
             self.turn = asyncio.create_task(self.answer(self.turn_id, b"", text=rest))
         elif not quiet:
             self.turn = asyncio.create_task(self.answer(self.turn_id, b"", text=WAKE_ACK, ack=True))
@@ -228,7 +238,9 @@ class Talk:
                 await self.send("error", detail=f"识别失败：{str(e)[:120]}")
                 return
         t_asr = time.monotonic() - t0
-        log.info("talk turn %d heard %.1fs audio in %.2fs: %s", turn_id, len(utt) / 32000, t_asr, text[:60])
+        local, self._local = " / ".join(self._local), []
+        log.info("talk turn %d heard %.1fs audio in %.2fs: %s%s", turn_id, len(utt) / 32000, t_asr, text[:60],
+                 f" (端侧: {local[:60]})" if local else "")
         if not text:
             await self.send("idle")
             return
@@ -238,10 +250,13 @@ class Talk:
             await self.send("exit", text=text)
             await self.send("bye")
             return
-        await self.send("heard", text=text, t_asr=round(t_asr, 2))
         model = self.model
         t_search, search_at, first_text, saved_id = 0.0, None, None, None
-        store.append(self.cid, {"role": "user", "text": text, "files": [], "via": "talk"})
+        user = store.append(self.cid, {"role": "user", "text": text, "files": [], "via": "talk",
+                                       "local": local, "audio": bool(utt)})
+        if utt:
+            await asyncio.to_thread(store.save_utterance, self.cid, user["id"], utt)
+        await self.send("heard", text=text, t_asr=round(t_asr, 2), id=user["id"], local=local, audio=bool(utt))
         history = self._history(store.get(self.cid))
         tts, note = self._make_speech()
         if note:

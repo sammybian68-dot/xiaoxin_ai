@@ -81,6 +81,34 @@ def create() -> dict:
 def delete(cid: str) -> None:
     with _lock:
         (CONV / f"{_check(cid)}.json").unlink(missing_ok=True)
+        d = TALK_AUDIO / cid
+        for p in d.glob("*.wav"):
+            p.unlink(missing_ok=True)
+        if d.is_dir():
+            d.rmdir()
+
+
+# 自由对话里用户说的那句原声（服务端收到的 16 kHz PCM），点气泡上的小喇叭回放，查「说了什么、听成了什么」
+TALK_AUDIO = DATA / "talk_audio"
+
+
+def save_utterance(cid: str, mid: str, pcm: bytes) -> None:
+    d = TALK_AUDIO / _check(cid)
+    d.mkdir(parents=True, exist_ok=True)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(pcm)
+    tmp = d / f"{_check(mid)}.tmp"
+    tmp.write_bytes(buf.getvalue())
+    tmp.replace(d / f"{mid}.wav")
+
+
+def utterance_path(cid: str, mid: str) -> Path | None:
+    p = TALK_AUDIO / _check(cid) / f"{_check(mid)}.wav"
+    return p if p.is_file() else None
 
 
 def append(cid: str, msg: dict) -> dict:

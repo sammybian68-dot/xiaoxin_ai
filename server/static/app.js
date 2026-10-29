@@ -168,8 +168,13 @@ function appendMessage(m) {
   const row = document.createElement("div");
   row.className = "msg " + (m.role === "user" ? "me" : "ai");
   if (m.role === "user") {
-    row.innerHTML = `<div class="bubble">${attachmentsHtml(m.files)}${m.text ? `<div class="text">${esc(m.text)}</div>` : ""}`
+    // 自由对话的句子：气泡上方一个小喇叭，点了回放服务端收到的原声，并摊开端侧（pad 本机）认出的字，对照云端识别查输入问题
+    const replay = m.via === "talk" && (m.audio || m.local != null)
+      ? `<button type="button" class="replay" title="回放原声、看端侧识别">🔊</button>` : "";
+    row.innerHTML = `<div class="bubble">${replay}${attachmentsHtml(m.files)}${m.text ? `<div class="text">${esc(m.text)}</div>` : ""}`
+      + `<div class="asr-cmp" hidden></div>`
       + `${m.via === "voice" ? '<div class="via">🎤 语音输入</div>' : m.via === "talk" ? '<div class="via">📞 自由对话</div>' : ""}</div>`;
+    if (replay) row.querySelector(".replay").addEventListener("click", (e) => replayUtterance(m, row, e.currentTarget));
   } else {
     row.innerHTML = `<img src="static/icon.png" alt="" class="avatar sm"><div class="bubble"><div class="text"></div>`
       + `<div class="sources" hidden></div>`
@@ -185,6 +190,24 @@ function appendMessage(m) {
   }
   box.appendChild(row);
   return row;
+}
+
+function replayUtterance(m, row, btn) {
+  const cmp = row.querySelector(".asr-cmp");
+  const local = (m.local || "").trim();
+  cmp.innerHTML = `<div><b>云端</b>${esc(m.text || "")}</div>`
+    + `<div><b>端侧</b>${local ? esc(local) : '<i>没有（端侧没断出这句，或不是 pad）</i>'}</div>`;
+  cmp.hidden = false;
+  if (player.btn === btn) { stopSpeaking(); return; }
+  stopSpeaking();
+  const cid = m.conv || state.conv?.id;
+  if (!m.audio || !cid) { toast("这句没存原声"); return; }
+  const audio = new Audio(`api/conversations/${cid}/audio/${m.id}`);
+  player.audio = audio;
+  player.btn = btn;
+  btn.textContent = "⏹";
+  audio.onended = () => { if (player.audio === audio) stopSpeaking(); };
+  audio.play().catch((err) => { if (player.audio === audio) { stopSpeaking(); toast("放不了：" + err.message); } });
 }
 
 // 联网搜过的回答，下面列出处（同一个网址只列一次，最多 6 条），点开是原网页
@@ -220,7 +243,7 @@ function stopSpeaking() {
   player.audio?.pause();
   player.stream?.stop();
   player.stream?.abort?.abort();  // 正在边生成边念：断开那条流，服务端不再合成、不再下发
-  if (player.btn) player.btn.textContent = "朗读";
+  if (player.btn) player.btn.textContent = player.btn.classList.contains("replay") ? "🔊" : "朗读";
   player.audio = player.btn = player.stream = null;
 }
 
@@ -921,7 +944,8 @@ function onTalkEvent(ev) {
       // 首响计时的起点：用户说完。本地收到 heard 的时刻往回推识别花的时间（服务端给的 t_asr）
       talk.t0 = performance.now() - (ev.t_asr || 0) * 1000;
       talk.firstText = talk.firstAudio = null;
-      appendMessage({ role: "user", text: ev.text, via: "talk" });
+      appendMessage({ role: "user", text: ev.text, via: "talk", id: ev.id, local: ev.local, audio: ev.audio,
+        conv: state.conv?.id });
       talk.row = appendMessage({ role: "assistant", text: "" });
       talk.row.querySelector(".text").classList.add("cursor");
       talk.row.querySelector(".text").innerHTML = '<span class="thinking">小新在想…</span>';
