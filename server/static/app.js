@@ -133,7 +133,7 @@ function closeSide() { $("side").classList.remove("open"); $("scrim").hidden = t
 $("menu").addEventListener("click", openSide);
 $("scrim").addEventListener("click", closeSide);
 
-$("free-talk").addEventListener("click", () => toast("自由对话在做了：全双工、可插话，需要先把回声消除接好"));
+$("free-talk").addEventListener("click", () => (talk.on ? hangUp() : startTalk()));
 
 // ---------------------------------------------------------------- 消息渲染
 
@@ -164,7 +164,7 @@ function appendMessage(m) {
   row.className = "msg " + (m.role === "user" ? "me" : "ai");
   if (m.role === "user") {
     row.innerHTML = `<div class="bubble">${attachmentsHtml(m.files)}${m.text ? `<div class="text">${esc(m.text)}</div>` : ""}`
-      + `${m.via === "voice" ? '<div class="via">🎤 语音输入</div>' : ""}</div>`;
+      + `${m.via === "voice" ? '<div class="via">🎤 语音输入</div>' : m.via === "talk" ? '<div class="via">📞 自由对话</div>' : ""}</div>`;
   } else {
     row.innerHTML = `<img src="static/icon.png" alt="" class="avatar sm"><div class="bubble"><div class="text"></div>`
       + `<div class="sources" hidden></div>`
@@ -249,6 +249,17 @@ class PcmStream {
       if (v >= 0x8000) v -= 0x10000;
       ch[i] = v / 32768;
     }
+    this.schedule(buf);
+  }
+  pushBytes(arrayBuf) {  // 自由对话走 WebSocket 二进制帧，不是 base64
+    if (this.stopped) return;
+    const pcm = new Int16Array(arrayBuf);
+    const buf = this.ctx.createBuffer(1, pcm.length, this.rate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+    this.schedule(buf);
+  }
+  schedule(buf) {
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.ctx.destination);
@@ -701,6 +712,148 @@ async function endHold() {
 holdBtn.addEventListener("pointerup", endHold);
 holdBtn.addEventListener("pointercancel", () => { hold.cancel = true; endHold(); });
 holdBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// ---------------------------------------------------------------- 自由对话
+// 一条 /api/talk WebSocket 全双工：麦克风一直送，服务端断句、识别、回答、朗读，用户插话就打断（协议见 server/talk.py）。
+// 在 pad 的「小新」APK 里，麦克风和喇叭交给原生的 window.XiaoxinNative（系统 AEC），网页只收事件、画界面；
+// 在电脑浏览器里，就用 getUserMedia（浏览器自带 AEC）和 Web Audio。
+
+const native = window.XiaoxinNative || null;
+const talk = { on: false, ws: null, rec: null, stream: null, row: null, text: "", searches: [] };
+
+function talkUi(on) {
+  $("free-talk").classList.toggle("on", on);
+  $("free-talk").textContent = on ? "■ 挂断" : "📞 自由对话";
+  $("talk-bar").hidden = !on;
+}
+function talkStatus(s) { $("talk-status").textContent = s; }
+
+async function startTalk() {
+  if (talk.on) return;
+  stopSpeaking();
+  talk.on = true;
+  talkUi(true);
+  talkStatus("连接中…");
+  const q = new URLSearchParams({ model: state.model });
+  if (state.conv) q.set("conversation", state.conv.id);
+  if (native) {
+    native.start(new URL(`api/talk?${q}`, location.href).href);  // 原生那边连、录、放，事件回 window.xiaoxinTalkEvent
+    return;
+  }
+  try {
+    const ws = new WebSocket(wsUrl(`api/talk?${q}`));
+    ws.binaryType = "arraybuffer";
+    talk.ws = ws;
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== "string") { talk.stream?.pushBytes(ev.data); return; }
+      onTalkEvent(JSON.parse(ev.data));
+    };
+    ws.onclose = (ev) => { if (talk.on) { toast(ev.code === 4401 ? "要先用免密链接打开一次" : "自由对话断开了"); hangUp(); } };
+    await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error("连不上")); });
+    talk.rec = new Recorder(
+      (peak) => drawTalkLevel(peak),
+      (pcm) => { if (ws.readyState === WebSocket.OPEN) ws.send(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength)); },
+    );
+    await talk.rec.start();
+  } catch (err) {
+    toast(err.message);
+    hangUp();
+  }
+}
+
+function hangUp() {
+  if (!talk.on) return;
+  talk.on = false;
+  talkUi(false);
+  if (native) native.stop();
+  try { talk.ws?.send(JSON.stringify({ type: "stop" })); } catch (_) { /* 已断 */ }
+  talk.ws?.close();
+  talk.rec?.stop().catch(() => {});
+  talk.stream?.stop();
+  talk.ws = talk.rec = talk.stream = null;
+  finishTalkRow();
+  refreshList();
+}
+
+function drawTalkLevel(peak) {
+  $("talk-level").style.transform = `scaleX(${Math.max(0.04, Math.min(1, peak * 3))})`;
+}
+
+function finishTalkRow() {
+  const row = talk.row;
+  if (!row) return;
+  row.querySelector(".text").classList.remove("cursor");
+  row.dataset.reply = talk.text;
+  if (!talk.text) row.remove();
+  talk.row = null;
+}
+
+// 服务端事件。浏览器自己连时从 ws.onmessage 来；APK 里由原生调 window.xiaoxinTalkEvent(json)
+function onTalkEvent(ev) {
+  switch (ev.type) {
+    case "ready":
+      talkStatus("在听，直接说");
+      if (!state.conv || state.conv.id !== ev.conversation) {
+        state.conv = { id: ev.conversation, messages: [] };
+        localSet("conv", ev.conversation);
+        if (!$("messages").querySelector(".msg")) $("messages").innerHTML = "";
+      }
+      break;
+    case "listening": talkStatus("在听…"); break;
+    case "interrupt":
+      talkStatus("你说，我听着");
+      talk.stream?.stop();
+      talk.stream = null;
+      finishTalkRow();
+      break;
+    case "heard":
+      finishTalkRow();
+      appendMessage({ role: "user", text: ev.text, via: "talk" });
+      talk.row = appendMessage({ role: "assistant", text: "" });
+      talk.row.querySelector(".text").classList.add("cursor");
+      talk.row.querySelector(".text").innerHTML = '<span class="thinking">小新在想…</span>';
+      talk.text = "";
+      talk.searches = [];
+      talkStatus("想一想…");
+      scrollDown(true);
+      break;
+    case "search":
+      if (!talk.row) break;
+      if (ev.state === "start") {
+        if (!talk.text) talk.row.querySelector(".text").innerHTML = `<span class="thinking">🔎 正在搜：${esc(ev.queries.join("、"))}…</span>`;
+        talkStatus("上网查一下…");
+      } else {
+        talk.searches.push(ev);
+        renderSources(talk.row, talk.searches);
+      }
+      break;
+    case "delta":
+      if (!talk.row) break;
+      talk.text += ev.text;
+      talk.row.querySelector(".text").innerHTML = renderText(talk.text);
+      scrollDown();
+      break;
+    case "reply":
+      if (talk.row) talk.row.querySelector(".meta").textContent = ev.message.model || "";
+      break;
+    case "speaking":
+      talkStatus("小新在说（可以直接打断）");
+      if (!native) talk.stream = new PcmStream(ev.sample_rate || 24000);
+      break;
+    case "idle":
+      talkStatus("在听，直接说");
+      talk.stream?.close();
+      finishTalkRow();
+      break;
+    case "note": toast(ev.detail); break;
+    case "error": toast(ev.detail); talkStatus(ev.detail); break;
+    // 原生那边自己的状态
+    case "native_level": drawTalkLevel(ev.level / 100); break;
+    case "native_closed": if (talk.on) { toast(ev.reason || "自由对话断开了"); hangUp(); } break;
+    default: break;
+  }
+}
+window.xiaoxinTalkEvent = onTalkEvent;
 
 // ---------------------------------------------------------------- 录我的声音
 

@@ -167,7 +167,11 @@ class TurnSpeech:
         return max(0, min(allowed, len(self._pcm) - self._sent))
 
     def take_audio(self) -> list[str]:
-        """非阻塞：把现在允许发的 PCM 按 100 ms 切块，base64 返回。"""
+        """非阻塞：把现在允许发的 PCM 按 100 ms 切块，base64 返回（SSE 用）。"""
+        return [base64.b64encode(b).decode() for b in self.take_audio_bytes()]
+
+    def take_audio_bytes(self) -> list[bytes]:
+        """同 take_audio，返回原始字节（WebSocket 二进制帧用）。"""
         out = []
         while True:
             n = self._due()
@@ -183,7 +187,7 @@ class TurnSpeech:
             if self._clock is None:
                 self._clock = time.monotonic()
                 self.first_audio_at = self._clock - self.t0
-            out.append(base64.b64encode(bytes(self._pcm[self._sent:self._sent + n])).decode())
+            out.append(bytes(self._pcm[self._sent:self._sent + n]))
             self._sent += n
         return out
 

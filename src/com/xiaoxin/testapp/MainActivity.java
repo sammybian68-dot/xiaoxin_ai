@@ -12,6 +12,7 @@ import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.xiaoxin.testapp.echo.EchoActivity;
 import com.xiaoxin.testapp.frontcamera.FrontCameraActivity;
 import com.xiaoxin.testapp.mic.MicActivity;
 
@@ -40,6 +41,7 @@ public class MainActivity extends Activity {
         cards.setGravity(Gravity.CENTER_VERTICAL);
         cards.addView(card("前摄", "每秒一帧", "画面只在中间一小块", 0xFF7EB6FF, FrontCameraActivity.class));
         cards.addView(card("麦克风", "16 kHz 原始 PCM", "说完可以回听", 0xFF3DDC84, MicActivity.class));
+        cards.addView(card("回声", "边放边录", "看系统 AEC 消掉多少", 0xFFFFB74D, EchoActivity.class));
         root.addView(cards);
         setContentView(root);
     }

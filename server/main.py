@@ -327,6 +327,21 @@ def _reply_record(text: str, end: dict) -> dict:
     return rec
 
 
+def _turn_speech():
+    """按设置里的 TTS 引擎和音色建一轮朗读。返回 (TurnSpeech, 说明)；CosyVoice 用不了时换豆包，说明里写原因。"""
+    from server import speech
+
+    cur, engine, note = voices.resolve()
+    if engine == "cosyvoice":
+        try:
+            return speech.TurnSpeech(cosyvoice=voices.reference(cur)), note
+        except (voices.VoiceError, OSError) as e:
+            if cur["kind"] == "clone":
+                cur = voices.find(voices.catalog()["doubao_voice"])
+            note = f"{e}，这次用豆包念"
+    return speech.TurnSpeech(cur["id"].split(":", 1)[1]), note
+
+
 _BACKGROUND: set = set()  # 后台收尾任务，留着引用免得被回收
 
 
@@ -385,20 +400,10 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
     user = store.append(cid, {"role": "user", "text": text, "files": files, "via": body.get("via") or "text"})
     history = _llm_messages(store.get(cid))
 
-    # 设置里选的 TTS 引擎和音色；CosyVoice 用不了时换成豆包，note 给前端提示
     voice_note = ""
     tts = None
     if body.get("speak"):
-        cur, engine, voice_note = voices.resolve()
-        if engine == "cosyvoice":
-            try:
-                tts = speech.TurnSpeech(cosyvoice=voices.reference(cur))
-            except (voices.VoiceError, OSError) as e:
-                if cur["kind"] == "clone":
-                    cur = voices.find(voices.catalog()["doubao_voice"])
-                voice_note = f"{e}，这次用豆包念"
-        if tts is None:
-            tts = speech.TurnSpeech(cur["id"].split(":", 1)[1])
+        tts, voice_note = _turn_speech()
 
     async def events():
         loop = asyncio.get_running_loop()
@@ -564,7 +569,9 @@ def _speak(text: str, voice_id: str | None) -> Response:
 MAX_TALK_SECONDS = 60
 # 浏览器带 cookie 连 WebSocket 时校验来源，防别的网站借用户的登录态连进来。APK 用 Bearer、不带 Origin。
 ALLOWED_ORIGINS = {o.strip() for o in (doubao.env("XIAOXIN_ORIGINS")
-                                       or "https://gpu.cmbian.top:8183,http://127.0.0.1:8199").split(",") if o.strip()}
+                                       or "https://gpu.cmbian.top:8183,https://47.116.13.227:8183,"
+                                          "http://127.0.0.1:8199").split(",") if o.strip()}
+# IP 那个是 APK 里的 WebView 和直接用 IP 打开网页时的来源：gpu.cmbian.top 没备案，带域名的 TLS 会被掐掉
 
 
 def _ws_authed(ws: WebSocket) -> bool:
@@ -650,6 +657,47 @@ async def asr_stream(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+def _transcribe(engine: str, pcm: bytes) -> str:
+    return (paraformer.transcribe if engine == "paraformer" else doubao.asr)(pcm).text
+
+
+@app.websocket("/api/talk")
+async def talk(ws: WebSocket) -> None:
+    """自由对话，协议见 server/talk.py。?conversation= 接着已有对话说，?model= 换模型，?asr= 临时换识别引擎。"""
+    from server.talk import Talk
+
+    if not _ws_authed(ws):
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    q = ws.query_params
+    model = q.get("model") or MODELS[0]["id"]
+    if model not in {m["id"] for m in MODELS}:
+        model = MODELS[0]["id"]
+    try:
+        asr_engine = _asr_engine(q.get("asr") or "")
+    except HTTPException as e:
+        await ws.send_text(json.dumps({"type": "error", "detail": e.detail}, ensure_ascii=False))
+        await ws.close()
+        return
+    session = Talk(ws, asr_engine=asr_engine, model=model, conversation=q.get("conversation") or None,
+                   llm_thread=_llm_thread, make_speech=_turn_speech, transcribe=_transcribe,
+                   reply_record=_reply_record, history=_llm_messages)
+    log.info("talk open asr=%s model=%s conversation=%s", asr_engine, model, session.cid)
+    try:
+        await session.run()
+    except KeyError:
+        await session.send("error", detail="没有这段对话")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        log.info("talk closed conversation=%s turns=%d", session.cid, session.turn_id)
         try:
             await ws.close()
         except Exception:

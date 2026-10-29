@@ -7,6 +7,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 
+import com.xiaoxin.testapp.echo.EchoActivity;
 import com.xiaoxin.testapp.frontcamera.FrontCameraActivity;
 import com.xiaoxin.testapp.mic.MicActivity;
 
@@ -22,6 +23,7 @@ public final class TestBar {
         add(bar, activity, "列表", MainActivity.class);
         add(bar, activity, "前摄", FrontCameraActivity.class);
         add(bar, activity, "麦克风", MicActivity.class);
+        add(bar, activity, "回声", EchoActivity.class);
         return bar;
     }
 

@@ -70,6 +70,15 @@ button { cursor: pointer; }
   height: 38px; padding: 0 16px; border-radius: 19px; border: 0; white-space: nowrap;
   background: var(--accent); color: #062b16; font-weight: 600;
 }
+.free-talk.on { background: var(--danger); color: #fff; }
+.talk-bar {
+  flex: none; display: flex; align-items: center; gap: 10px; margin: 0 auto 6px; padding: 8px 16px;
+  border-radius: 20px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 14px;
+}
+.talk-bar[hidden] { display: none; }
+.talk-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: blink 1.2s steps(1) infinite; }
+.talk-track { width: 120px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+#talk-level { display: block; height: 100%; background: var(--accent); transform-origin: left; transform: scaleX(.04); transition: transform .1s; }
 .icon-btn {
   width: 40px; height: 40px; flex: none; border-radius: 12px; border: 0; background: none;
   font-size: 20px; line-height: 1; display: grid; place-items: center; color: var(--muted);

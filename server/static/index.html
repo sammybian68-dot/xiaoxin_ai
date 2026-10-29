@@ -44,12 +44,18 @@
         <select id="model"></select>
       </label>
       <button id="autoread" class="icon-btn" type="button" aria-pressed="true" title="回答完自动朗读">🔊</button>
-      <button id="free-talk" class="free-talk" type="button" title="下一期上线">📞 自由对话</button>
+      <button id="free-talk" class="free-talk" type="button" title="像打电话一样一直说，小新说话时可以直接插话">📞 自由对话</button>
     </header>
 
     <section id="chat" class="chat" aria-live="polite">
       <div id="messages" class="messages"></div>
     </section>
+
+    <div id="talk-bar" class="talk-bar" role="status" aria-live="polite" hidden>
+      <span class="talk-dot" aria-hidden="true"></span>
+      <span id="talk-status">在听</span>
+      <span class="talk-track" aria-hidden="true"><span id="talk-level"></span></span>
+    </div>
 
     <footer class="composer-wrap">
       <div id="pending" class="pending"></div>
