@@ -80,46 +80,65 @@ public final class Talk {
 
     /**
      * 待命唤醒后用：连上就把端侧认出的那句发过去（服务端去掉唤醒词直接回答，one-shot），再接着聊。
-     * cue 不空时（只喊了唤醒词）先用这通电话自己的播放器说「我在的」：音频通路先开、再连服务端，
-     * 握手、开麦、服务端学底噪都藏在这句话里，说完那一刻麦克风已经在送了。
+     * audioDelayMs > 0：调用方正在放「我在的」，这么久之后才开通话音频（开早了会切到通话模式，把这句吞掉，
+     * 2026-10-30 实测：通话播放器里放 0.5 秒的提示，切通路时整句听不到）。握手和它同时进行，藏在这句话里。
      */
-    public void startWoken(String url, String key, String wakeText, boolean acked, byte[] cue) throws IOException {
+    public void startWoken(String url, String key, String wakeText, boolean acked, long audioDelayMs)
+            throws IOException {
         String hello;
         try {
             hello = new JSONObject().put("type", "wake").put("text", wakeText).put("acked", acked).toString();
         } catch (JSONException e) {
             throw new IOException(e);
         }
-        open(url, key, hello, cue);
+        open(url, key, hello, audioDelayMs);
     }
 
     /** 在后台线程调：开音频、连上服务端。url 形如 wss://host:8183/xiaoxin/api/talk?model=… */
     public void start(String url, String key) throws IOException {
-        open(url, key, null, null);
+        open(url, key, null, 0);
     }
 
-    /** 说「我在的」时麦克风送静音，到这个时刻（nanoTime）为止：不然 AEC 还没收敛，自己的声音会被当成用户在说 */
-    private volatile long muteUntil;
     /** 连上之前录到的帧先攒着，连上后补发（最多 10 秒） */
     private final java.util.ArrayDeque<byte[]> pending = new java.util.ArrayDeque<>();
     private static final int MAX_PENDING = 100;
-    private static final long CUE_TAIL_MS = 80;  // 播完再静音这么久，盖住喇叭到麦克风的尾音
+    /**
+     * 唤醒起来的通话，真音频前先垫这么久静音：服务端 VAD 开头 0.4 秒只学底噪、不判开口，
+     * 不垫的话用户一听完「我在的」就开口，头一句会被当成底噪学进去（门槛抬高，整句判不出来）。
+     */
+    private static final int PREAMBLE_MS = 500;
 
     private volatile boolean stopped;
 
-    private void open(String url, String key, String hello, byte[] cue) throws IOException {
-        startAudio();
+    private void open(String url, String key, String hello, long audioDelayMs) throws IOException {
+        if (hello != null) {
+            for (int i = 0; i < PREAMBLE_MS / 100; i++) {
+                pending.add(new byte[Pcm.FRAME_BYTES]);
+            }
+        }
+        if (audioDelayMs <= 0) {
+            startAudio();
+        } else {
+            long at = System.nanoTime() + audioDelayMs * 1_000_000;
+            Thread a = new Thread(() -> {
+                long left = (at - System.nanoTime()) / 1_000_000;
+                if (left > 0) {
+                    try {
+                        Thread.sleep(left);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
+                if (!stopped) {
+                    startAudio();
+                }
+            }, "talk-audio-start");
+            a.setDaemon(true);
+            a.start();
+        }
         if (stopped) {  // 开音频的时候已经被挂了
             stopAudio();
             return;
-        }
-        if (cue != null && cue.length > 0) {
-            long ms = cue.length / 2 * 1000L / PLAY_RATE;
-            muteUntil = System.nanoTime() + (ms + CUE_TAIL_MS) * 1_000_000;
-            AudioTrack t = track;
-            if (t != null) {
-                t.write(cue, 0, cue.length);
-            }
         }
         Map<String, String> headers = new HashMap<>();
         headers.put("Authorization", "Bearer " + key);
@@ -162,7 +181,7 @@ public final class Talk {
                 }
             }
         });
-        if (!running) {  // 连的时候已经挂了
+        if (stopped) {  // 连的时候已经挂了
             w.close();
             return;
         }
@@ -172,7 +191,10 @@ public final class Talk {
         ws = w;
     }
 
-    private void startAudio() {
+    private synchronized void startAudio() {
+        if (stopped || rec != null) {
+            return;
+        }
         am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         oldMode = am.getMode();
         am.setMode(AudioManager.MODE_IN_COMMUNICATION);
@@ -243,9 +265,6 @@ public final class Talk {
             if (n <= 0) {
                 continue;
             }
-            if (muteUntil != 0 && System.nanoTime() < muteUntil) {
-                java.util.Arrays.fill(frame, 0, n, (byte) 0);
-            }
             Pcm.Level level = Pcm.level(frame, n);
             listener.onLevel(Math.min(100, level.rms * 100 / 3000));
             Vad v = exitVad;
@@ -270,7 +289,7 @@ public final class Talk {
             }
             WebSocket w = ws;
             if (w == null) {
-                if (pending.size() >= MAX_PENDING) {
+                if (pending.size() >= MAX_PENDING + PREAMBLE_MS / 100) {
                     pending.poll();
                 }
                 pending.add(java.util.Arrays.copyOf(frame, n));

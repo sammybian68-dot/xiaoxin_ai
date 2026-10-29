@@ -43,20 +43,6 @@ public final class Cues {
                 + ".v" + VERSION + ".pcm");
     }
 
-    /** 当前音色这句的 PCM（24 kHz s16le），没有返回 null。唤醒时交给通话自己的播放器放。 */
-    public byte[] read(String name) {
-        File f = file(name, voice);
-        if (!f.isFile()) {
-            f = file(name, "");
-        }
-        try {
-            byte[] pcm = f.isFile() ? Files.readAllBytes(f.toPath()) : null;
-            return pcm != null && pcm.length >= 2 ? pcm : null;
-        } catch (IOException e) {
-            return null;
-        }
-    }
-
     /** 后台线程调：音色变了就把这个音色的两句拉下来（已经有的不重下）。 */
     public void refresh(String voiceId) {
         voice = voiceId == null ? "" : voiceId;
