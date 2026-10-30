@@ -83,11 +83,15 @@ class TurnSpeech:
         self._opening: asyncio.Task | None = None
         self._open_error = ""
         self.first_text_at: float | None = None
+        self.opened_at: float | None = None     # TTS 连接建好（相对 t0）
+        self.first_pcm_at: float | None = None  # TTS 吐出第一块 PCM（相对 t0），和 first_audio_at（下发）分开看
         self.first_audio_at: float | None = None
         self.t0 = time.monotonic()
 
     # ---- TTS 回调
     def _on_pcm(self, data: bytes) -> None:
+        if self.first_pcm_at is None and data:
+            self.first_pcm_at = time.monotonic() - self.t0
         self._pcm += data
         self._kick.set()
 
@@ -102,6 +106,7 @@ class TurnSpeech:
         async def _open():
             try:
                 await self.session.open()
+                self.opened_at = time.monotonic() - self.t0
             except Exception as e:  # DoubaoError / CosyVoiceError 或网络错误：这轮就不出声，文字照常
                 self._open_error = str(e)[:200]
                 self._ended.set()
@@ -206,4 +211,6 @@ class TurnSpeech:
         return {"sample_rate": SAMPLE_RATE, "seconds": round(self._sent / BYTES_PER_S, 2),
                 "first_text_s": self.first_text_at and round(self.first_text_at, 3),
                 "first_audio_s": self.first_audio_at and round(self.first_audio_at, 3),
+                "opened_s": self.opened_at and round(self.opened_at, 3),
+                "first_pcm_s": self.first_pcm_at and round(self.first_pcm_at, 3),
                 "error": self._open_error or self._error}

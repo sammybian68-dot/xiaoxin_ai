@@ -744,7 +744,8 @@ async def asr_stream(ws: WebSocket) -> None:
     # 一开头告诉端侧用的哪个引擎、有没有中间结果，Paraformer 没有 partial，端侧可以换个提示
     await say(type="ready", engine=eng, partials=eng == "doubao")
     try:
-        async with (paraformer.StreamingParaformer() if eng == "paraformer" else doubao.StreamingAsr()) as rec:
+        async with (paraformer.StreamingParaformer() if eng == "paraformer"
+                    else doubao.StreamingAsr(hotwords=voices.hotwords())) as rec:
             async def pump() -> None:
                 while True:
                     await say(type="partial", text=await rec.partials.get())
@@ -792,7 +793,9 @@ async def asr_stream(ws: WebSocket) -> None:
 
 
 def _transcribe(engine: str, pcm: bytes) -> str:
-    return (paraformer.transcribe if engine == "paraformer" else doubao.asr)(pcm).text
+    if engine == "paraformer":
+        return paraformer.transcribe(pcm).text
+    return doubao.asr(pcm, hotwords=voices.hotwords()).text  # 热词每次现读设置，改了下一句就生效
 
 
 @app.websocket("/api/talk")
@@ -940,7 +943,7 @@ def engine_select(body: dict = Body(...)) -> dict:
         voices.set_engines(asr=body.get("asr"), tts=body.get("tts"), vad_end_ms=body.get("vad_end_ms"),
                            wake_word=body.get("wake_word"), wake_idle_s=body.get("wake_idle_s"),
                            wake_words=body.get("wake_words"), exit_words=body.get("exit_words"),
-                           hangup_tone=body.get("hangup_tone"))
+                           hangup_tone=body.get("hangup_tone"), asr_hotwords=body.get("asr_hotwords"))
     except voices.VoiceError as e:
         raise HTTPException(400, str(e))
     return engine_settings()

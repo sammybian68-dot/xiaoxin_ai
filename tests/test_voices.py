@@ -317,3 +317,27 @@ def test_wildcard_words_validated(fakes):
     assert voices.set_engines(exit_words=["退*吧"])["exit_words"] == ["退*吧"]
     with pytest.raises(voices.VoiceError, match="确定的字"):
         voices.set_engines(wake_words=["小*同"])
+
+
+def test_asr_hotwords_setting(client, fakes):
+    assert client.get("/api/engines").json()["asr_hotwords"] == ["小新", "卞依一"]
+    r = client.put("/api/engines", json={"asr_hotwords": "黑神话悟空\n卞依一，To call、卞依一"})
+    assert r.status_code == 200 and r.json()["asr_hotwords"] == ["黑神话悟空", "卞依一", "To call"]
+    assert client.put("/api/engines", json={"asr_hotwords": ["长" * 21]}).status_code == 400
+    assert client.put("/api/engines", json={"asr_hotwords": ""}).json()["asr_hotwords"] == []
+
+
+def test_hotwords_sent_to_doubao(client, fakes, monkeypatch):
+    from server import main
+    from src.voice import doubao
+
+    seen = {}
+
+    def asr(pcm, **kw):
+        seen.update(kw)
+        return doubao.Recognition("好", 0.1, 0.2, 1.0)
+
+    monkeypatch.setattr(main.doubao, "asr", asr)
+    voices.set_engines(asr_hotwords=["黑神话悟空"])
+    main._transcribe("doubao", b"\0" * 3200)
+    assert seen["hotwords"] == ["黑神话悟空"]

@@ -177,6 +177,11 @@
         <label for="set-tts"><b>朗读（TTS）</b><small id="tts-desc"></small></label>
         <select id="set-tts"></select>
       </div>
+      <div class="hotwords">
+        <label for="set-hotwords"><b>识别热词</b><small>人名、游戏名、专有名词，豆包识别时优先认成这些。一行一个（逗号也行），最多 100 个。保存后下一句就生效</small></label>
+        <textarea id="set-hotwords" class="voice-text" rows="4" placeholder="卞依一&#10;黑神话悟空"></textarea>
+        <span class="hw-foot"><small id="hotwords-count"></small><button type="button" class="tone" id="set-hotwords-save" hidden>保存热词</button></span>
+      </div>
       <h3>自由对话</h3>
       <div class="row">
         <label for="set-vad-end"><b>停多久算说完</b><small>短了反应快，但说话中间停顿稍长就会被打断；长了更稳，回答慢一点。下一通电话生效</small></label>

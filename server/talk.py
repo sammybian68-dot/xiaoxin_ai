@@ -323,8 +323,9 @@ class Talk:
                       "first_text": first_text and round(first_text, 2),
                       "first_audio": info["first_audio_s"] and round(info["first_audio_s"] + tts_base, 2),
                       "model": (end or {}).get("served") or model}
-            log.info("talk turn %d done: %s audio=%.1fs total=%.1fs", turn_id, timing, info["seconds"],
-                     time.monotonic() - t0)
+            log.info("talk turn %d done: %s audio=%.1fs total=%.1fs tts[open=%s text=%s pcm=%s sent=%s, +%.2f]",
+                     turn_id, timing, info["seconds"], time.monotonic() - t0, info.get("opened_s"),
+                     info["first_text_s"], info.get("first_pcm_s"), info["first_audio_s"], tts_base)
             if saved_id:
                 store.update_message(self.cid, saved_id, timing=timing)
             await self.send("idle", timing=timing)

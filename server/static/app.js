@@ -1434,6 +1434,12 @@ function renderEngines(e) {
     $(sel).value = cur;
   };
   $("set-vad-end").value = e.vad_end_ms;
+  if (document.activeElement !== $("set-hotwords")) {
+    $("set-hotwords").value = (e.asr_hotwords || []).join("\n");
+    $("set-hotwords").dataset.saved = $("set-hotwords").value;
+    $("set-hotwords-save").hidden = true;
+  }
+  $("hotwords-count").textContent = `${(e.asr_hotwords || []).length} 个`;
   renderWords("wake-list", e.wake_words);
   renderWords("exit-list", e.exit_words);
   renderTones(e);
@@ -1535,3 +1541,18 @@ function renderPrompts() {
 for (const b of document.querySelectorAll('[data-pane="prompt"] .seg button')) {
   b.addEventListener("click", () => { promptView.view = b.dataset.view; renderPrompts(); });
 }
+
+// 识别热词：改了出「保存」，存好下一句识别就用
+$("set-hotwords").addEventListener("input", () => {
+  $("set-hotwords-save").hidden = $("set-hotwords").value.trim() === ($("set-hotwords").dataset.saved || "").trim();
+});
+$("set-hotwords-save").addEventListener("click", async () => {
+  try {
+    const words = $("set-hotwords").value.split(/[\n,，、;；]+/).map((w) => w.trim()).filter(Boolean);
+    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asr_hotwords: words }) }).then(json);
+    $("set-hotwords").blur();
+    renderEngines(e);
+    toast(`热词存好了，${e.asr_hotwords.length} 个，下一句就生效`);
+  } catch (err) { toast(err.message); }
+});

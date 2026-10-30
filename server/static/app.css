@@ -234,6 +234,11 @@ button { cursor: pointer; }
   white-space: pre-wrap; word-break: break-word; font: 14px/1.7 ui-monospace, Menlo, "PingFang SC", monospace; color: var(--text);
 }
 .voice-tip { color: var(--muted); margin: 0 0 10px; }
+.hotwords { display: grid; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.hotwords b { display: block; font-weight: 500; }
+.hotwords small { color: var(--muted); font-size: 13px; }
+.hotwords textarea { font-size: 15px; line-height: 1.7; }
+.hw-foot { display: flex; align-items: center; justify-content: space-between; }
 .seg { display: inline-flex; padding: 3px; border-radius: 12px; background: var(--raised); border: 1px solid var(--line); margin: 4px 0 14px; }
 .seg button { border: 0; background: none; color: var(--muted); padding: 6px 16px; border-radius: 9px; }
 .seg button[aria-selected="true"] { background: var(--bg); color: var(--text); font-weight: 600; }

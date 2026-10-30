@@ -116,9 +116,38 @@ def engines() -> dict:
             "hangup_tone": s.get("hangup_tone") if s.get("hangup_tone") in TONE_IDS else "down",
             "hangup_tones": [{"id": i, "name": n} for i, n in HANGUP_TONES],
             "wake_idle_s": s.get("wake_idle_s") if isinstance(s.get("wake_idle_s"), int) else WAKE_IDLE_S,
-            "wake_idle_s_range": list(WAKE_IDLE_RANGE),
+            "wake_idle_s_range": list(WAKE_IDLE_RANGE), "asr_hotwords": hotwords(),
             "asr_options": [{"id": i, "name": n, "desc": d} for i, n, d in ASR_ENGINES],
             "tts_options": [{"id": i, "name": n, "desc": d} for i, n, d in TTS_ENGINES]}
+
+
+# 豆包 ASR 热词：人名、游戏名、专有名词，识别时优先认成这些。改了下一句起生效（每次识别现读设置）
+HOTWORDS = ["小新", "卞依一"]
+MAX_HOTWORDS = 100
+MAX_HOTWORD_LEN = 20
+
+
+def hotwords() -> list[str]:
+    hw = store.settings().get("asr_hotwords")
+    return hw if isinstance(hw, list) and all(isinstance(w, str) for w in hw) else list(HOTWORDS)
+
+
+def check_hotwords(value) -> list[str]:
+    import re
+
+    raw = value if isinstance(value, list) else re.split(r"[\n,，、;；]+", str(value or ""))
+    out: list[str] = []
+    for w in raw:
+        w = str(w).strip()
+        if not w:
+            continue
+        if len(w) > MAX_HOTWORD_LEN:
+            raise VoiceError(f"热词每个最多 {MAX_HOTWORD_LEN} 个字：{w[:24]}")
+        if w not in out:
+            out.append(w)
+    if len(out) > MAX_HOTWORDS:
+        raise VoiceError(f"热词最多 {MAX_HOTWORDS} 个")
+    return out
 
 
 def _split_words(value) -> list[str]:
@@ -186,7 +215,7 @@ def _int_in(value, lo: int, hi: int, what: str) -> int:
 
 
 def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None, wake_word=None,
-                wake_idle_s=None, wake_words=None, exit_words=None, hangup_tone=None) -> dict:
+                wake_idle_s=None, wake_words=None, exit_words=None, hangup_tone=None, asr_hotwords=None) -> dict:
     fields = {}
     if hangup_tone is not None:
         if hangup_tone not in TONE_IDS:
@@ -196,6 +225,8 @@ def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None,
         fields["wake_words"] = check_wake_words(wake_words if wake_words is not None else wake_word)
     if exit_words is not None:
         fields["exit_words"] = check_exit_words(exit_words)
+    if asr_hotwords is not None:
+        fields["asr_hotwords"] = check_hotwords(asr_hotwords)
     if wake_idle_s is not None:
         fields["wake_idle_s"] = _int_in(wake_idle_s, *WAKE_IDLE_RANGE, "唤醒后多久没说话回待命（秒）")
     if vad_end_ms is not None:
