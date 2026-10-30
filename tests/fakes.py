@@ -26,6 +26,7 @@ def pcm_for(text: str, per_char: float = 0.02) -> bytes:
 class Fakes:
     calls: list = field(default_factory=list)
     doubao_text: str = "豆包识别结果"
+    stream_partials: list | None = None  # 流式识别的中间结果，每 feed 一次吐一个
     paraformer_text: str = "Paraformer识别结果"
     llm_deltas: list = field(default_factory=lambda: ["好的，", "空调开了。"])
     llm_error: str = ""            # 非空时 LLM 抛 ProxyError
@@ -75,7 +76,12 @@ def install(monkeypatch) -> Fakes:
 
         async def feed(self, pcm):
             self.seconds += len(pcm) / 32000
-            self.partials.put_nowait(f"部分{int(self.seconds * 10)}")
+            # stream_partials 给了就按它一个个吐（自由对话早打断测试用），没给就吐「部分N」
+            if f.stream_partials is not None:
+                if f.stream_partials:
+                    self.partials.put_nowait(f.stream_partials.pop(0))
+            else:
+                self.partials.put_nowait(f"部分{int(self.seconds * 10)}")
 
         async def finish(self):
             self.text = f.doubao_text

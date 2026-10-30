@@ -475,8 +475,10 @@ def test_client_vad_segments_utterances(call, fakes):
     assert c.until("heard")["text"] == fakes.doubao_text
     c.until("idle")
     assert c.kinds().count("heard") == 1
-    secs = [x[1] / 32000 for x in fakes.calls if x[0] == "doubao.asr"]
-    assert secs and abs(secs[-1] - 1.0) < 0.05  # 只送了 vad_start..vad_end 那一段
+    assert fakes.calls.count(("doubao.stream_asr",)) == 1  # 一句一个流式识别，只送 vad_start..vad_end 那段
+    msgs = store.get(c.msgs[0]["conversation"])["messages"]
+    wav = store.utterance_path(c.msgs[0]["conversation"], msgs[0]["id"]).read_bytes()
+    assert abs((len(wav) - 44) / 32000 - 1.0) < 0.05
 
 
 def test_client_vad_barge_in(call, fakes, monkeypatch):
@@ -507,6 +509,7 @@ def test_noise_does_not_cancel_answer(call, fakes, monkeypatch):
     c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学给我设一个倒计时"}))
     c.until("thinking")
     fakes.doubao_text = ""
+    fakes.stream_partials = []  # 杂音：没有中间结果
     c.ws.send_text(json.dumps({"type": "vad_start"}))
     c.send_pcm(tone(0.6, amp=2000))
     c.ws.send_text(json.dumps({"type": "vad_end"}))
@@ -536,6 +539,7 @@ def test_barge_in_needs_two_chars(call, fakes, monkeypatch, heard, interrupts):
     c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学讲个故事"}))
     c.until("thinking")
     fakes.doubao_text = heard
+    fakes.stream_partials = [heard[:1]]  # 中间结果只有一个字，不触发早打断；最终结果决定
     c.ws.send_text(json.dumps({"type": "vad_start"}))
     c.send_pcm(tone(0.5, amp=2000))
     c.ws.send_text(json.dumps({"type": "vad_end"}))
@@ -547,3 +551,66 @@ def test_barge_in_needs_two_chars(call, fakes, monkeypatch, heard, interrupts):
         gate.set()
         c.until("reply")
         assert "interrupt" not in c.kinds()
+
+
+def _slow_first_turn(fakes, monkeypatch, seconds=3):
+    from src.llm import client as llm
+
+    gate = threading.Event()
+    real = llm.iter_stream
+
+    def slow(model, history, **kw):
+        if len(fakes.llm_requests) == 0:
+            fakes.llm_requests.append({"messages": history, "tools": kw.get("tools")})
+            gate.wait(seconds)
+        yield from real(model, history, **kw)
+
+    monkeypatch.setattr(llm, "iter_stream", slow)
+    return gate
+
+
+def test_early_barge_in_on_two_char_partial(call, fakes, monkeypatch):
+    """豆包中间结果一够两个字就打断，不等这句说完（vad_end 还没来）。"""
+    gate = _slow_first_turn(fakes, monkeypatch)
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学讲个故事"}))
+    c.until("thinking")
+    fakes.stream_partials = ["等", "等一", "等一下"]
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.3, amp=2000), chunk=3200)  # 3 块，没发 vad_end
+    c.until("interrupt")
+    assert "heard" not in c.kinds()[c.kinds().index("thinking"):]  # 句子还没完就打断了
+    gate.set()
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    assert c.until("heard")["text"] == fakes.doubao_text
+
+
+def test_one_char_partial_does_not_barge_in(call, fakes, monkeypatch):
+    gate = _slow_first_turn(fakes, monkeypatch)
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学讲个故事"}))
+    c.until("thinking")
+    fakes.stream_partials = ["嗯", "嗯。"]
+    fakes.doubao_text = "嗯。"
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.2, amp=2000), chunk=3200)
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    time.sleep(0.3)
+    gate.set()
+    c.until("reply")
+    assert "interrupt" not in c.kinds()
+
+
+def test_paraformer_has_no_stream_falls_back(call, fakes, monkeypatch):
+    """Paraformer 没有中间结果：退回整句识别，说完认出两个字以上才打断。"""
+    voices.set_engines(asr="paraformer")
+    gate = _slow_first_turn(fakes, monkeypatch)
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学讲个故事"}))
+    c.until("thinking")
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.5, amp=2000))
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    c.until("interrupt")
+    gate.set()
+    assert ("doubao.stream_asr",) not in fakes.calls

@@ -128,7 +128,7 @@ class Talk:
     """一通电话。run() 跑到挂断。外部依赖都从 main 传进来，方便测试替换。"""
 
     def __init__(self, ws, *, asr_engine: str, model: str, conversation: str | None,
-                 llm_thread, make_speech, transcribe, reply_record, history, models=()):
+                 llm_thread, make_speech, transcribe, reply_record, history, models=(), stream_asr=None):
         self.ws = ws
         self.asr_engine = asr_engine
         self.model = model
@@ -137,6 +137,7 @@ class Talk:
         self._llm_thread = llm_thread    # main._llm_thread(model, history, q, loop)
         self._make_speech = make_speech  # () -> (TurnSpeech, note)
         self._transcribe = transcribe    # (engine, pcm) -> text，同步，放线程里跑
+        self._stream_asr = stream_asr    # (engine) -> 流式识别对象（async with / feed / partials / finish），没有就整句识别
         self._reply_record = reply_record
         self._history = history          # conv -> OpenAI messages
         self.vad = Vad(end_ms=voices.engines()["vad_end_ms"])
@@ -147,6 +148,10 @@ class Talk:
         self._local: list[str] = []  # 端侧认出、还没对上用户消息的句子
         self._client_vad = False     # 端侧在断句（收到过 vad_start / vad_end）
         self._utt: bytearray | None = None  # 端侧断句时，这句正在收的音频
+        self._stream = None          # 这句的流式识别（豆包：边说边出中间结果，够两个字就能打断）
+        self._stream_task: asyncio.Task | None = None
+        self._barged = False         # 这句已经打断过小新了
+        self._vad_t0 = 0.0
 
     # ---------------------------------------------------------------- 下行
     async def send(self, kind: str, **data) -> None:
@@ -196,18 +201,86 @@ class Talk:
                     await self.on_wake(str(cmd.get("text") or ""), quiet=bool(cmd.get("acked")))
         finally:
             self.closed = True
+            await self._close_stream()
             await self.cancel_turn()
 
     async def on_vad_start(self) -> None:
         self._client_vad = True
         self._utt = bytearray()
+        self._barged = False
+        self._vad_t0 = time.monotonic()
+        if self.busy:
+            log.info("talk vad_start during turn %d", self.turn_id)
         await self.send("listening")
+        await self._open_stream()
 
     async def on_vad_end(self) -> None:
         self._client_vad = True
         utt, self._utt = self._utt, None
-        if utt is not None:
+        if utt is None:
+            return
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            task = asyncio.create_task(self._finish_stream(stream, bytes(utt)))
+            _BACKGROUND.add(task)
+            task.add_done_callback(_BACKGROUND.discard)
+        else:
             self._hear(bytes(utt))
+
+    # ---------------------------------------------------------------- 流式识别 + 早打断
+    async def _open_stream(self) -> None:
+        """开口就连上流式识别，边说边送。中间结果够 BARGE_IN_MIN_CHARS 个字、小新正在想 / 在说，就马上打断，
+        不用等这句说完（VAD 判说完要 0.8 秒，再整句识别又 0.5 秒）。只有豆包有中间结果；Paraformer 没有，退回整句。"""
+        await self._close_stream()
+        if self._stream_asr is None:
+            return
+        try:
+            rec = self._stream_asr(self.asr_engine)
+            if rec is None:
+                return
+            await rec.__aenter__()
+        except Exception as e:
+            log.warning("talk stream asr open failed, fall back to whole-utterance: %s", e)
+            return
+        self._stream = rec
+        self._stream_task = asyncio.create_task(self._watch_partials(rec))
+
+    async def _watch_partials(self, rec) -> None:
+        while True:
+            text = await rec.partials.get()
+            if self._barged or not self.busy or rec is not self._stream:
+                continue
+            log.info("talk partial +%.2fs: %s", time.monotonic() - self._vad_t0, text[:20])
+            if len(_bare(text)) >= BARGE_IN_MIN_CHARS:
+                self._barged = True
+                log.info("talk early barge-in during turn %d on partial: %s", self.turn_id, text[:30])
+                await self.cancel_turn()
+                await self.send("interrupt")
+
+    async def _close_stream(self, rec=None) -> None:
+        rec = rec or self._stream
+        if rec is self._stream:
+            self._stream = None
+        if self._stream_task:
+            self._stream_task.cancel()
+            self._stream_task = None
+        if rec is not None:
+            try:
+                await rec.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    async def _finish_stream(self, rec, utt: bytes) -> None:
+        t0 = time.monotonic()
+        try:
+            text = (await rec.finish()).strip()
+        except Exception as e:
+            log.warning("talk stream asr finish failed, retry whole: %s", e)
+            await self._close_stream(rec)
+            await self._recognize(utt)
+            return
+        await self._close_stream(rec)
+        await self._handle_text(utt, text, time.monotonic() - t0)
 
     def _hear(self, utt: bytes) -> None:
         """一句说完：先识别，认出字了才算这一句。小新正在想 / 在说时，认出字才打断（barge-in）。
@@ -225,7 +298,9 @@ class Talk:
         except Exception as e:
             await self.send("error", detail=f"识别失败：{str(e)[:120]}")
             return
-        t_asr = time.monotonic() - t0
+        await self._handle_text(utt, text, time.monotonic() - t0)
+
+    async def _handle_text(self, utt: bytes, text: str, t_asr: float) -> None:
         if self.closed:
             return
         if not text:
@@ -240,9 +315,10 @@ class Talk:
                 log.info("talk ignore short barge-in during turn %d: %s", self.turn_id, text)
                 self._local = []
                 return
-            log.info("talk barge-in during turn %d: %s", self.turn_id, text[:30])
-            await self.cancel_turn()
-            await self.send("interrupt")
+            else:
+                log.info("talk barge-in during turn %d: %s", self.turn_id, text[:30])
+                await self.cancel_turn()
+                await self.send("interrupt")
         self.turn_id += 1
         self.turn = asyncio.create_task(self.answer(self.turn_id, utt, text=text, t_asr=t_asr))
 
@@ -250,6 +326,12 @@ class Talk:
         if self._client_vad:
             if self._utt is not None:
                 self._utt += pcm
+                if self._stream is not None:
+                    try:
+                        await self._stream.feed(pcm)
+                    except Exception as e:  # 流断了：这句退回整句识别
+                        log.warning("talk stream asr feed failed: %s", e)
+                        await self._close_stream()
             return
         for kind, utt in self.vad.feed(pcm):
             if kind == "start":

@@ -792,6 +792,13 @@ async def asr_stream(ws: WebSocket) -> None:
             pass
 
 
+def _stream_asr(engine: str):
+    """自由对话一句话的流式识别：豆包有中间结果（够两个字就能打断小新）；Paraformer 没有，返回 None 走整句。"""
+    if engine == "paraformer":
+        return None
+    return doubao.StreamingAsr(hotwords=voices.hotwords())
+
+
 def _transcribe(engine: str, pcm: bytes) -> str:
     if engine == "paraformer":
         return paraformer.transcribe(pcm).text
@@ -819,7 +826,8 @@ async def talk(ws: WebSocket) -> None:
         return
     session = Talk(ws, asr_engine=asr_engine, model=model, conversation=q.get("conversation") or None,
                    llm_thread=_llm_thread, make_speech=_turn_speech, transcribe=_transcribe,
-                   reply_record=_reply_record, history=_llm_messages, models=[m["id"] for m in MODELS])
+                   reply_record=_reply_record, history=_llm_messages, models=[m["id"] for m in MODELS],
+                   stream_asr=_stream_asr)
     log.info("talk open asr=%s model=%s conversation=%s", asr_engine, model, session.cid)
     try:
         await session.run()
