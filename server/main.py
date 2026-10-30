@@ -133,7 +133,7 @@ def me() -> dict:
 def _index_html() -> Response:
     """index.html 里的 app.js / app.css 地址带上文件修改时间，部署后浏览器和 pad 一定拿新的。"""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for name in ("app.js", "app.css"):
+    for name in ("app.js", "app.css", "clock.js", "clock.css"):
         v = int((STATIC / name).stat().st_mtime)
         html = html.replace(f'static/{name}"', f'static/{name}?v={v}"')
     return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
@@ -203,13 +203,23 @@ async def clock_state(since: int = -1, wait: float = 0) -> dict:
 @app.post("/api/clock/alarms")
 def alarm_add(body: dict = Body(...)) -> dict:
     return _clock_call(clock.add_alarm, body.get("time"), body.get("repeat"), body.get("label") or "",
-                       body.get("date"))
+                       body.get("date"), body.get("say") or "")
 
 
 @app.patch("/api/clock/alarms/{aid}")
 def alarm_edit(aid: str, body: dict = Body(...)) -> dict:
-    fields = {k: body[k] for k in ("time", "repeat", "date", "label", "enabled") if k in body}
+    fields = {k: body[k] for k in ("time", "repeat", "date", "label", "say", "enabled") if k in body}
     return _clock_call(clock.update_alarm, aid, **fields)
+
+
+@app.post("/api/clock/alarms/{aid}/snooze")
+def alarm_snooze(aid: str, body: dict | None = Body(None)) -> dict:
+    return _clock_call(clock.snooze_alarm, aid, (body or {}).get("minutes"))
+
+
+@app.post("/api/clock/alarms/{aid}/dismiss")
+def alarm_dismiss(aid: str) -> dict:
+    return _clock_call(clock.dismiss_alarm, aid)
 
 
 @app.delete("/api/clock/alarms/{aid}")
@@ -219,12 +229,17 @@ def alarm_remove(aid: str) -> dict:
 
 @app.post("/api/clock/timers")
 def timer_add(body: dict = Body(...)) -> dict:
-    return _clock_call(clock.start_timer, body.get("seconds"), body.get("label") or "")
+    return _clock_call(clock.start_timer, body.get("seconds"), body.get("label") or "", body.get("say") or "")
 
 
 @app.post("/api/clock/timers/{tid}/{action}")
 def timer_act(tid: str, action: str, body: dict | None = Body(None)) -> dict:
     return _clock_call(clock.control_timer, tid, action, (body or {}).get("seconds"))
+
+
+@app.put("/api/clock/ring_text")
+def ring_text_set(body: dict = Body(...)) -> dict:
+    return _clock_call(clock.set_ring_text, body.get("text"))
 
 
 @app.post("/api/clock/stopwatch/{action}")
@@ -290,6 +305,14 @@ def _llm_messages(conv: dict) -> list[dict]:
     out = []
     for i, m in enumerate(msgs):
         if m["role"] == "assistant":
+            # 这一轮调过闹钟类工具：按原样回放「调用 → 结果」，不然模型只看到自己说「设好了」，
+            # 下一轮会学着不调工具直接说「删掉了」（2026-10-30 27B 实测 3 轮里 2 轮这样）
+            for k, a in enumerate(m.get("actions") or []):
+                cid = f"h{m['id']}_{k}"
+                out.append({"role": "assistant", "content": None, "tool_calls": [
+                    {"id": cid, "type": "function",
+                     "function": {"name": a["name"], "arguments": a.get("arguments") or "{}"}}]})
+                out.append({"role": "tool", "tool_call_id": cid, "content": a["result"]})
             if m.get("text"):
                 out.append({"role": "assistant", "content": m["text"]})
             continue
@@ -342,7 +365,7 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
 
     tries = [model, model] + ([FALLBACK] if model != FALLBACK else [])
     got, usage, served, last = False, {}, model, ""
-    msgs, searches, searched, rounds, clock_calls = list(history), 0, [], 0, 0
+    msgs, searches, searched, rounds, clock_calls, actions = list(history), 0, [], 0, 0, []
     attempt = 0
     while attempt < len(tries):
         m = tries[attempt]
@@ -393,7 +416,9 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
                     out = (registry.run_local(c["name"], c["arguments"]) if clock_calls <= MAX_CLOCK_CALLS
                            else "失败：这一轮调太多次了，先停下，告诉用户已经做了什么")
                     log.info("tool %s %s -> %s", c["name"], c["arguments"][:120], out[:120])
-                    put("tool", {"name": c["name"], "result": out})
+                    if c["name"] != "query_time":
+                        actions.append({"name": c["name"], "arguments": c["arguments"], "result": out})
+                        put("tool", {"name": c["name"], "result": out})
                     msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
                     continue
                 if searches >= MAX_SEARCHES:
@@ -417,7 +442,7 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
             break
         attempt += 1
     put("end", {"served": served, "usage": usage, "error": "" if got else (last or "没收到回答"),
-                "searches": searched})
+                "searches": searched, "actions": actions})
 
 
 def _reply_record(text: str, end: dict) -> dict:
@@ -425,6 +450,8 @@ def _reply_record(text: str, end: dict) -> dict:
     rec = {"role": "assistant", "text": text, "model": end["served"], "usage": end["usage"]}
     if end.get("searches"):
         rec["searches"] = end["searches"]
+    if end.get("actions"):
+        rec["actions"] = end["actions"]  # 这一轮调了哪些闹钟工具、结果是什么，界面上列出来
     return rec
 
 
@@ -532,7 +559,7 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
                         yield _sse("delta", value)
                         if tts:
                             await tts.feed(value)
-                    elif kind in ("model", "reasoning", "search"):
+                    elif kind in ("model", "reasoning", "search", "tool"):
                         yield _sse(kind, value)
                     elif kind == "end":
                         end = value
@@ -827,11 +854,18 @@ def _trim_pcm(pcm: bytes, rate: int, lead_ms: int = 30, tail_ms: int = 150, fade
 
 
 @app.get("/api/cue/{name}")
-def cue(name: str, voice: str = "") -> Response:
-    """当前音色（或 ?voice= 指定）说「在」/「拜拜」，24 kHz s16le 单声道裸 PCM。按音色缓存在数据目录，第二次直接读。"""
+def cue(name: str, voice: str = "", text: str = "") -> Response:
+    """当前音色（或 ?voice= 指定）说「我在的」/「拜拜」/ 响铃提示（ring，?text= 给要念的话，不给用默认提示），
+    24 kHz s16le 单声道裸 PCM。按音色和文字缓存在数据目录，第二次直接读。"""
     import hashlib
 
-    text = CUES.get(name)
+    if name == "ring":
+        try:
+            text = clock._check_say(text) or clock.ring_text()
+        except clock.ClockError as e:
+            raise HTTPException(400, str(e))
+    else:
+        text = CUES.get(name)
     if text is None:
         raise HTTPException(404, "没有这个提示")
     try:

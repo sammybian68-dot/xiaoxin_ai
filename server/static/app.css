@@ -154,6 +154,9 @@ button { cursor: pointer; }
 .sources a:hover, .sources a:focus-visible { opacity: 1; text-decoration: underline; }
 .sources small { color: var(--muted); }
 .via { font-size: 12px; opacity: .75; }
+.action-chip { align-self: flex-start; border: 1px solid rgba(255, 181, 71, .35); background: rgba(255, 181, 71, .1); color: #ffcf85; border-radius: 12px; padding: 6px 12px; font-size: 13px; text-align: left; max-width: 100%; }
+.action-chip.bad { border-color: #5a2a2e; background: #2a1719; color: #ffb4b4; }
+.clock-btn.live { color: #ffb547; }
 .replay { align-self: flex-end; background: none; border: 0; padding: 2px 6px; font-size: 16px; line-height: 1; cursor: pointer; opacity: .8; }
 .replay:hover { opacity: 1; }
 .asr-cmp { font-size: 13px; line-height: 1.6; padding: 6px 10px; border-radius: 10px; background: var(--raised); max-width: 100%; }

@@ -116,6 +116,67 @@ public class TalkActivity extends Activity {
         // 免密链接：?k= 让服务端种 cookie 再跳回去，key 不留在地址栏
         web.loadUrl(base() + "?k=" + Uri.encode(key()));
         cues = new Cues(this, base(), key());
+        // 闹钟和倒计时：前台服务，熄屏也在，到点亮屏响铃
+        ClockService.listener = ev -> emitClock(ev.toString());
+        ClockService.start(this);
+        showRing(getIntent());
+    }
+
+    /** 闹钟响了被拉起来（可能在锁屏上）：亮屏、盖住锁屏、退出熄屏，网页画响铃页。 */
+    private void showRing(Intent intent) {
+        String ring = intent == null ? null : intent.getStringExtra("ring");
+        if (ring == null) {
+            return;
+        }
+        intent.removeExtra("ring");
+        setShowWhenLocked(true);
+        setTurnScreenOn(true);
+        leaveNight();
+        emitClock(ring);
+    }
+
+    private void emitClock(String json) {
+        runOnUiThread(() -> {
+            if (web != null) {
+                web.evaluateJavascript("window.xiaoxinClockEvent && window.xiaoxinClockEvent(" + json + ")", null);
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------- 熄屏
+    // 有「设备管理器」权限就真的锁屏关屏（adb shell dpm set-active-admin com.xiaoxin.app/.Admin 开一次）；
+    // 没有就退一步：背光调到最低、盖一层全黑（pad 插着电时系统设置了不自动灭屏）。闹钟由 ClockService 照样响。
+
+    private android.view.View nightCover;
+
+    private void goNight() {
+        android.app.admin.DevicePolicyManager dpm = getSystemService(android.app.admin.DevicePolicyManager.class);
+        android.content.ComponentName admin = new android.content.ComponentName(this, Admin.class);
+        if (dpm.isAdminActive(admin)) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            dpm.lockNow();
+            return;
+        }
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = 0f;
+        getWindow().setAttributes(lp);
+        if (nightCover == null) {
+            nightCover = new android.view.View(this);
+            nightCover.setBackgroundColor(Color.BLACK);
+            nightCover.setOnClickListener(v -> leaveNight());
+            addContentView(nightCover, new android.view.ViewGroup.LayoutParams(-1, -1));
+        }
+        nightCover.setVisibility(android.view.View.VISIBLE);
+    }
+
+    private void leaveNight() {
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+        getWindow().setAttributes(lp);
+        if (nightCover != null) {
+            nightCover.setVisibility(android.view.View.GONE);
+        }
     }
 
     @Override
@@ -123,7 +184,16 @@ public class TalkActivity extends Activity {
         super.onNewIntent(intent);
         if (takeConfig(intent)) {
             recreate();
+            return;
         }
+        showRing(intent);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 白天回到前台：亮屏常亮；锁屏上显示只在响铃时需要
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
     /** adb 传进来的配置存下来；有变化返回 true。 */
@@ -283,6 +353,22 @@ public class TalkActivity extends Activity {
         public void stop() {
             runOnUiThread(() -> hangUp("挂断了"));
         }
+
+        /** 网页响铃页点了「关掉 / 再睡」：网页已经调了接口，这里先把铃声停了，不等服务端回来。 */
+        @JavascriptInterface
+        public void clockStop() {
+            ClockService s = ClockService.running;
+            if (s != null) {
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> s.stopRinging(false));
+            }
+            runOnUiThread(() -> setShowWhenLocked(false));
+        }
+
+        /** 闹钟页「熄屏睡觉」。 */
+        @JavascriptInterface
+        public void screenOff() {
+            runOnUiThread(TalkActivity.this::goNight);
+        }
     }
 
     private String cueVoice = "";
@@ -295,6 +381,9 @@ public class TalkActivity extends Activity {
         }
         if (v.equals(cueVoice)) {
             return;
+        }
+        if (!cueVoice.isEmpty()) {
+            ClockService.clearSpeech(this);  // 换了音色，响铃念的话也换
         }
         cueVoice = v;
         Cues c = cues;

@@ -1,7 +1,8 @@
 """system prompt 按功能拆成 server/prompts/*.md，按 ORDER 拼起来。
 
 每个 md 一个功能，写给模型看：短、无歧义、不写来龙去脉（那些放代码注释和 git 记录里）。
-md 里的 {name} 由 build() 填：now（当前北京时间）、clock_state（闹钟 / 倒计时 / 正计时的现状）。
+md 里的 {name} 由 build() 填：now（当前北京时间）、clock_state（闹钟 / 倒计时 / 正计时的现状）、
+ring_default（设置里的默认响铃提示）。
 voice.md 只在语音通话时拼上（main._llm_thread 的 extra_system）。
 """
 
@@ -26,7 +27,8 @@ def _slots() -> dict:
     from server import clock
 
     t = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
-    return {"now": f"{t:%Y-%m-%d %H:%M} 星期{WEEK[t.weekday()]}", "clock_state": clock.summary()}
+    return {"now": f"{t:%Y-%m-%d %H:%M} 星期{WEEK[t.weekday()]}", "clock_state": clock.summary(),
+            "ring_default": clock.ring_text()}
 
 
 def fill(text: str, slots: dict) -> str:

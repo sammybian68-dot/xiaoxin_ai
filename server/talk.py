@@ -19,6 +19,7 @@
                                                               （GET /api/conversations/<cid>/audio/<id> 回放）
         thinking   {}                                         送给模型了
         search     {queries, state, ok, sources}              联网搜索，同对话页
+        tool       {name, result}                             调了闹钟类工具，result 是执行结果
         delta      {text}                                     回答正文
         reply      {message}                                  回答存进对话了
         speaking   {sample_rate}                              下面开始有音频
@@ -291,6 +292,8 @@ class Talk:
                             t_search += time.monotonic() - search_at
                             search_at = None
                         await self.send("search", **value)
+                    elif kind == "tool":
+                        await self.send("tool", **value)
                     elif kind == "end":
                         end = value
                         reply = "".join(parts)

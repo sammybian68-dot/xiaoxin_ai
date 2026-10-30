@@ -21,6 +21,7 @@ MAX_ALARMS = 20
 MAX_TIMERS = 10
 MAX_TIMER_S = 24 * 3600
 DONE_KEEP_S = 600          # 响完没人关的倒计时，这么久后自动清掉
+RING_WINDOW_S = 600        # 闹钟到点后这么久内没人关，都算「正在响」（pad 最多响 5 分钟）
 WEEK = "一二三四五六日"     # repeat 里 1..7 = 周一..周日
 
 _lock = threading.Lock()
@@ -29,6 +30,38 @@ _changed = threading.Condition(_lock)
 
 class ClockError(ValueError):
     pass
+
+
+# 响铃时小新用当前音色念的话。每个闹钟 / 倒计时自己的存在 say 里（语音设的由模型填，必填）；
+# 没有（网页上手动建的、留空的）就用默认提示，默认提示在设置里改。
+RING_TEXT = "卞依一，时间到了！"
+MAX_RING_TEXT = 40
+
+
+def ring_text() -> str:
+    return store.settings().get("ring_text") or RING_TEXT
+
+
+def _check_say(text) -> str:
+    text = str(text or "").strip()
+    if len(text) > MAX_RING_TEXT:
+        raise ClockError(f"响铃时说的话最多 {MAX_RING_TEXT} 个字")
+    return text
+
+
+def set_ring_text(text) -> str:
+    text = _check_say(text)
+    if not text:
+        raise ClockError("默认响铃提示不能空")
+    with _lock:
+        store.update_settings(ring_text=text)
+        _save(_load())  # 版本号加一，pad 马上拉到新文字、重新下载语音
+    return text
+
+
+def ring_say(item: dict | None = None) -> str:
+    """某个闹钟 / 倒计时响时实际念的话。"""
+    return (item or {}).get("say") or ring_text()
 
 
 def _path():
@@ -99,10 +132,13 @@ def _parse_date(value) -> str | None:
 
 
 def next_fire(alarm: dict, after: dt.datetime | None = None) -> dt.datetime | None:
-    """下次响的时刻；关着的、一次性且已经过了的返回 None。"""
+    """下次响的时刻；关着的、一次性且已经过了的返回 None。正在「再睡一会」的，先响贪睡那一次。"""
+    after = after or now()
+    snooze = alarm.get("snooze_at")
+    if snooze and snooze > after.timestamp():
+        return dt.datetime.fromtimestamp(snooze, TZ)
     if not alarm.get("enabled", True):
         return None
-    after = after or now()
     h, m = map(int, alarm["time"].split(":"))
     if not alarm["repeat"]:
         if alarm.get("date"):
@@ -115,6 +151,28 @@ def next_fire(alarm: dict, after: dt.datetime | None = None) -> dt.datetime | No
         day = (after + dt.timedelta(days=k)).replace(hour=h, minute=m, second=0, microsecond=0)
         if day.isoweekday() in alarm["repeat"] and day > after:
             return day
+    return None
+
+
+def ringing_at(alarm: dict, at: dt.datetime | None = None) -> float | None:
+    """正在响的那一次的时刻（epoch 秒）：到点不到 RING_WINDOW_S、还没被关掉或贪睡。不在响返回 None。"""
+    at = at or now()
+    t, done = at.timestamp(), alarm.get("dismissed") or 0
+    snooze = alarm.get("snooze_at")
+    if snooze and snooze <= t < snooze + RING_WINDOW_S and snooze > done:
+        return snooze
+    if not alarm.get("enabled", True):
+        return None
+    h, m = map(int, alarm["time"].split(":"))
+    for back in (0, 1):
+        day = (at - dt.timedelta(days=back)).replace(hour=h, minute=m, second=0, microsecond=0)
+        if alarm["repeat"]:
+            ok = day.isoweekday() in alarm["repeat"]
+        else:
+            ok = alarm.get("date") == day.date().isoformat()
+        ts = day.timestamp()
+        if ok and ts <= t < ts + RING_WINDOW_S and ts > done:
+            return ts
     return None
 
 
@@ -143,14 +201,17 @@ def when_label(at: dt.datetime | None, ref: dt.datetime | None = None) -> str:
 
 
 def _expire_alarms(data: dict) -> bool:
-    """一次性闹钟响过了就关掉。返回有没有改动。"""
+    """一次性闹钟响完（过了响铃窗口）就关掉；过期的贪睡清掉。返回有没有改动。"""
     changed = False
     t = now()
     for a in data["alarms"]:
+        if a.get("snooze_at") and a["snooze_at"] + RING_WINDOW_S <= t.timestamp():
+            a.pop("snooze_at")
+            changed = True
         if a["enabled"] and not a["repeat"] and a.get("date"):
             h, m = map(int, a["time"].split(":"))
             d = dt.date.fromisoformat(a["date"])
-            if dt.datetime(d.year, d.month, d.day, h, m, tzinfo=TZ) <= t:
+            if dt.datetime(d.year, d.month, d.day, h, m, tzinfo=TZ).timestamp() + RING_WINDOW_S <= t.timestamp():
                 a["enabled"] = False
                 changed = True
     return changed
@@ -161,14 +222,14 @@ def _new_id(data: dict, prefix: str) -> str:
     return f"{prefix}{data['seq']}"
 
 
-def add_alarm(time_: str, repeat=None, label: str = "", date=None) -> dict:
-    hhmm, days, day = _parse_time(time_), _parse_repeat(repeat), _parse_date(date)
+def add_alarm(time_: str, repeat=None, label: str = "", date=None, say: str = "") -> dict:
+    hhmm, days, day, say = _parse_time(time_), _parse_repeat(repeat), _parse_date(date), _check_say(say)
     with _lock:
         data = _load()
         if len(data["alarms"]) >= MAX_ALARMS:
             raise ClockError(f"闹钟最多 {MAX_ALARMS} 个，先删掉几个")
         a = {"id": _new_id(data, "a"), "time": hhmm, "repeat": days, "label": str(label or "").strip()[:20],
-             "enabled": True, "created": time.time()}
+             "say": say, "enabled": True, "created": time.time()}
         if not days:
             # 一次性：没给日期就定在下一个这个钟点，存成具体日期，响过就自动关
             at = next_fire({**a, "date": day}) if day else next_fire(a)
@@ -195,6 +256,8 @@ def update_alarm(ident: str, **fields) -> dict:
             a["time"] = _parse_time(fields["time"])
         if fields.get("label") is not None:
             a["label"] = str(fields["label"]).strip()[:20]
+        if fields.get("say") is not None:
+            a["say"] = _check_say(fields["say"])
         if "repeat" in fields and fields["repeat"] is not None:
             a["repeat"] = _parse_repeat(fields["repeat"])
         if fields.get("enabled") is not None:
@@ -208,6 +271,39 @@ def update_alarm(ident: str, **fields) -> dict:
             if at is None:
                 raise ClockError(f"{day} {a['time']} 已经过了")
             a["date"] = at.date().isoformat()
+        _save(data)
+        return a
+
+
+SNOOZE_MIN = 5
+
+
+def snooze_alarm(ident: str, minutes=SNOOZE_MIN) -> dict:
+    """响铃时「再睡一会」：这次先停，几分钟后再响一次，不改闹钟本身。"""
+    try:
+        mins = int(minutes or SNOOZE_MIN)
+    except (TypeError, ValueError):
+        raise ClockError("minutes 要数字") from None
+    if not 1 <= mins <= 60:
+        raise ClockError("再睡 1–60 分钟")
+    with _lock:
+        data = _load()
+        a = _find(data["alarms"], ident, "闹钟")
+        a["dismissed"] = ringing_at(a) or time.time()
+        a["snooze_at"] = time.time() + mins * 60
+        _save(data)
+        return a
+
+
+def dismiss_alarm(ident: str) -> dict:
+    """响铃时「关掉」：取消贪睡；一次性的闹钟顺便关掉。"""
+    with _lock:
+        data = _load()
+        a = _find(data["alarms"], ident, "闹钟")
+        a["dismissed"] = ringing_at(a) or time.time()
+        a.pop("snooze_at", None)
+        if not a["repeat"] and next_fire(a) is None:
+            a["enabled"] = False
         _save(data)
         return a
 
@@ -248,7 +344,8 @@ def _settle_timers(data: dict) -> bool:
     return changed
 
 
-def start_timer(seconds, label: str = "") -> dict:
+def start_timer(seconds, label: str = "", say: str = "") -> dict:
+    say = _check_say(say)
     try:
         secs = int(round(float(seconds)))
     except (TypeError, ValueError):
@@ -260,7 +357,7 @@ def start_timer(seconds, label: str = "") -> dict:
         _settle_timers(data)
         if len([t for t in data["timers"] if t["state"] != "done"]) >= MAX_TIMERS:
             raise ClockError(f"倒计时最多同时 {MAX_TIMERS} 个")
-        t = {"id": _new_id(data, "t"), "label": str(label or "").strip()[:20], "duration": secs,
+        t = {"id": _new_id(data, "t"), "label": str(label or "").strip()[:20], "say": say, "duration": secs,
              "state": "running", "ends_at": time.time() + secs, "remaining": float(secs), "created": time.time()}
         data["timers"].append(t)
         _save(data)
@@ -352,10 +449,12 @@ def snapshot() -> dict:
         alarms = []
         for a in sorted(data["alarms"], key=lambda a: a["time"]):
             at = next_fire(a)
-            alarms.append({**a, "next": at.timestamp() if at else None, "repeat_label": repeat_label(a["repeat"])})
-        timers = [{**t, "left": round(timer_remaining(t, t0), 1)} for t in data["timers"]]
+            alarms.append({**a, "next": at.timestamp() if at else None, "ringing": ringing_at(a),
+                           "repeat_label": repeat_label(a["repeat"]), "say_text": ring_say(a)})
+        timers = [{**t, "left": round(timer_remaining(t, t0), 1), "say_text": ring_say(t)} for t in data["timers"]]
         sw = {**data["stopwatch"], "now_elapsed": round(stopwatch_elapsed(data["stopwatch"], t0), 2)}
-        return {"version": data["version"], "now": t0, "alarms": alarms, "timers": timers, "stopwatch": sw}
+        return {"version": data["version"], "now": t0, "alarms": alarms, "timers": timers, "stopwatch": sw,
+                "ring_text": ring_text()}
 
 
 def wait_change(since: int, timeout: float) -> dict:
@@ -388,13 +487,15 @@ def summary() -> str:
     for a in snap["alarms"]:
         at = dt.datetime.fromtimestamp(a["next"], TZ) if a["next"] else None
         state = f"下次 {when_label(at)}" if at else "关"
+        if a["ringing"]:
+            state = "正在响"
         lines.append(f"- {a['id']} 闹钟 {a['time']} {a['repeat_label']}"
-                     + (f" 「{a['label']}」" if a["label"] else "") + f"，{state}")
+                     + (f" 「{a['label']}」" if a["label"] else "") + f"，响时说「{a['say_text']}」，{state}")
     for t in snap["timers"]:
         state = {"running": f"剩 {fmt_duration(t['left'])}", "paused": f"暂停，剩 {fmt_duration(t['left'])}",
                  "done": "已响，待关"}[t["state"]]
         lines.append(f"- {t['id']} 倒计时 {fmt_duration(t['duration'])}"
-                     + (f" 「{t['label']}」" if t["label"] else "") + f"，{state}")
+                     + (f" 「{t['label']}」" if t["label"] else "") + f"，响时说「{t['say_text']}」，{state}")
     sw = snap["stopwatch"]
     if sw["state"] != "idle":
         lines.append(f"- 正计时 {fmt_duration(sw['now_elapsed'])}，{'在走' if sw['state'] == 'running' else '暂停'}")

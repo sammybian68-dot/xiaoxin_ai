@@ -1,0 +1,141 @@
+/* 闹钟 / 倒计时 / 正计时：一个全屏面板，左边是「现在」和下一个提醒，右边三个分页。
+   夜里看得多，所以整体压暗、数字用细的等宽数字、只用一种暖色（琥珀）标「要响的」，其余都是灰阶。 */
+.clk {
+  --clk-amber: #ffb547;
+  --clk-amber-dim: rgba(255, 181, 71, .14);
+  --clk-ring: #262b34;
+  --clk-digits: "SF Pro Display", "Helvetica Neue", "PingFang SC", system-ui, sans-serif;
+  position: fixed; inset: 0; z-index: 40; background: var(--bg); color: var(--text);
+  display: grid; grid-template-columns: minmax(300px, 38%) 1fr;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+.clk[hidden] { display: none; }
+.clk-num { font-family: var(--clk-digits); font-variant-numeric: tabular-nums; font-weight: 200; letter-spacing: -.02em; }
+
+/* 左：现在 */
+.clk-now { display: flex; flex-direction: column; justify-content: space-between; padding: 28px 32px; border-right: 1px solid var(--line); min-width: 0; }
+.clk-close { align-self: flex-start; height: 40px; padding: 0 16px 0 12px; border-radius: 20px; border: 1px solid var(--line); background: none; color: var(--muted); }
+.clk-close:hover { color: var(--text); border-color: #3a404c; }
+.clk-time { font-size: clamp(72px, 11vw, 148px); line-height: 1; }
+.clk-date { color: var(--muted); font-size: 17px; margin-top: 10px; }
+.clk-next { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border-radius: 16px; background: var(--clk-amber-dim); color: var(--clk-amber); }
+.clk-next[hidden] { display: none; }
+.clk-next b { font-weight: 600; display: block; }
+.clk-next small { color: var(--text); opacity: .7; font-size: 13px; }
+.clk-night { height: 44px; border-radius: 22px; border: 1px solid var(--line); background: var(--raised); color: var(--text); font-weight: 600; }
+
+/* 右：分页 */
+.clk-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.clk-tabs { display: flex; gap: 6px; padding: 24px 28px 0; }
+.clk-tabs button { height: 40px; padding: 0 20px; border-radius: 20px; border: 0; background: none; color: var(--muted); font-size: 16px; }
+.clk-tabs button[aria-selected="true"] { background: var(--raised); color: var(--text); font-weight: 600; }
+.clk-tabs .clk-count { font-size: 12px; margin-left: 6px; color: var(--clk-amber); }
+.clk-body { flex: 1; overflow-y: auto; padding: 20px 28px 28px; }
+.clk-hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+
+/* 闹钟列表 */
+.alarms { display: grid; gap: 10px; }
+.alarm { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 16px; padding: 16px 20px; border-radius: 18px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; }
+.alarm:hover { border-color: #3a404c; }
+.alarm .clk-num { font-size: 44px; line-height: 1.05; }
+.alarm-sub { color: var(--muted); font-size: 14px; grid-column: 1; }
+.alarm-sub .label { color: var(--text); }
+.alarm-sub .soon { color: var(--clk-amber); }
+.alarm.off .clk-num, .alarm.off .label { color: var(--muted); }
+.alarm .switch { grid-row: 1 / span 3; grid-column: 2; }
+.alarm-say { grid-column: 1; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.alarm-say small { margin-left: 6px; font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line); }
+.ring-default { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); display: grid; gap: 10px; }
+.ring-default b { display: block; font-weight: 500; }
+.ring-default small { color: var(--muted); font-size: 13px; }
+.rd-row { display: flex; gap: 8px; }
+.rd-row input { flex: 1; min-width: 0; height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); padding: 0 14px; font-size: 16px; }
+.rd-row button { height: 44px; padding: 0 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); }
+.rd-row .rd-save { background: var(--clk-amber); border: 0; color: #2b1a00; font-weight: 600; }
+.alarm .switch:checked { background: var(--clk-amber); }
+.clk-add { height: 52px; border-radius: 18px; border: 1px dashed var(--line); background: none; color: var(--text); font-size: 16px; width: 100%; }
+.clk-add:hover { border-color: var(--clk-amber); color: var(--clk-amber); }
+.clk-empty { text-align: center; color: var(--muted); padding: 40px 0 24px; }
+.clk-empty b { display: block; color: var(--text); font-size: 18px; font-weight: 500; margin-bottom: 4px; }
+
+/* 编辑闹钟 */
+.alarm-edit { display: grid; gap: 18px; padding: 20px; border-radius: 18px; background: var(--panel); border: 1px solid var(--clk-amber); }
+.ae-time { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.ae-col { display: grid; justify-items: center; gap: 4px; }
+.ae-col button { width: 64px; height: 36px; border-radius: 12px; border: 0; background: var(--raised); color: var(--muted); font-size: 18px; }
+.ae-col button:hover { color: var(--text); }
+.ae-col input { width: 108px; text-align: center; font-size: 64px; border: 0; background: none; color: var(--text); padding: 0; }
+.ae-col input:focus { outline: none; color: var(--clk-amber); }
+.ae-colon { font-size: 56px; color: var(--muted); padding-bottom: 6px; }
+.ae-days { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.ae-days button { width: 44px; height: 44px; border-radius: 22px; border: 1px solid var(--line); background: none; color: var(--muted); }
+.ae-days button[aria-pressed="true"] { background: var(--clk-amber); border-color: var(--clk-amber); color: #2b1a00; font-weight: 600; }
+.ae-presets { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.ae-presets button { height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid var(--line); background: none; color: var(--muted); font-size: 13px; }
+.ae-label { height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); padding: 0 14px; font-size: 16px; }
+.ae-actions { display: flex; gap: 10px; }
+.ae-actions button { height: 46px; border-radius: 14px; border: 1px solid var(--line); background: var(--raised); flex: 1; font-size: 15px; }
+.ae-actions .primary { background: var(--clk-amber); border: 0; color: #2b1a00; font-weight: 600; }
+.ae-actions .del { flex: none; padding: 0 18px; color: #ffb4b4; border-color: #5a2a2e; background: #2a1719; }
+.ae-err { color: var(--danger); font-size: 13px; min-height: 1.2em; margin: -8px 0 0; text-align: center; }
+
+/* 倒计时 */
+.timers { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 22px; }
+.timer { position: relative; padding: 18px; border-radius: 20px; background: var(--panel); border: 1px solid var(--line); display: grid; justify-items: center; gap: 10px; }
+.timer.done { border-color: var(--clk-amber); animation: clk-pulse 1.2s ease-in-out infinite; }
+@keyframes clk-pulse { 50% { background: var(--clk-amber-dim); } }
+.timer svg { width: 150px; height: 150px; }
+.timer .ring-bg { stroke: var(--clk-ring); }
+.timer .ring { stroke: var(--clk-amber); transition: stroke-dashoffset .9s linear; }
+.timer.paused .ring { stroke: var(--muted); }
+.timer-face { position: absolute; top: 18px; width: 150px; height: 150px; display: grid; place-content: center; text-align: center; }
+.timer-face .clk-num { font-size: 34px; }
+.timer-face small { color: var(--muted); font-size: 12px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timer-btns { display: flex; gap: 8px; }
+.timer-btns button { height: 36px; padding: 0 14px; border-radius: 18px; border: 1px solid var(--line); background: var(--raised); font-size: 14px; }
+.timer-btns .go { background: var(--clk-amber); border: 0; color: #2b1a00; font-weight: 600; }
+.quick { display: flex; flex-wrap: wrap; gap: 10px; }
+.quick button { height: 48px; min-width: 88px; padding: 0 18px; border-radius: 24px; border: 1px solid var(--line); background: var(--panel); font-size: 16px; }
+.quick button:hover { border-color: var(--clk-amber); color: var(--clk-amber); }
+.quick-custom { display: flex; align-items: center; gap: 8px; }
+.quick-custom input { width: 84px; height: 48px; border-radius: 14px; border: 1px solid var(--line); background: var(--raised); text-align: center; font-size: 18px; }
+
+/* 正计时 */
+.sw { display: grid; justify-items: center; gap: 22px; padding-top: 4vh; }
+.sw .clk-num { font-size: clamp(64px, 9vw, 120px); }
+.sw .clk-num small { font-size: .45em; color: var(--muted); }
+.sw-btns { display: flex; gap: 14px; }
+.sw-btns button { width: 88px; height: 88px; border-radius: 44px; border: 1px solid var(--line); background: var(--raised); font-size: 17px; }
+.sw-btns .go { background: var(--clk-amber); border: 0; color: #2b1a00; font-weight: 600; }
+.laps { width: min(420px, 100%); list-style: none; margin: 0; padding: 0; display: grid; }
+.laps li { display: flex; justify-content: space-between; padding: 10px 4px; border-bottom: 1px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
+.laps li b { color: var(--text); font-weight: 400; }
+
+/* 响铃：盖住一切，大按钮，小朋友一眼能懂 */
+.ring-over { position: fixed; inset: 0; z-index: 60; background: #0b0905; display: grid; place-content: center; justify-items: center; gap: 28px; text-align: center; padding: 24px; }
+.ring-over[hidden] { display: none; }
+.ring-over .clk-num { font-size: clamp(96px, 16vw, 200px); color: var(--clk-amber, #ffb547); animation: clk-breathe 2s ease-in-out infinite; }
+@keyframes clk-breathe { 50% { opacity: .55; } }
+.ring-over .what { font-size: 32px; color: #f3e6cf; max-width: 20em; }
+.ring-btns { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
+.ring-btns button { height: 72px; padding: 0 40px; border-radius: 36px; font-size: 22px; border: 1px solid #4a3a1c; background: #1c160b; color: #f3e6cf; }
+.ring-btns .stop { background: #ffb547; border: 0; color: #2b1a00; font-weight: 700; }
+
+/* 熄屏：纯黑，只留一行很暗的钟，点一下回来 */
+.night { position: fixed; inset: 0; z-index: 55; background: #000; display: grid; place-content: center; cursor: pointer; }
+.night[hidden] { display: none; }
+.night .clk-num { color: #2a2420; font-size: 96px; }
+.night small { display: block; text-align: center; color: #241f1b; margin-top: 10px; }
+
+@media (max-width: 820px) {
+  .clk { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .clk-now { border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; gap: 12px; }
+  .clk-time { font-size: 64px; }
+  .clk-tabs { padding: 12px 16px 0; }
+  .clk-body { padding: 16px; }
+  .alarm .clk-num { font-size: 36px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .timer.done, .ring-over .clk-num { animation: none; }
+  .timer .ring { transition: none; }
+}

@@ -13,6 +13,7 @@ _REPEAT = {
               {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 7}}],
 }
 _LABEL = {"type": "string", "description": "名字，≤10 字，如「起床」「练琴」；没说就不填"}
+_SAY = {"type": "string", "maxLength": 40, "description": "响铃时小新念的话，≤40 字，如「起床了，卞依一」「卞依一，该练琴了」"}
 
 
 def _fn(name, desc, props, required=()):
@@ -26,17 +27,23 @@ SPECS = [
         "repeat": _REPEAT,
         "date": {"type": "string", "description": "YYYY-MM-DD，只用于 once 且不是最近一次该钟点时"},
         "label": _LABEL,
-    }, ["time"]),
+        "say": _SAY,
+    }, ["time", "say"]),
     _fn("alarm_update", "改闹钟，只传要改的字段。enabled=false 是关掉但保留。", {
         "id": {"type": "string"}, "time": {"type": "string"}, "repeat": _REPEAT,
-        "date": {"type": "string"}, "label": _LABEL, "enabled": {"type": "boolean"},
+        "date": {"type": "string"}, "label": _LABEL, "say": _SAY, "enabled": {"type": "boolean"},
     }, ["id"]),
     _fn("alarm_delete", "删闹钟。", {
         "ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
     }, ["ids"]),
+    _fn("alarm_ring", "处理正在响的闹钟：dismiss 关掉这次；snooze 过几分钟再响。", {
+        "id": {"type": "string"},
+        "action": {"type": "string", "enum": ["dismiss", "snooze"]},
+        "minutes": {"type": "integer", "minimum": 1, "maximum": 60, "description": "snooze 用，默认 5"},
+    }, ["id", "action"]),
     _fn("timer_start", "新建倒计时。", {
-        "seconds": {"type": "integer", "minimum": 1, "maximum": 86400}, "label": _LABEL,
-    }, ["seconds"]),
+        "seconds": {"type": "integer", "minimum": 1, "maximum": 86400}, "label": _LABEL, "say": _SAY,
+    }, ["seconds", "say"]),
     _fn("timer_control", "操作倒计时。add 用 seconds 加减时间（负数是减）；cancel 也用来关掉已响的。", {
         "id": {"type": "string"},
         "action": {"type": "string", "enum": ["pause", "resume", "cancel", "add"]},
@@ -66,17 +73,30 @@ def run(name: str, arguments: str) -> str:
         return "失败：参数不是 JSON 对象"
     try:
         if name == "alarm_set":
-            a = clock.add_alarm(args.get("time"), args.get("repeat"), args.get("label") or "", args.get("date"))
-            return "已设闹钟 " + _alarm_line(a)
+            if not str(args.get("say") or "").strip():
+                return "失败：缺 say（响铃时说什么），先问用户"
+            a = clock.add_alarm(args.get("time"), args.get("repeat"), args.get("label") or "", args.get("date"),
+                                args.get("say"))
+            return "已设闹钟 " + _alarm_line(a) + f"，响时说「{clock.ring_say(a)}」"
         if name == "alarm_update":
-            fields = {k: args.get(k) for k in ("time", "repeat", "date", "label", "enabled") if k in args}
+            fields = {k: args.get(k) for k in ("time", "repeat", "date", "label", "say", "enabled") if k in args}
             return "已改闹钟 " + _alarm_line(clock.update_alarm(str(args.get("id")), **fields))
         if name == "alarm_delete":
             ids = [str(i) for i in args.get("ids") or []]
             gone = clock.delete_alarms(ids)
             return "已删闹钟 " + "；".join(f"{a['id']} {a['time']}" for a in gone)
+        if name == "alarm_ring":
+            ident = str(args.get("id"))
+            if args.get("action") == "snooze":
+                a = clock.snooze_alarm(ident, args.get("minutes") or clock.SNOOZE_MIN)
+                at = dt.datetime.fromtimestamp(a["snooze_at"], clock.TZ)
+                return f"已贪睡闹钟 {a['id']}，{at:%H:%M} 再响"
+            a = clock.dismiss_alarm(ident)
+            return f"已关掉闹钟 {a['id']} 这次响铃，" + _alarm_line(a).split("，", 1)[1]
         if name == "timer_start":
-            t = clock.start_timer(args.get("seconds"), args.get("label") or "")
+            if not str(args.get("say") or "").strip():
+                return "失败：缺 say（响铃时说什么），先问用户"
+            t = clock.start_timer(args.get("seconds"), args.get("label") or "", args.get("say"))
             end = dt.datetime.fromtimestamp(t["ends_at"], clock.TZ)
             return f"已开倒计时 {t['id']} {clock.fmt_duration(t['duration'])}，{end:%H:%M:%S} 响"
         if name == "timer_control":

@@ -8,6 +8,7 @@
 <link rel="icon" href="static/icon.png">
 <link rel="apple-touch-icon" href="static/icon.png">
 <link rel="stylesheet" href="static/app.css">
+<link rel="stylesheet" href="static/clock.css">
 </head>
 <body>
 <div id="login" class="login" hidden>
@@ -43,6 +44,7 @@
         <span class="sr-only">模型</span>
         <select id="model"></select>
       </label>
+      <button id="open-clock" class="icon-btn clock-btn" type="button" title="闹钟和计时" aria-label="闹钟和计时">⏰</button>
       <button id="autoread" class="icon-btn" type="button" aria-pressed="true" title="回答完自动朗读">🔊</button>
       <button id="standby" class="standby" type="button" aria-pressed="false" hidden
               title="pad 本机一直听唤醒词，听到才连云端，不唤醒不上传">💤 待命</button>
@@ -76,6 +78,42 @@
       </div>
     </footer>
   </main>
+</div>
+
+<section id="clock" class="clk" aria-label="闹钟和计时" hidden>
+  <div class="clk-now">
+    <button id="clk-close" class="clk-close" type="button">‹ 回到对话</button>
+    <div>
+      <div id="clk-time" class="clk-time clk-num">--:--</div>
+      <div id="clk-date" class="clk-date"></div>
+    </div>
+    <div id="clk-next" class="clk-next" hidden>
+      <span aria-hidden="true">⏰</span>
+      <span><b id="clk-next-what"></b><small id="clk-next-when"></small></span>
+    </div>
+    <button id="clk-night" class="clk-night" type="button" title="屏幕关掉，闹钟照样响">🌙 熄屏睡觉</button>
+  </div>
+  <div class="clk-main">
+    <div class="clk-tabs" role="tablist">
+      <button type="button" role="tab" data-tab="alarms" aria-selected="true">闹钟</button>
+      <button type="button" role="tab" data-tab="timers">倒计时<span id="clk-timer-count" class="clk-count"></span></button>
+      <button type="button" role="tab" data-tab="stopwatch">正计时</button>
+    </div>
+    <div id="clk-body" class="clk-body"></div>
+  </div>
+</section>
+
+<div id="ring" class="ring-over" role="alertdialog" aria-labelledby="ring-time" hidden>
+  <div id="ring-time" class="clk-num"></div>
+  <div id="ring-what" class="what"></div>
+  <div class="ring-btns">
+    <button id="ring-snooze" type="button">再睡 5 分钟</button>
+    <button id="ring-stop" type="button" class="stop">关掉</button>
+  </div>
+</div>
+
+<div id="night" class="night" hidden>
+  <div><div id="night-time" class="clk-num"></div><small>点一下回来</small></div>
 </div>
 
 <div id="rec-overlay" class="rec-overlay" hidden>
@@ -156,6 +194,10 @@
         <span><b>唤醒和主动退出时小新说的话</b><small>叫醒时说「我在的」，说退出词或点挂断时说「拜拜」，用的是当前音色。换音色后自动跟着换</small></span>
         <span class="tone-pick"><button type="button" class="tone" id="cue-zai">▶ 我在的</button><button type="button" class="tone" id="cue-bye">▶ 拜拜</button></span>
       </div>
+      <div class="row">
+        <label for="set-ring-text"><b>默认响铃提示</b><small>闹钟和倒计时响时小新说的话。语音设的闹钟各有自己的话，没写的用这句</small></label>
+        <span class="rd-row"><input id="set-ring-text" class="wake-input" maxlength="40"><button type="button" class="tone" id="set-ring-play">▶</button><button type="button" class="tone" id="set-ring-save" hidden>保存</button></span>
+      </div>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="wake" hidden>
@@ -233,5 +275,6 @@
 
 <div id="toast" class="toast" role="status" hidden></div>
 <script src="static/app.js"></script>
+<script src="static/clock.js"></script>
 </body>
 </html>

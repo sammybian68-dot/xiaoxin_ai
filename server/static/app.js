@@ -51,6 +51,7 @@ async function boot() {
   else renderEmpty();
   if (location.hash.startsWith("#settings")) openSettings(location.hash.split("/")[1]);
   if (native) api("api/voices").then(json).then((c) => syncVoiceToNative(c.current)).catch(() => {});
+  pollClock();  // clock.js：长轮询闹钟状态，模型或别的设备改了马上同步
 }
 
 function localGet(k) { try { return localStorage.getItem("xiaoxin." + k); } catch (_) { return null; } }
@@ -185,6 +186,7 @@ function appendMessage(m) {
     row.querySelector(".meta").textContent = (m.model || "")
       + (t ? `  文字首响 ${t.first_text ?? "-"}s · 语音首响 ${t.first_audio ?? "-"}s（服务端）` : "");
     renderSources(row, m.searches);
+    for (const a of m.actions || []) showAction(row, a);
     row.dataset.reply = m.text || "";
     wireActions(row);
   }
@@ -208,6 +210,19 @@ function replayUtterance(m, row, btn) {
   btn.textContent = "⏹";
   audio.onended = () => { if (player.audio === audio) stopSpeaking(); };
   audio.play().catch((err) => { if (player.audio === audio) { stopSpeaking(); toast("放不了：" + err.message); } });
+}
+
+// 调了闹钟类工具：回答上方一张小卡片写清做了什么，点开闹钟面板
+const ACTION_TAB = { alarm_set: "alarms", alarm_update: "alarms", alarm_delete: "alarms", timer_start: "timers",
+  timer_control: "timers", stopwatch: "stopwatch" };
+function showAction(row, a) {
+  const ok = !a.result.startsWith("失败");
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "action-chip" + (ok ? "" : " bad");
+  chip.textContent = (ok ? "⏰ " : "⚠ ") + a.result.replace(/^已/, "").replace(/^失败：/, "没成功：");
+  chip.addEventListener("click", () => openClock(ACTION_TAB[a.name]));
+  row.querySelector(".bubble").insertBefore(chip, row.querySelector(".bubble .text"));
 }
 
 // 联网搜过的回答，下面列出处（同一个网址只列一次，最多 6 条），点开是原网页
@@ -424,6 +439,8 @@ async function send(text, via = "text") {
         } else if (ev === "reasoning") {
           reasoning += data.length;
           if (!reply) textEl.innerHTML = `<span class="thinking">小新在想…（${reasoning} 字）</span>`;
+        } else if (ev === "tool") {
+          showAction(row, data);
         } else if (ev === "search") {
           if (data.state === "start") {
             if (!reply) textEl.innerHTML = `<span class="thinking">🔎 正在搜：${esc(data.queries.join("、"))}…</span>`;
@@ -954,6 +971,7 @@ function onTalkEvent(ev) {
       talkStatus("想一想…");
       scrollDown(true);
       break;
+    case "tool": if (talk.row) showAction(talk.row, ev); break;
     case "search":
       if (!talk.row) break;
       if (ev.state === "start") {

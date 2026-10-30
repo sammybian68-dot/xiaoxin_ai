@@ -6,6 +6,10 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.camera.front" android:required="true" />
 
     <application
@@ -34,5 +38,10 @@
             android:name=".echo.EchoActivity"
             android:exported="true"
             android:screenOrientation="landscape" />
+        <!-- 熄屏存活测试：adb shell am start-foreground-service -n com.xiaoxin.testapp/.screenoff.ScreenOffService -->
+        <service
+            android:name=".screenoff.ScreenOffService"
+            android:exported="true"
+            android:foregroundServiceType="microphone" />
     </application>
 </manifest>
