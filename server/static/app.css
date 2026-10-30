@@ -53,7 +53,43 @@ button { cursor: pointer; }
 .conv:hover, .conv.active { background: var(--raised); }
 .conv .del { visibility: hidden; color: var(--muted); padding: 0 4px; border: 0; background: none; }
 .conv:hover .del, .conv.active .del { visibility: visible; }
-.side-foot { border-top: 1px solid var(--line); padding-top: 10px; }
+.side-foot { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 6px; }
+
+/* 上下文电量：像手机电池。绿 → 琥珀 → 红；压缩中是流动的琥珀条 */
+.ctx { --ctx-c: #3ddc84; padding: 4px 10px 6px; display: grid; gap: 4px; }
+.ctx[hidden] { display: none; }
+.ctx[data-level="mid"] { --ctx-c: #ffb547; }
+.ctx[data-level="high"] { --ctx-c: #ff6b6b; }
+.ctx[data-level="busy"] { --ctx-c: #ffb547; }
+.ctx-row { display: flex; align-items: center; gap: 8px; }
+.ctx-label { font-size: 13px; color: var(--muted); }
+.ctx-batt { position: relative; flex: 1; height: 18px; border-radius: 5px; border: 1.5px solid #4a505c; padding: 1.5px; }
+.ctx-batt::after { content: ""; position: absolute; right: -5px; top: 5px; width: 3px; height: 5px; border-radius: 0 2px 2px 0; background: #4a505c; }
+.ctx-fill { display: block; height: 100%; border-radius: 3px; background: var(--ctx-c); transition: width .4s ease, background .3s; }
+.ctx[data-level="busy"] .ctx-fill {
+  background: repeating-linear-gradient(-45deg, #ffb547 0 8px, #d9922b 8px 16px); background-size: 22.6px 100%;
+  animation: ctx-flow .8s linear infinite;
+}
+@keyframes ctx-flow { to { background-position: 22.6px 0; } }
+.ctx-pct { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; font-weight: 700;
+  color: #fff; text-shadow: 0 0 3px rgba(0, 0, 0, .7); font-variant-numeric: tabular-nums; }
+.ctx-compact { height: 24px; padding: 0 9px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); color: var(--muted); font-size: 12px; }
+.ctx-compact:hover:not(:disabled) { color: var(--text); border-color: #ffb547; }
+.ctx-compact:disabled { opacity: .45; cursor: default; }
+.ctx-note { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-epoch { flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: rgba(255, 181, 71, .16); color: #ffb547; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+.epoch-divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 4px 0; }
+.epoch-divider::before, .epoch-divider::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
+
+/* 确认弹窗 */
+.confirm { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); color: var(--text); padding: 22px 24px 18px; max-width: min(440px, calc(100vw - 32px)); }
+.confirm::backdrop { background: rgba(0, 0, 0, .55); }
+.confirm h2 { margin: 0 0 10px; font-size: 19px; }
+.confirm p { margin: 0 0 8px; line-height: 1.7; }
+.confirm-sub { color: var(--muted); font-size: 13px; }
+.confirm-btns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+.confirm-btns button { height: 40px; padding: 0 18px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); }
+.confirm-btns .primary { background: #ffb547; border: 0; color: #2b1a00; font-weight: 700; }
 .side-link { width: 100%; text-align: left; border: 0; background: none; padding: 9px 10px; border-radius: 10px; color: var(--muted); }
 .side-link:hover { background: var(--raised); color: var(--text); }
 .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); z-index: 20; }

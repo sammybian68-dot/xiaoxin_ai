@@ -99,7 +99,8 @@ async function refreshList() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "conv" + (state.conv && state.conv.id === c.id ? " active" : "");
-    b.innerHTML = `<span>${esc(c.title)}</span><span class="del" role="button" aria-label="删除" title="删除">✕</span>`;
+    const ep = c.epoch ? `<span class="conv-epoch" title="压缩过 ${c.epoch} 次">${c.epoch}</span>` : "";
+    b.innerHTML = `<span>${esc(c.title)}</span>${ep}<span class="del" role="button" aria-label="删除" title="删除">✕</span>`;
     b.addEventListener("click", (e) => {
       if (e.target.classList.contains("del")) { removeConv(c.id); return; }
       openConv(c.id);
@@ -121,13 +122,28 @@ async function openConv(id) {
   localSet("conv", id);
   $("conv-title").textContent = state.conv.title || "新对话";
   $("messages").innerHTML = "";
-  for (const m of state.conv.messages) appendMessage(m);
+  let shownEpoch = 0;
+  state.conv.messages.forEach((m, i) => {
+    if (state.conv.epoch_start && i === state.conv.epoch_start) appendDivider(state.conv.epoch);
+    if (m.role === "note") return;  // [system] 现状消息只给模型看
+    appendMessage(m);
+  });
   scrollDown(true);
   refreshList();
+  loadCtx();
+}
+
+// 压缩分界线：上面的已经压成摘要了（原文还在，只是不再整段发给模型）
+function appendDivider(epoch) {
+  const d = document.createElement("div");
+  d.className = "epoch-divider";
+  d.innerHTML = `<span>以上已压缩成摘要 · 第 ${epoch} 次</span>`;
+  $("messages").appendChild(d);
 }
 
 function renderEmpty() {
   state.conv = null;
+  renderCtx(null);
   $("conv-title").textContent = "小新";
   $("messages").innerHTML = `<div class="empty"><img src="static/icon.png" alt=""><b>你好，我是小新</b>可以打字、发图片和文件，也可以按住说话</div>`;
 }
@@ -468,6 +484,10 @@ async function send(text, via = "text") {
           reply = data.text;
           textEl.innerHTML = renderText(reply);
           if (data.searches) renderSources(row, data.searches);
+          if (data.ctx) {  // 这一轮实际用了多少上下文；压缩刚换上（epoch 变了）就刷新左侧的次数
+            renderCtx(data.ctx);
+            if (data.ctx.epoch !== (state.conv?.epoch || 0)) { if (state.conv) state.conv.epoch = data.ctx.epoch; refreshList(); }
+          }
           finishText();  // 文字完了就能发下一条；音频还在这条流里接着下来
         } else if (ev === "error") {
           throw new Error(data);
@@ -1027,6 +1047,7 @@ function onTalkEvent(ev) {
       scrollDown();
       break;
     case "reply":
+      if (ev.ctx) { renderCtx(ev.ctx); refreshList(); }
       if (talk.row) { talk.row.querySelector(".meta").dataset.model = ev.message.model || ""; showTiming(); }
       break;
     case "model": toast(`下一句用 ${state.models.find((m) => m.id === ev.model)?.label || ev.model}`); break;
@@ -1547,9 +1568,20 @@ boot();
 const promptView = { data: null, view: "parts", voice: false };
 
 async function loadPrompts() {
-  try { promptView.data = await api("api/prompts").then(json); } catch (e) { $("prompt-view").textContent = e.message; return; }
+  const q = state.conv?.id ? `?conversation=${state.conv.id}` : "";
+  try { promptView.data = await api("api/prompts" + q).then(json); } catch (e) { $("prompt-view").textContent = e.message; return; }
+  try { const c = state.conv?.id ? await api(`api/conversations/${state.conv.id}/ctx`).then(json) : null; $("set-ctx-limit").value = Math.round((c?.limit || 60000) / 1000); } catch (_) { /* 拿不到就空着 */ }
   renderPrompts();
 }
+
+$("set-ctx-limit").addEventListener("change", async () => {
+  try {
+    const r = await api("api/ctx_limit", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: Math.round(+$("set-ctx-limit").value * 1000) }) }).then(json);
+    toast(`压缩阈值改成 ${r.limit / 1000}k`);
+    loadCtx();
+  } catch (e) { toast(e.message); }
+});
 
 function renderPrompts() {
   const d = promptView.data, box = $("prompt-view");
@@ -1564,6 +1596,16 @@ function renderPrompts() {
     box.innerHTML = `<label class="pm-toggle"><input type="checkbox" class="switch" id="pm-voice" ${promptView.voice ? "checked" : ""}>`
       + `<span>语音通话时（多拼 voice.md）</span>${chars(text)}</label><pre class="sys-prompt">${esc(text)}</pre>`;
     $("pm-voice").addEventListener("change", (e) => { promptView.voice = e.target.checked; renderPrompts(); });
+  } else if (promptView.view === "summary") {
+    const s = d.summary;
+    if (!s) { box.innerHTML = '<p class="voice-tip">先打开一段对话，这里显示它上一次压缩出来的摘要。</p>'; return; }
+    const when = s.compacted_at ? new Date(s.compacted_at * 1000).toLocaleString("zh-CN", { hour12: false }) : "";
+    box.innerHTML = `<p class="voice-tip">「${esc(s.title)}」压缩过 <b>${s.epoch}</b> 次${when ? `，最近一次 ${esc(when)}` : ""}。`
+      + `下一轮发给主脑的是：system prompt + 这份摘要 + 摘要之后的原文。</p>`
+      + (s.text ? `<pre class="sys-prompt">${esc(s.text)}</pre>` : '<p class="voice-tip">还没压缩过。左侧栏「压缩」按钮可以马上压一次。</p>');
+  } else if (promptView.view === "compact") {
+    box.innerHTML = `<p class="voice-tip">后台压缩时发给主脑（关思考）的提示词，<code>server/prompts/compact.md</code>。第一次走 INITIAL，之后走 UPDATE（旧摘要放在 &lt;previous-summary&gt; 里），6 个标题缺一个就算失败、不换上。</p>`
+      + `<pre class="sys-prompt">${esc(d.compact || "")}</pre>`;
   } else {
     box.innerHTML = d.tools.map((t) => {
       const props = t.parameters.properties || {}, req = new Set(t.parameters.required || []);
@@ -1592,4 +1634,46 @@ $("set-hotwords-save").addEventListener("click", async () => {
     renderEngines(e);
     toast(`热词存好了，${e.asr_hotwords.length} 个，下一句就生效`);
   } catch (err) { toast(err.message); }
+});
+
+
+// ---------------------------------------------------------------- 上下文电量（左侧栏）
+// 和电池一样：绿 → 琥珀（过 60%）→ 红（过 85%）；压缩中变成流动的琥珀条加「压缩中…」，压完数字跳回去、旁边次数 +1
+let ctxPoll = null;
+async function loadCtx() {
+  if (!state.conv?.id) { renderCtx(null); return; }
+  try { renderCtx(await api(`api/conversations/${state.conv.id}/ctx`).then(json)); } catch (_) { renderCtx(null); }
+}
+
+function renderCtx(c) {
+  const box = $("ctx");
+  if (!c) { box.hidden = true; clearTimeout(ctxPoll); return; }
+  box.hidden = false;
+  const pct = Math.min(100, Math.round((c.tokens / c.limit) * 100));
+  const busy = c.state === "running" || c.state === "ready";
+  const level = busy ? "busy" : pct >= 85 ? "high" : pct >= 60 ? "mid" : "low";
+  box.dataset.level = level;
+  $("ctx-fill").style.width = `${busy ? 100 : Math.max(pct, 3)}%`;
+  $("ctx-pct").textContent = busy ? "压缩中…" : `${pct}%`;
+  $("ctx-batt").setAttribute("aria-valuenow", String(pct));
+  $("ctx-compact").disabled = busy || !c.tokens;
+  const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
+  const ep = c.epoch ? ` · 压缩过 ${c.epoch} 次` : "";
+  $("ctx-note").textContent = busy ? `正在后台写摘要，照常聊${ep}`
+    : c.error ? `上次压缩没成功：${c.error}`
+    : `${k(c.tokens)} / ${k(c.limit)} token${ep}`;
+  clearTimeout(ctxPoll);
+  if (busy) ctxPoll = setTimeout(loadCtx, 2000);  // 压缩中：每 2 秒看一眼，压好就更新
+}
+
+$("ctx-compact").addEventListener("click", () => $("compact-dialog").showModal());
+$("compact-no").addEventListener("click", () => $("compact-dialog").close());
+$("compact-yes").addEventListener("click", async () => {
+  $("compact-dialog").close();
+  if (!state.conv?.id) return;
+  try {
+    const r = await api(`api/conversations/${state.conv.id}/compact`, { method: "POST" }).then(json);
+    renderCtx(r);
+    toast(r.started ? "开始压缩了，压好后下一句起生效" : (r.error || "现在压不了"));
+  } catch (e) { toast(e.message); }
 });

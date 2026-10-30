@@ -29,6 +29,16 @@
     <button id="new-chat" class="new-chat" type="button">＋ 新对话</button>
     <nav id="conv-list" class="conv-list"></nav>
     <div class="side-foot">
+      <div id="ctx" class="ctx" hidden>
+        <div class="ctx-row">
+          <span class="ctx-label">记忆</span>
+          <span id="ctx-batt" class="ctx-batt" role="meter" aria-label="这段对话占了多少上下文" aria-valuemin="0" aria-valuemax="100">
+            <span id="ctx-fill" class="ctx-fill"></span><span id="ctx-pct" class="ctx-pct"></span>
+          </span>
+          <button id="ctx-compact" class="ctx-compact" type="button" title="把前面的对话压缩成摘要，腾出空间">压缩</button>
+        </div>
+        <div id="ctx-note" class="ctx-note"></div>
+      </div>
       <button id="open-settings" type="button" class="side-link">⚙ 设置</button>
     </div>
   </aside>
@@ -117,6 +127,13 @@
   <div><div id="night-time" class="clk-num"></div><small>点一下回来</small></div>
 </div>
 
+<dialog id="compact-dialog" class="confirm" aria-labelledby="compact-title">
+  <h2 id="compact-title">现在压缩这段对话？</h2>
+  <p>小新会把前面的聊天写成一份摘要，只留最近 5 轮原文，腾出记忆空间。聊天记录不会删，往上翻都还在。</p>
+  <p class="confirm-sub">压缩在后台进行，大概十几秒，期间照常聊。压完可以在「设置 → 提示词与工具 → 上次压缩」里看摘要。</p>
+  <div class="confirm-btns"><button type="button" id="compact-no">先不了</button><button type="button" id="compact-yes" class="primary">压缩</button></div>
+</dialog>
+
 <div id="rec-overlay" class="rec-overlay" hidden>
   <div class="rec-card">
     <p id="rec-live" class="rec-live" aria-live="polite">正在听…</p>
@@ -158,11 +175,17 @@
     </section>
 
     <section class="pane" role="tabpanel" data-pane="prompt" hidden>
-      <p class="voice-tip">每个功能一个 md，在 <code>server/prompts/</code>，按顺序拼成 system prompt；<code>{now}</code> 这类占位符每次请求时现填。改完跑一次部署。</p>
+      <p class="voice-tip">每个功能一个 md，在 <code>server/prompts/</code>，按顺序拼成 system prompt（不随时间变，前缀缓存一直命中）。时间、闹钟状态作为 <code>[system]</code> 消息插在对话里。改完跑一次部署。</p>
+      <div class="row">
+        <label for="set-ctx-limit"><b>压缩阈值</b><small>这段对话占的上下文超过这么多 token，后台把前面的压成摘要，只留最近 5 轮原文</small></label>
+        <span class="vad-end"><input id="set-ctx-limit" type="number" min="16" max="60" step="1" inputmode="numeric"><span>k token</span></span>
+      </div>
       <div class="seg" role="tablist" aria-label="查看哪部分">
         <button type="button" data-view="parts" aria-selected="true">分模块</button>
         <button type="button" data-view="system">完整 prompt</button>
         <button type="button" data-view="tools">工具</button>
+        <button type="button" data-view="summary">上次压缩</button>
+        <button type="button" data-view="compact">压缩提示词</button>
       </div>
       <div id="prompt-view"></div>
     </section>
