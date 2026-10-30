@@ -614,3 +614,36 @@ def test_paraformer_has_no_stream_falls_back(call, fakes, monkeypatch):
     c.until("interrupt")
     gate.set()
     assert ("doubao.stream_asr",) not in fakes.calls
+
+
+def test_partials_go_on_screen_and_short_is_rejected(call, fakes, monkeypatch):
+    """一开口中间结果就上屏（partial）；小新在说时只认出一个字：rejected（气泡灰掉），不打断、不进主脑。"""
+    gate = _slow_first_turn(fakes, monkeypatch)
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学讲个故事"}))
+    c.until("thinking")
+    fakes.stream_partials = ["嗯"]
+    fakes.doubao_text = "嗯。"
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.1, amp=2000), chunk=3200)
+    assert c.until("partial")["text"] == "嗯"
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    r = c.until("rejected")
+    assert (r["text"], r["reason"]) == ("嗯。", "short")
+    gate.set()
+    c.until("reply")
+    assert "interrupt" not in c.kinds()
+    users = [m for m in store.get(c.msgs[0]["conversation"])["messages"] if m["role"] == "user"]
+    assert [u["text"] for u in users] == ["讲个故事"]  # 「嗯」没进记录
+
+
+def test_partials_when_idle_too(call, fakes):
+    """小新没在说的时候也上屏，说完 heard 定稿。"""
+    fakes.stream_partials = ["今天", "今天天气"]
+    c = call()
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.2, amp=2000), chunk=3200)
+    assert c.until("partial")["text"] == "今天"
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    c.until("heard")
+    assert "interrupt" not in c.kinds()

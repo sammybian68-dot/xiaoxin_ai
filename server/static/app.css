@@ -154,6 +154,10 @@ button { cursor: pointer; }
 .sources a:hover, .sources a:focus-visible { opacity: 1; text-decoration: underline; }
 .sources small { color: var(--muted); }
 .via { font-size: 12px; opacity: .75; }
+.msg.me.live .text { opacity: .75; }
+.msg.me.live .text::after { content: "▍"; animation: blink 1s steps(1) infinite; margin-left: 2px; }
+.msg.me.rejected .text { background: var(--raised); color: var(--muted); }
+.msg.me.rejected .via { opacity: .6; }
 .action-chip { align-self: flex-start; border: 1px solid rgba(255, 181, 71, .35); background: rgba(255, 181, 71, .1); color: #ffcf85; border-radius: 12px; padding: 6px 12px; font-size: 13px; text-align: left; max-width: 100%; }
 .action-chip.bad { border-color: #5a2a2e; background: #2a1719; color: #ffb4b4; }
 .clock-btn.live { color: #ffb547; }

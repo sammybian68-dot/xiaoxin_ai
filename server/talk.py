@@ -17,6 +17,8 @@
         ready      {conversation, asr, tts, voice}           准备好了，可以说话
         listening  {}                                         用户开口了（VAD start）
         model      {model}                                    换模型生效了
+        partial    {text}                                     这句还在说，豆包流式中间结果（一开口就上屏，和 carHer2 一样）
+        rejected   {text, reason}                             这句不算（空 / 只有一个字 / 杂音）：气泡变灰，不进主脑
         heard      {text, t_asr, id, local, audio}            一句话识别完；t_asr 是说完到识别出来的秒数；id 是存下的用户消息；
                                                               local 端侧认出的（没有是空）；audio 有没有存原声
                                                               （GET /api/conversations/<cid>/audio/<id> 回放）
@@ -26,7 +28,7 @@
         delta      {text}                                     回答正文
         reply      {message}                                  回答存进对话了
         speaking   {sample_rate}                              下面开始有音频
-        interrupt  {}                                         用户插话，端侧立刻清空播放队列
+        interrupt  {}                                         用户插话（中间结果够两个字）：端侧立刻清空播放队列
         idle       {timing}                                   这一轮念完了，等用户说。timing 见下
         exit       {text}                                     用户说了退出词（整句精确匹配；pad 一般本机已经先判了）
         bye        {}                                         端侧挂断：说一声「拜拜」（/api/cue/bye，当前音色）回待命
@@ -244,16 +246,22 @@ class Talk:
             return
         self._stream = rec
         self._stream_task = asyncio.create_task(self._watch_partials(rec))
+        self._stream_task.add_done_callback(_log_task_error)
 
     async def _watch_partials(self, rec) -> None:
+        """中间结果一来就上屏（partial）。小新正在想 / 在说、中间结果够两个字：马上打断（interrupt），
+        这一轮整个取消（朗读停、模型也停），等这句说完用最终结果开新的一轮；这句最后被拒识也不恢复（插了话就算打断）。"""
         while True:
             text = await rec.partials.get()
-            if self._barged or not self.busy or rec is not self._stream:
+            if rec is not self._stream:
                 continue
-            log.info("talk partial +%.2fs: %s", time.monotonic() - self._vad_t0, text[:20])
+            await self.send("partial", text=text)
+            if self._barged or not self.busy:
+                continue
             if len(_bare(text)) >= BARGE_IN_MIN_CHARS:
                 self._barged = True
-                log.info("talk early barge-in during turn %d on partial: %s", self.turn_id, text[:30])
+                log.info("talk early barge-in +%.2fs during turn %d on partial: %s",
+                         time.monotonic() - self._vad_t0, self.turn_id, text[:30])
                 await self.cancel_turn()
                 await self.send("interrupt")
 
@@ -306,6 +314,7 @@ class Talk:
         if not text:
             log.info("talk heard %.1fs audio in %.2fs: (空，不算)", len(utt) / 32000, t_asr)
             self._local = []
+            await self.send("rejected", text="", reason="empty")
             if not self.busy:
                 await self.send("idle")
             return
@@ -314,6 +323,7 @@ class Talk:
                 # 小新在想 / 在说时只认出一个字（「嗯」「啊」「好」，多半是附和、回声或杂音）：不打断，这句也不答
                 log.info("talk ignore short barge-in during turn %d: %s", self.turn_id, text)
                 self._local = []
+                await self.send("rejected", text=text, reason="short")
                 return
             else:
                 log.info("talk barge-in during turn %d: %s", self.turn_id, text[:30])
@@ -511,3 +521,8 @@ class Talk:
 
 
 _BACKGROUND: set = set()
+
+
+def _log_task_error(task: asyncio.Task) -> None:
+    if not task.cancelled() and task.exception():
+        log.error("talk background task failed: %r", task.exception())

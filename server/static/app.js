@@ -781,7 +781,7 @@ holdBtn.addEventListener("contextmenu", (e) => e.preventDefault());
 // 在电脑浏览器里，就用 getUserMedia（浏览器自带 AEC）和 Web Audio。
 
 const native = window.XiaoxinNative || null;
-const talk = { on: false, ws: null, rec: null, stream: null, row: null, text: "", searches: [] };
+const talk = { on: false, ws: null, rec: null, stream: null, row: null, live: null, text: "", searches: [] };
 
 function talkUi(on) {
   $("free-talk").classList.toggle("on", on);
@@ -898,6 +898,7 @@ function hangUp(fromNative = false) {
   if (!fromNative && talk.on && !native) playCue("bye");
   if (!talk.on) return;
   talk.on = false;
+  dropLive();
   talkUi(false);
   if (native && !fromNative) native.stop();
   if (standby.on) { $("talk-bar").hidden = false; talkStatus("待命中"); }
@@ -929,6 +930,13 @@ function showTiming() {
   talk.server = null;
 }
 
+// 挂断时还在上屏的那句（没等到定稿）：灰掉
+function dropLive() {
+  const row = talk.live;
+  talk.live = null;
+  if (row) { row.classList.remove("live"); row.classList.add("rejected"); }
+}
+
 function finishTalkRow() {
   const row = talk.row;
   if (!row) return;
@@ -950,6 +958,28 @@ function onTalkEvent(ev) {
       }
       break;
     case "listening": talkStatus("在听…"); break;
+    case "partial": {
+      // 一开口就上屏（豆包流式中间结果），和 carHer2 一样；说完由 heard 定稿，拒识（rejected）变灰
+      if (!talk.live) {
+        talk.live = appendMessage({ role: "user", text: "", via: "talk" });
+        talk.live.classList.add("live");
+        if (talk.row) $("messages").insertBefore(talk.live, talk.row.nextSibling);  // 跟在小新正在说的那句后面
+      }
+      talk.live.querySelector(".text") || talk.live.querySelector(".bubble").prepend(Object.assign(document.createElement("div"), { className: "text" }));
+      talk.live.querySelector(".text").textContent = ev.text;
+      scrollDown();
+      break;
+    }
+    case "rejected": {
+      const row = talk.live;
+      talk.live = null;
+      if (!row) break;
+      row.classList.remove("live");
+      row.classList.add("rejected");
+      if (!ev.text && !row.querySelector(".text")?.textContent) { row.remove(); break; }
+      row.querySelector(".via").textContent = ev.reason === "short" ? "📞 只听到一个字，没当回事" : "📞 没听清，没当回事";
+      break;
+    }
     case "interrupt":
       talkStatus("你说，我听着");
       talk.stream?.stop();
@@ -961,8 +991,11 @@ function onTalkEvent(ev) {
       // 首响计时的起点：用户说完。本地收到 heard 的时刻往回推识别花的时间（服务端给的 t_asr）
       talk.t0 = performance.now() - (ev.t_asr || 0) * 1000;
       talk.firstText = talk.firstAudio = null;
-      appendMessage({ role: "user", text: ev.text, via: "talk", id: ev.id, local: ev.local, audio: ev.audio,
-        conv: state.conv?.id });
+      {
+        const final = appendMessage({ role: "user", text: ev.text, via: "talk", id: ev.id, local: ev.local, audio: ev.audio,
+          conv: state.conv?.id });
+        if (talk.live) { talk.live.replaceWith(final); talk.live = null; }  // 上屏的那条定稿（带小喇叭）
+      }
       talk.row = appendMessage({ role: "assistant", text: "" });
       talk.row.querySelector(".text").classList.add("cursor");
       talk.row.querySelector(".text").innerHTML = '<span class="thinking">小新在想…</span>';
