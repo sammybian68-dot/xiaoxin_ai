@@ -318,6 +318,23 @@ public final class Talk {
         }
     }
 
+    /**
+     * 通话中闹钟响过（USAGE_ALARM 和通话音同时出声）之后调：通话播放器在闹钟响时会欠载、被系统停用，
+     * 之后写进去的音频一直排着不出声，要等下一轮新音频写进来才「重启」，结果上一句和这一句一起念出来
+     * （2026-10-30 pad 上复现：logcat「disabled due to previous underrun, restarting」）。pause + play 让它马上接着放。
+     */
+    public synchronized void kickPlayback() {
+        AudioTrack t = track;
+        if (t != null && running) {
+            try {
+                t.pause();
+                t.play();
+            } catch (IllegalStateException ignored) {
+                // 已经停了
+            }
+        }
+    }
+
     /** 用户插话：已经排进播放器的音频立刻丢掉。 */
     private synchronized void flushPlayback() {
         AudioTrack t = track;

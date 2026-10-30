@@ -117,7 +117,13 @@ public class TalkActivity extends Activity {
         web.loadUrl(base() + "?k=" + Uri.encode(key()));
         cues = new Cues(this, base(), key());
         // 闹钟和倒计时：前台服务，熄屏也在，到点亮屏响铃
-        ClockService.listener = ev -> emitClock(ev.toString());
+        ClockService.listener = ev -> {
+            emitClock(ev.toString());
+            Talk t = talk;
+            if (t != null && "stop".equals(ev.optString("type"))) {
+                t.kickPlayback();  // 通话中响过铃：让通话播放器接着放，不然这一句要等下一句才出来
+            }
+        };
         ClockService.start(this);
         showRing(getIntent());
     }
@@ -513,6 +519,15 @@ public class TalkActivity extends Activity {
                 String type = event.optString("type");
                 noteActivity(type);
                 emit(event.toString());
+                String tool = event.optString("name");
+                if ("tool".equals(type) && event.optString("result").startsWith("已")
+                        && ("alarm_ring".equals(tool) || "timer_control".equals(tool) || "alarm_delete".equals(tool))) {
+                    // 通话里用语音关了闹钟 / 倒计时：铃声马上停，别等长轮询，也别和小新的回答叠在一起
+                    ClockService s = ClockService.running;
+                    if (s != null) {
+                        idle.post(() -> s.stopRinging(false));
+                    }
+                }
                 if ("bye".equals(type)) {
                     // 服务端也认出了退出词（浏览器那条路径用；pad 上本机通常已经先挂了）
                     runOnUiThread(() -> { if (talk == self[0]) hangUp("退下了，要用再叫我"); });
