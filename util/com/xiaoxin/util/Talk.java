@@ -217,6 +217,9 @@ public final class Talk {
                 // 服务端最多领先 2 秒，缓冲要放得下，不然 write 会卡住收消息的线程
                 .setBufferSizeInBytes(PLAY_RATE * 2 * 3)
                 .build();
+        // 起播门槛压到 100 ms：默认等于整个缓冲（3 秒）。两句之间没数据、播放器欠载被系统停掉后，要攒满门槛才重新出声，
+        // 「好，关掉啦」这种 1.5 秒的短句永远攒不满，一直排着，等下一句的音频进来才和它一起念出来（2026-10-30 pad 实测）
+        track.setStartThresholdInFrames(PLAY_RATE / 10);
         track.play();
 
         int min = AudioRecord.getMinBufferSize(Pcm.SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
@@ -314,23 +317,6 @@ public final class Talk {
                 w.sendText(json);
             } catch (IOException ignored) {
                 // 断线由 onClosed 处理
-            }
-        }
-    }
-
-    /**
-     * 通话中闹钟响过（USAGE_ALARM 和通话音同时出声）之后调：通话播放器在闹钟响时会欠载、被系统停用，
-     * 之后写进去的音频一直排着不出声，要等下一轮新音频写进来才「重启」，结果上一句和这一句一起念出来
-     * （2026-10-30 pad 上复现：logcat「disabled due to previous underrun, restarting」）。pause + play 让它马上接着放。
-     */
-    public synchronized void kickPlayback() {
-        AudioTrack t = track;
-        if (t != null && running) {
-            try {
-                t.pause();
-                t.play();
-            } catch (IllegalStateException ignored) {
-                // 已经停了
             }
         }
     }

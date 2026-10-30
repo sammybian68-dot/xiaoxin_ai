@@ -117,13 +117,7 @@ public class TalkActivity extends Activity {
         web.loadUrl(base() + "?k=" + Uri.encode(key()));
         cues = new Cues(this, base(), key());
         // 闹钟和倒计时：前台服务，熄屏也在，到点亮屏响铃
-        ClockService.listener = ev -> {
-            emitClock(ev.toString());
-            Talk t = talk;
-            if (t != null && "stop".equals(ev.optString("type"))) {
-                t.kickPlayback();  // 通话中响过铃：让通话播放器接着放，不然这一句要等下一句才出来
-            }
-        };
+        ClockService.listener = ev -> emitClock(ev.toString());
         ClockService.start(this);
         showRing(getIntent());
     }

@@ -92,7 +92,8 @@ public final class Cues {
 
     /**
      * 放一句，返回大概多久放完（毫秒），调用方据此决定什么时候再开麦克风；没有文件返回 0。
-     * 走通话音（和小新平时说话一样的音量、一样的喇叭）。
+     * 走通话音量（USAGE_VOICE_COMMUNICATION），和小新平时说话同一个音量：之前用 USAGE_ASSISTANT，
+     * 跟的是「助手」音量（pad 上 3/15），比通话（7/15）小很多（2026-10-30 用户反馈）。
      */
     public long play(String name) {
         File f = file(name, voice);
@@ -114,7 +115,7 @@ public final class Cues {
         try {
             AudioTrack t = new AudioTrack.Builder()
                     .setAudioAttributes(new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
                     .setAudioFormat(new AudioFormat.Builder().setSampleRate(RATE)
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)

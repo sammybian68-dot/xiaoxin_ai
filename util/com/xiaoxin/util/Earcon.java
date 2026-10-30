@@ -72,7 +72,7 @@ public final class Earcon {
         try {
             AudioTrack t = new AudioTrack.Builder()
                     .setAudioAttributes(new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
                     .setAudioFormat(new AudioFormat.Builder().setSampleRate(RATE)
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
