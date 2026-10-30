@@ -647,3 +647,13 @@ def test_partials_when_idle_too(call, fakes):
     c.ws.send_text(json.dumps({"type": "vad_end"}))
     c.until("heard")
     assert "interrupt" not in c.kinds()
+
+
+def test_say_speaks_fixed_text_without_llm(call, fakes):
+    """描红写完：端侧发 say，小新直接念，不问模型、不进记录。"""
+    c = call()
+    c.ws.send_text(json.dumps({"type": "say", "text": "写完啦！错了 2 次，第 2 笔卧钩要多注意，再写一遍吧。"}))
+    c.until("speaking")
+    c.until("idle")
+    assert "llm" not in fakes.names() and c.audio > 0
+    assert store.get(c.msgs[0]["conversation"])["messages"] == []

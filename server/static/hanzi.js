@@ -155,6 +155,7 @@ function strokeCard(chars) {
     const holder = $c(".writer");
     holder.innerHTML = "";
     st.writer = HanziWriter.create(holder, st.ch, opts());
+    st.wrong = {};  // 第几笔错了几次，写完念出来
     $c(".hz-board").classList.add("quiz");
     $c('[data-a="quiz"]').classList.add("quiz-on");
     $c('[data-a="quiz"]').textContent = "不写了";
@@ -167,7 +168,7 @@ function strokeCard(chars) {
         const i = d.strokeNum + 1;
         if (i < st.data.count) { showNow(i); $c(".hz-now").innerHTML = `写对了！下一笔：<b>${esc(name(i) || `第 ${i + 1} 笔`)}</b>`; }
       },
-      onMistake: (d) => { $c(".hz-now").innerHTML = d.mistakesOnStroke >= 2 ? `看红色提示，第 <b>${d.strokeNum + 1}</b> 笔从这里起笔` : `再试一次，第 <b>${d.strokeNum + 1}</b> 笔是<b>${esc(name(d.strokeNum) || "")}</b>`; },
+      onMistake: (d) => { st.wrong[d.strokeNum] = (st.wrong[d.strokeNum] || 0) + 1; $c(".hz-now").innerHTML = d.mistakesOnStroke >= 2 ? `看红色提示，第 <b>${d.strokeNum + 1}</b> 笔从这里起笔` : `再试一次，第 <b>${d.strokeNum + 1}</b> 笔是<b>${esc(name(d.strokeNum) || "")}</b>`; },
       onComplete: (d) => {
         st.quiz = false;
         st.needBoard = true;  // 格子里现在是孩子写的字，下次演示前换回演示用的画板
@@ -175,7 +176,9 @@ function strokeCard(chars) {
         $c('[data-a="quiz"]').classList.remove("quiz-on");
         $c('[data-a="quiz"]').textContent = "✍ 再写一次";
         showNow(-1);
-        $c(".hz-cheer").textContent = d.totalMistakes === 0 ? "🎉 全对，真棒！" : `写完啦！错了 ${d.totalMistakes} 次，再来一次会更好`;
+        const said = quizResult(st.ch, st.data, st.wrong, d.totalMistakes);
+        $c(".hz-cheer").textContent = (d.totalMistakes === 0 ? "🎉 " : "") + said;
+        hzAnnounce(said);
       },
     });
   }
@@ -252,4 +255,18 @@ function strokeCardFor(action) {
   chars = [...new Set(chars)].slice(0, 4);
   if (!chars.length || /^失败/.test(action.result || "")) return null;
   return strokeCard(chars);
+}
+
+// 描红写完的那句话：全对夸一句；有错说错了几次、错在哪几笔（最多说两笔，太长小朋友记不住）
+function quizResult(ch, data, wrong, total) {
+  if (!total) return `全对，真棒！「${ch}」写得很好。`;
+  const worst = Object.entries(wrong).sort((a, b) => b[1] - a[1]).slice(0, 2)
+    .map(([k]) => { const n = data.names?.[k]; return `第 ${+k + 1} 笔${n ? n : ""}`; });
+  return `写完啦！错了 ${total} 次，${worst.join("和")}要多注意，再写一遍吧。`;
+}
+
+// 念出来：在自由对话里就让小新用通话的声音说（不和它的回答抢）；不在通话就走普通朗读
+function hzAnnounce(text) {
+  if (talk?.on) { talkSend({ type: "say", text }); return; }
+  try { speak(text, document.createElement("button")); } catch (_) { /* 念不了就只显示 */ }
 }

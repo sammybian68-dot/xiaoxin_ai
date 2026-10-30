@@ -8,6 +8,7 @@
         文本帧 {"type":"wake","text":"<端侧认出的整句>","acked":true}  pad 待命唤醒后发的第一句：端侧 Paraformer 已经认好了，
                  服务端去掉开头的唤醒词，剩下有内容就直接当这一轮的问题（省掉云端识别）；只喊了唤醒词：
                  acked 表示 pad 已经用本机缓存说了「我在的」，这边就不再合成；没 acked 才合成一句
+        文本帧 {"type":"say","text":"…"}  让小新念一句固定的话（比如描红写完的成绩），不问模型、不进记录
         文本帧 {"type":"vad_start"} / {"type":"vad_end"}  端侧断句（pad 上的 TEN-VAD，和 carHer2 一样按人声概率）。
                  收到过一次就改用端侧断句：vad_start 起收音频，vad_end 时把这段送识别；服务端自己的能量 VAD 不再用。
                  没有端侧断句的（浏览器）照旧用服务端 VAD。事件和音频同一条连接按顺序到，vad_end 时这句音频已经到齐
@@ -60,6 +61,7 @@ log = logging.getLogger("xiaoxin.talk")
 # 语音通话额外拼上 server/prompts/voice.md：不然模型以为在打字聊天，会说「我听不到声音，请打字」（deepseek 实测这么回过）
 
 
+SAY_MAX_CHARS = 80  # 端侧 say 命令一次最多念多少字
 BARGE_IN_MIN_CHARS = 2  # 小新在想 / 在说时，识别出至少这么多字（不算标点空格）才算插话；退出词不受限
 WAKE_ACK = "我在的。"  # 端侧没缓存时（浏览器）服务端合成；pad 用本机缓存的同一句（/api/cue/zai）
 _PUNCT = "，。！？、；：,.!?;: 　"
@@ -188,6 +190,9 @@ class Talk:
                 cmd = json.loads(msg.get("text") or "{}")
                 if cmd.get("type") == "stop":
                     return
+                if cmd.get("type") == "say":
+                    await self.on_say(str(cmd.get("text") or ""))
+                    continue
                 if cmd.get("type") == "model" and cmd.get("model") in self._models:
                     self.model = cmd["model"]  # 下一轮起生效，正在答的这一轮不换
                     await self.send("model", model=self.model)
@@ -205,6 +210,18 @@ class Talk:
             self.closed = True
             await self._close_stream()
             await self.cancel_turn()
+
+    async def on_say(self, text: str) -> None:
+        """端侧让小新念一句固定的话（描红写完的成绩）。不问模型、不进记录；小新正在说就先停下再念。"""
+        text = text.strip()[:SAY_MAX_CHARS]
+        if not text:
+            return
+        log.info("talk say: %s", text)
+        if self.busy:
+            await self.cancel_turn()
+            await self.send("interrupt")
+        self.turn_id += 1
+        self.turn = asyncio.create_task(self.speak_only(text))
 
     async def on_vad_start(self) -> None:
         self._client_vad = True
