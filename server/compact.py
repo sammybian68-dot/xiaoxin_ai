@@ -4,7 +4,7 @@
 - 触发：一轮答完，ctx_tokens 超过阈值（设置里，默认 80k）→ 后台用主脑（关思考）压缩。期间照常聊，新轮次接在后面。
 - 切点：保留最后 KEEP_TURNS（5）个用户轮次原文；切点只落在用户消息开头，不会把工具调用和结果切开。
   切点前的原文 + 上一次的摘要 → 压缩（第一次走 INITIAL 模板，之后走 UPDATE，旧摘要放 <previous-summary>）。
-- swap：压好后下一轮开始时一瞬间换上：epoch +1、summary 换成新的、epoch_start 指到切点。之后发给主脑的是
+- swap：压好就换上（下一轮开始前也会再检查一次）：epoch +1、summary 换成新的、epoch_start 指到切点。之后发给主脑的是
   system prompt + 摘要（第一条 user）+ 切点之后的原文。原文一条不删，界面照样能往上翻。
 - 失败（缺标题、超时、报错）：这次不换，状态回到空闲，下一轮还超阈值就再试；用户感觉不到。
 - 「立即压缩」按钮：不看阈值，直接跑一次（轮次不够 KEEP_TURNS 时保留能保留的）。
@@ -163,6 +163,9 @@ def _run(cid: str, prev: str, msgs: list[dict], cut: int) -> None:
         store.update_conv(cid, compact={"state": "ready", "pending": {"summary": summary, "cut": cut},
                                         "seconds": round(time.monotonic() - t0, 1)})
         log.info("compact ready %s in %.1fs, %d chars", cid, time.monotonic() - t0, len(summary))
+        # 压好就换：swap 只改 epoch / summary / epoch_start 三个字段，不动 messages，正在答的那一轮历史早已拼好、
+        # 答完追加在切点之后，不受影响。所以不用像 carHer2 那样等下一轮进来再换（那边要改写内存里的 messages）
+        maybe_swap(cid)
     except Exception as e:  # 不换，下一轮再试
         log.warning("compact failed %s: %s", cid, e)
         store.update_conv(cid, compact={"state": "idle", "error": str(e)[:200]})

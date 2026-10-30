@@ -1661,16 +1661,22 @@ function renderCtx(c) {
   const level = busy ? "busy" : pct >= 85 ? "high" : pct >= 60 ? "mid" : "low";
   box.dataset.level = level;
   $("ctx-fill").style.width = `${busy ? 100 : Math.max(pct, 3)}%`;
-  $("ctx-pct").textContent = busy ? "压缩中…" : `${pct}%`;
+  const fresh = !busy && !c.tokens && c.epoch;  // 刚压完，下一句答完才知道新的用量
+  $("ctx-pct").textContent = busy ? "压缩中…" : fresh ? "刚压缩" : `${pct}%`;
   $("ctx-batt").setAttribute("aria-valuenow", String(pct));
   $("ctx-compact").disabled = busy || !c.tokens;
   const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
   const ep = c.epoch ? ` · 压缩过 ${c.epoch} 次` : "";
   $("ctx-note").textContent = busy ? `正在后台写摘要，照常聊${ep}`
     : c.error && !/太短/.test(c.error) ? `上次压缩没成功：${c.error}`
-    : `${k(c.tokens)} / ${k(c.limit)} token${ep}`;
+    : fresh ? `下一句后更新用量${ep}` : `${k(c.tokens)} / ${k(c.limit)} token${ep}`;
   clearTimeout(ctxPoll);
   if (busy) ctxPoll = setTimeout(loadCtx, 2000);  // 压缩中：每 2 秒看一眼，压好就更新
+  if (state.conv && (state.conv.epoch || 0) !== c.epoch) {  // 刚压完：左边次数 +1，聊天里补一条分界线
+    state.conv.epoch = c.epoch;
+    refreshList();
+    if (!busy && c.epoch) { appendDivider(c.epoch); toast(`压缩好了（第 ${c.epoch} 次），设置里能看摘要`); }
+  }
 }
 
 $("ctx-compact").addEventListener("click", () => $("compact-dialog").showModal());

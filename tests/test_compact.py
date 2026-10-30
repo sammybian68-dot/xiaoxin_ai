@@ -99,11 +99,11 @@ def test_async_compact_then_swap(client, fakes, monkeypatch):
     store.update_conv(cid, ctx_tokens=500)
     assert compact.maybe_kick(cid)
     for _ in range(50):
-        if store.get(cid).get("compact", {}).get("state") == "ready":
+        if store.get(cid).get("epoch"):
             break
         time.sleep(0.02)
-    assert store.get(cid)["compact"]["state"] == "ready" and seen["prev"] == "" and seen["n"] == 4  # 7 轮压前 2 轮
-    assert store.list_conversations()[0]["compacting"] is True
+    assert seen["prev"] == "" and seen["n"] == 4  # 7 轮压前 2 轮
+    assert store.list_conversations()[0]["compacting"] is False and store.list_conversations()[0]["epoch"] == 1
     client.post(f"/api/conversations/{cid}/messages", json={"text": "下一题"})
     conv = store.get(cid)
     assert conv["epoch"] == 1 and conv["summary"] == SUMMARY and conv["compact"]["state"] == "idle"
@@ -135,7 +135,7 @@ def test_compact_now_button_and_prompt_view(client, fakes, monkeypatch):
     r = client.post(f"/api/conversations/{cid}/compact").json()
     assert r["started"] is True  # 立即压缩：不看阈值，轮次少也压（留最后一轮）
     for _ in range(50):
-        if client.get(f"/api/conversations/{cid}/ctx").json()["state"] == "ready":
+        if client.get(f"/api/conversations/{cid}/ctx").json()["epoch"] == 1:
             break
         time.sleep(0.02)
     client.post(f"/api/conversations/{cid}/messages", json={"text": "继续"})
