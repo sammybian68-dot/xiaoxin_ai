@@ -133,7 +133,7 @@ def me() -> dict:
 def _index_html() -> Response:
     """index.html 里的 app.js / app.css 地址带上文件修改时间，部署后浏览器和 pad 一定拿新的。"""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for name in ("app.js", "app.css", "clock.js", "clock.css"):
+    for name in ("app.js", "app.css", "clock.js", "clock.css", "hanzi.js", "hanzi.css"):
         v = int((STATIC / name).stat().st_mtime)
         html = html.replace(f'static/{name}"', f'static/{name}?v={v}"')
     return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
@@ -180,6 +180,20 @@ def prompt_view() -> dict:
     """每个 md 的原文、当前拼好的完整 system prompt（文字 / 语音两份）、注册的工具。"""
     return {"parts": prompts.parts(), "system": prompts.build(), "system_voice": prompts.build(voice=True),
             "tools": registry.listing()}
+
+
+# ---------------------------------------------------------------- 笔顺
+
+@app.get("/api/hanzi/{ch}")
+def hanzi_char(ch: str) -> Response:
+    """一个字的笔画轮廓、中线、笔画名、拼音、部首，前端 Hanzi Writer 画动画用。按字缓存一天。"""
+    from server import hanzi
+
+    e = hanzi.lookup(ch[:1]) if ch else None
+    if e is None:
+        raise HTTPException(404, f"没有「{ch[:1]}」的笔顺数据")
+    return Response(json.dumps(e, ensure_ascii=False), media_type="application/json",
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 # ---------------------------------------------------------------- 闹钟 / 倒计时 / 正计时
@@ -418,7 +432,7 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
                     log.info("tool %s %s -> %s", c["name"], c["arguments"][:120], out[:120])
                     if c["name"] != "query_time":
                         actions.append({"name": c["name"], "arguments": c["arguments"], "result": out})
-                        put("tool", {"name": c["name"], "result": out})
+                        put("tool", {"name": c["name"], "arguments": c["arguments"], "result": out})
                     msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
                     continue
                 if searches >= MAX_SEARCHES:

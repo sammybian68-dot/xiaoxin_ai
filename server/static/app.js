@@ -216,6 +216,10 @@ function replayUtterance(m, row, btn) {
 const ACTION_TAB = { alarm_set: "alarms", alarm_update: "alarms", alarm_delete: "alarms", timer_start: "timers",
   timer_control: "timers", stopwatch: "stopwatch" };
 function showAction(row, a) {
+  if (a.name === "show_stroke_order") {  // 笔顺：直接插一张能动的卡（hanzi.js）
+    const card = typeof strokeCardFor === "function" ? strokeCardFor(a) : null;
+    if (card) { row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text")); scrollDown(); return; }
+  }
   const ok = !a.result.startsWith("失败");
   const chip = document.createElement("button");
   chip.type = "button";

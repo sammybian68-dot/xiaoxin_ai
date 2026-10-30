@@ -214,7 +214,7 @@ def test_model_sets_alarm_via_tool(client, fakes, at):
 
 def test_prompts_endpoint(client):
     d = client.get("/api/prompts").json()
-    assert [p["name"] for p in d["parts"]] == ["persona", "time", "search", "clock", "voice"]
+    assert [p["name"] for p in d["parts"]] == ["persona", "time", "search", "clock", "hanzi", "voice"]
     assert d["parts"][3]["text"].startswith("# 闹钟") and "{clock_state}" in d["parts"][3]["text"]
     assert "现在是 20" in d["system"] and "语音通话" in d["system_voice"]
     assert {"alarm_set", "timer_control", "stopwatch", "search_web", "query_time"} <= {t["name"] for t in d["tools"]}

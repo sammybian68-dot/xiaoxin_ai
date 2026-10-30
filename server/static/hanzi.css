@@ -1,0 +1,60 @@
+/* 笔顺卡：给小学生看的。思路——
+   - 田字格米字格：和作业本一样，孩子一眼知道每笔落在格子哪里
+   - 正在写的那一笔用暖红，写过的用墨色，没写的用淡灰描红底：三种状态一眼分得开
+   - 下面一排小格子，每格一笔（只亮到这一笔），格子底下写笔画名：可以点任意一格，单看那一笔
+   - 大按钮：再看一遍 / 一笔一笔（点一下走一笔）/ 我来写（在格子里描，写错了提示）
+   - 字大、按钮大、文字少：pad 放桌上，孩子手指点得准 */
+.hz {
+  --hz-ink: #2b2420;
+  --hz-active: #e0452b;
+  --hz-ghost: #e9e2d8;
+  --hz-paper: #fffaf2;
+  --hz-grid: #f0b9a8;
+  --hz-soft: #8a7d72;
+  --hz-chip: #f6efe5;
+  align-self: stretch; max-width: 100%;
+  background: var(--hz-paper); color: var(--hz-ink);
+  border-radius: 22px; padding: 18px 20px 16px;
+  display: grid; gap: 14px;
+  font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+}
+.hz-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.hz-tabs button { min-width: 52px; height: 52px; border-radius: 14px; border: 2px solid transparent; background: var(--hz-chip); color: var(--hz-ink); font-size: 28px; font-family: "Kaiti SC", "STKaiti", "KaiTi", serif; }
+.hz-tabs button[aria-selected="true"] { border-color: var(--hz-active); background: #fff; }
+
+.hz-main { display: grid; grid-template-columns: auto 1fr; gap: 22px; align-items: center; }
+.hz-board { position: relative; width: 260px; height: 260px; background: #fff; border: 3px solid var(--hz-grid); border-radius: 10px; touch-action: none; }
+.hz-board svg.grid { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.hz-board svg.grid line { stroke: var(--hz-grid); stroke-width: 1.4; stroke-dasharray: 6 5; }
+.hz-board .writer { position: absolute; inset: 0; }
+.hz-board.quiz { border-color: #4e9a6b; }
+.hz-step { position: absolute; left: 10px; bottom: 8px; font-size: 13px; color: var(--hz-soft); background: rgba(255, 250, 242, .9); padding: 1px 8px; border-radius: 8px; }
+
+.hz-info { display: grid; gap: 10px; min-width: 0; }
+.hz-py { font-size: 34px; font-weight: 600; letter-spacing: .02em; color: var(--hz-active); line-height: 1.1; }
+.hz-py small { font-size: 18px; color: var(--hz-soft); font-weight: 400; margin-left: 8px; }
+.hz-facts { display: flex; flex-wrap: wrap; gap: 8px; }
+.hz-facts span { background: var(--hz-chip); border-radius: 10px; padding: 4px 12px; font-size: 16px; }
+.hz-facts b { font-weight: 600; margin-left: 4px; }
+.hz-now { font-size: 22px; min-height: 1.4em; }
+.hz-now b { color: var(--hz-active); }
+.hz-btns { display: flex; flex-wrap: wrap; gap: 10px; }
+.hz-btns button { height: 52px; padding: 0 22px; border-radius: 26px; border: 0; font-size: 18px; font-weight: 600; background: var(--hz-chip); color: var(--hz-ink); }
+.hz-btns .go { background: var(--hz-active); color: #fff; }
+.hz-btns .quiz-on { background: #4e9a6b; color: #fff; }
+
+.hz-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.hz-cell { flex: none; width: 76px; display: grid; justify-items: center; gap: 4px; border: 0; background: none; padding: 0; color: var(--hz-ink); }
+.hz-cell .box { width: 76px; height: 76px; background: #fff; border: 2px solid var(--hz-ghost); border-radius: 10px; }
+.hz-cell[aria-current="true"] .box { border-color: var(--hz-active); box-shadow: 0 0 0 3px rgba(224, 69, 43, .15); }
+.hz-cell .nm { font-size: 14px; line-height: 1.2; }
+.hz-cell .no { font-size: 12px; color: var(--hz-soft); }
+
+.hz-cheer { font-size: 20px; color: #3f8a5c; font-weight: 600; min-height: 1.2em; }
+
+@media (max-width: 640px) {
+  .hz-main { grid-template-columns: 1fr; justify-items: center; }
+  .hz-board { width: min(260px, 78vw); height: min(260px, 78vw); }
+  .hz-info { justify-items: center; text-align: center; }
+}
+@media (prefers-reduced-motion: reduce) { .hz-cell .box { transition: none; } }
