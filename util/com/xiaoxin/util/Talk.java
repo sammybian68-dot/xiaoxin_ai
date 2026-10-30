@@ -83,13 +83,16 @@ public final class Talk {
      * audioDelayMs > 0：调用方正在放「我在的」，这么久之后才开通话音频（开早了会切到通话模式，把这句吞掉，
      * 2026-10-30 实测：通话播放器里放 0.5 秒的提示，切通路时整句听不到）。握手和它同时进行，藏在这句话里。
      */
-    /** 待命那边接手过来的麦克风（还开着、唤醒后一直在录）。有它就不再新开，也就不用等「我在的」放完。 */
-    private volatile WakeListener.Mic adopted;
-    /** 「我在的」在放：这之前录到的帧当静音送（是小新自己的声音，AEC 还没收敛） */
+    /**
+     * 唤醒起来的通话：麦克风从待命那边接过来（WakeListener 唤醒后一直没关、接着在录）。
+     * 开音频时（「我在的」放完那一刻）才 takeMic：之前录的帧都在它那攒着，一帧不丢；
+     * 提示音那段（muteUntil 之前录的）当静音送，不然小新自己的声音会被当成用户说话。
+     */
+    private volatile WakeListener handoffFrom;
     private volatile long muteUntil;
 
-    public void adoptMic(WakeListener.Mic mic, long cueMs) {
-        adopted = mic;
+    public void adoptMic(WakeListener from, long cueMs) {
+        handoffFrom = from;
         muteUntil = cueMs > 0 ? System.nanoTime() + cueMs * 1_000_000 : 0;
     }
 
@@ -126,9 +129,9 @@ public final class Talk {
                 pending.add(new byte[Pcm.FRAME_BYTES]);
             }
         }
-        if (audioDelayMs <= 0 || adopted != null) {
-            startAudio();  // 接手了待命的麦克风：不用等「我在的」放完，提示音期间的帧在 uplink 里静音掉
-        } else {
+        if (audioDelayMs <= 0) {
+            startAudio();
+        } else {  // 「我在的」放完才切通话模式（切的时候会把正在放的提示吞掉）；这段时间麦克风在待命那边接着录
             long at = System.nanoTime() + audioDelayMs * 1_000_000;
             Thread a = new Thread(() -> {
                 long left = (at - System.nanoTime()) / 1_000_000;
@@ -232,8 +235,9 @@ public final class Talk {
         track.setStartThresholdInFrames(PLAY_RATE / 10);
         track.play();
 
-        WakeListener.Mic mic = adopted;
-        adopted = null;
+        WakeListener from = handoffFrom;
+        handoffFrom = null;
+        WakeListener.Mic mic = from == null ? null : from.takeMic();
         if (mic != null) {
             rec = mic.rec;  // 待命那条录音一直没关，接着用；唤醒后录到的先排进上传队列
             for (int i = 0; i < mic.frames.size(); i++) {
@@ -412,6 +416,11 @@ public final class Talk {
     }
 
     private synchronized void stopAudio() {
+        WakeListener from = handoffFrom;
+        if (from != null) {  // 还没接手就挂了：待命那边的麦克风也关掉
+            handoffFrom = null;
+            from.dropMic();
+        }
         if (rec == null && track == null) {
             return;
         }

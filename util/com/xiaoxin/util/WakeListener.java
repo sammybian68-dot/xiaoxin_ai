@@ -34,6 +34,7 @@ public final class WakeListener {
     private final java.util.ArrayDeque<byte[]> carried = new java.util.ArrayDeque<>();
     private final java.util.ArrayDeque<Long> carriedAt = new java.util.ArrayDeque<>();  // 每帧录完的 nanoTime
     private Thread carrier;
+    private final Object handoffLock = new Object();
 
     public WakeListener(Context context, LocalAsr asr, String[] wakeWords, Listener listener) {
         this.context = context.getApplicationContext();
@@ -93,15 +94,20 @@ public final class WakeListener {
     }
 
     /** 唤醒后接手麦克风：返回还开着的 AudioRecord，以及唤醒词之后到现在录到的音频（按顺序）。没有可接手的返回 null。 */
-    public synchronized Mic takeMic() {
-        AudioRecord r = handoff;
-        if (r == null) {
-            return null;
+    public Mic takeMic() {
+        AudioRecord r;
+        Thread c;
+        synchronized (handoffLock) {
+            r = handoff;
+            if (r == null) {
+                return null;
+            }
+            handoff = null;
+            c = carrier;
+            carrier = null;
         }
-        handoff = null;
-        Thread c = carrier;
-        carrier = null;
-        if (c != null) {
+        // 锁外等：攒音频的线程看到 handoff 变了就退出（最多读完手上这 100 ms）
+        if (c != null && c != Thread.currentThread()) {  // 等攒音频的线程读完手上这一帧退出，免得两边同时读
             try {
                 c.join(500);
             } catch (InterruptedException ignored) {
@@ -117,7 +123,7 @@ public final class WakeListener {
     }
 
     /** 没人接手（比如唤醒后又不开通话了）：把麦克风关掉。 */
-    public synchronized void dropMic() {
+    public void dropMic() {
         Mic m = takeMic();
         if (m != null) {
             m.rec.stop();
@@ -137,12 +143,17 @@ public final class WakeListener {
         }
     }
 
-    /** 唤醒那一刻起：同一个 AudioRecord 接着读，帧攒进 carried，等 Talk 来拿。 */
+    private static final long CARRY_MAX_MS = 10_000;
+
+    /**
+     * 唤醒那一刻起：同一个 AudioRecord 接着读，帧攒进 carried，等 Talk 来拿（handoff 在 onWake 之前就设好了）。
+     * 10 秒没人来拿就自己关掉麦克风，不能一直占着（2026-10-30 的版本漏了这条，没被接手的录音一直开着，
+     * 和通话新开的录音抢麦克风，通话里一句都听不到）。
+     */
     private void carry(AudioRecord rec) {
-        handoff = rec;
-        carrier = Thread.currentThread();
         byte[] frame = new byte[Pcm.FRAME_BYTES];
-        while (handoff == rec) {
+        long t0 = System.currentTimeMillis();
+        while (handoff == rec && System.currentTimeMillis() - t0 < CARRY_MAX_MS) {
             int n = rec.read(frame, 0, frame.length);
             if (n > 0 && handoff == rec) {
                 synchronized (carried) {
@@ -153,6 +164,14 @@ public final class WakeListener {
                     carried.add(java.util.Arrays.copyOf(frame, n));
                     carriedAt.add(System.nanoTime());
                 }
+            }
+        }
+        synchronized (handoffLock) {
+            if (handoff == rec) {  // 超时，没人接手
+                handoff = null;
+                carrier = null;
+                rec.stop();
+                rec.release();
             }
         }
     }
@@ -192,6 +211,9 @@ public final class WakeListener {
                     if (!debug && !text.isEmpty() && Keywords.startsWithAny(text, wakeWords)) {
                         running = false;
                         woke[0] = true;
+                        // 先登记好可接手的麦克风，再回调：onWake 里可能马上就来 takeMic
+                        handoff = rec;
+                        carrier = Thread.currentThread();
                         listener.onWake(text);
                     }
                 });

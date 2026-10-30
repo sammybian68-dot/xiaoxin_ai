@@ -500,11 +500,9 @@ public class TalkActivity extends Activity {
         // 待命在听的话先松开麦克风，不然和这通电话抢同一个麦克风（手动点「自由对话」时会这样）
         WakeListener w = wake;
         wake = null;
-        WakeListener.Mic mic = null;
         if (w != null) {
             w.stop();
-            mic = wakeText != null ? w.takeMic() : null;
-            if (mic == null) {
+            if (wakeText == null) {
                 w.dropMic();
             }
         }
@@ -546,8 +544,8 @@ public class TalkActivity extends Activity {
         });
         Talk t = talk;
         self[0] = t;
-        if (mic != null) {
-            t.adoptMic(mic, handoffCueMs);
+        if (w != null && wakeText != null) {
+            t.adoptMic(w, handoffCueMs);
         }
         // 本机听退出词：和唤醒词同一个模型、同一套比对，命中就在这台 pad 上立刻挂断
         if (localAsr != null) {
