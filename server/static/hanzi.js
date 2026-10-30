@@ -181,8 +181,10 @@ function strokeCard(chars) {
         const parts = quizResultParts(st.data, st.wrong, d.totalMistakes);
         const last = name(st.data.count - 1);
         hzPlay(last ? [last, ...parts] : parts);
-        $c(".hz-cheer").textContent = (d.totalMistakes === 0 ? "🎉 " : "") + parts.join("")
-          .replace(/错了[^次]+次/, `错了 ${d.totalMistakes} 次`).replace(/第([^笔]+)笔/g, (m, n) => `第 ${HZ_DIGITS.indexOf(n) + 1 || 2} 笔`);
+        // 屏幕上写阿拉伯数字（孩子好认），念的是中文整句
+        const worst = d.totalMistakes ? +Object.entries(st.wrong).sort((x, y) => y[1] - x[1])[0][0] : -1;
+        $c(".hz-cheer").textContent = d.totalMistakes === 0 ? "🎉 全对，真棒！"
+          : `写完啦，错了 ${d.totalMistakes} 次。第 ${worst + 1} 笔${name(worst)}要注意，再写一遍吧。`;
       },
     });
   }
@@ -263,26 +265,25 @@ function strokeCardFor(action) {
 }
 
 // ---------------------------------------------------------------- 描红播报
-// 不现场 TTS：每句拆成固定短语，短语提前用当前音色合成好存在本机（pad 原生 Phrases；浏览器存在内存），播的时候拼起来，几十毫秒出声。
-//   写对一笔：念这一笔的名字（「卧钩」）
+// 不现场 TTS：用到的每一句都是完整的一句话，提前用当前音色合成好存在本机（pad 原生 Phrases；浏览器存在内存）。
+// 拼接只发生在句子之间（句号处本来就停顿），不在词中间拼，听着连贯。
+//   写对一笔：这一笔的名字（「卧钩」）
 //   写错一笔：「嘟嘟」一声（本机合成）
-//   写完：全对「全对，真棒！」；有错「错了」+「N」+「次」+「第」+「K」+「笔」+ 笔画名 +「要注意」
+//   写完：全对「全对，真棒！」；有错「写完啦，错了两次。」+「第二笔卧钩要注意，再写一遍吧。」（只说错得最多的那一笔）
 // 每次播都会掐掉之前在放的（包括小新正在说的话）。
 const HZ_DIGITS = ["一", "两", "三", "四", "五", "六", "七", "八", "九", "十"];
-const HZ_FIXED = ["全对，真棒！", "写完啦，", "错了", "次，", "第", "笔", "要注意，再写一遍吧。", "和"];
+const HZ_MAX_SAID = 12;  // 错到这么多次以上就说「好多次」
 
-function hzNum(n) {  // 1–20 读法；更大的直接说「好多」
-  if (n <= 10) return HZ_DIGITS[n - 1];
-  if (n < 20) return "十" + HZ_DIGITS[n - 11];
-  return n === 20 ? "二十" : "好多";
-}
-function hzNumOrd(n) { return n === 2 ? "二" : hzNum(n); }  // 「第二笔」不说「第两笔」
+function hzNum(n) { return n <= 10 ? HZ_DIGITS[n - 1] : n < 20 ? "十" + HZ_DIGITS[n - 11] : "二十"; }
+function hzNumOrd(n) { return n === 2 ? "二" : hzNum(n); }  // 「第二笔」，不说「第两笔」
+const hzTimes = (n) => `写完啦，错了${n > HZ_MAX_SAID ? "好多" : hzNum(n)}次。`;
+const hzWatch = (k, name) => `第${hzNumOrd(k + 1)}笔${name || ""}要注意，再写一遍吧。`;
 
-// 这个字描红可能用到的所有短语：笔画名 + 数字 + 固定话
+// 这个字描红可能用到的所有句子
 function hzPhrases(data) {
-  const set = new Set([...HZ_FIXED, ...(data.names || []).filter(Boolean)]);
-  for (let n = 1; n <= Math.min(20, Math.max(data.count, 10)); n++) { set.add(hzNum(n)); set.add(hzNumOrd(n)); }
-  set.add("好多");
+  const set = new Set(["全对，真棒！", ...(data.names || []).filter(Boolean)]);
+  for (let n = 1; n <= HZ_MAX_SAID + 1; n++) set.add(hzTimes(n));
+  for (let k = 0; k < data.count; k++) set.add(hzWatch(k, data.names?.[k]));
   return [...set];
 }
 
@@ -294,15 +295,8 @@ function hzPrefetch(data) {
 
 function quizResultParts(data, wrong, total) {
   if (!total) return ["全对，真棒！"];
-  const worst = Object.entries(wrong).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => +k);
-  const parts = ["写完啦，", "错了", hzNum(total), "次，"];
-  worst.forEach((k, i) => {
-    if (i) parts.push("和");
-    parts.push("第", hzNumOrd(k + 1), "笔");
-    if (data.names?.[k]) parts.push(data.names[k]);
-  });
-  parts.push("要注意，再写一遍吧。");
-  return parts;
+  const worst = +Object.entries(wrong).sort((a, b) => b[1] - a[1])[0][0];
+  return [hzTimes(total), hzWatch(worst, data.names?.[worst])];
 }
 
 function hzPlay(parts) {

@@ -476,7 +476,7 @@ def test_cue_say_short_phrases(client, fakes):
     r = client.get("/api/cue/say", params={"text": "卧钩"})
     assert r.status_code == 200 and len(r.content) > 0
     assert client.get("/api/cue/say", params={"text": ""}).status_code == 400
-    assert client.get("/api/cue/say", params={"text": "长" * 21}).status_code == 400
+    assert client.get("/api/cue/say", params={"text": "长" * 31}).status_code == 400
     n = len(fakes.calls)
     client.get("/api/cue/say", params={"text": "卧钩"})  # 第二次读缓存，不再合成
     assert len(fakes.calls) == n

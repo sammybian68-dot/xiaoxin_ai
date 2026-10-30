@@ -19,10 +19,11 @@ import java.nio.file.Files;
  * 描红播报：一句话拆成几段固定短语（「点」「第」「3」「笔」「错了」…），每段用当前音色合成一次、存在本机，
  * 播的时候按顺序拼起来放，不现场 TTS，几十毫秒就出声。还能插一声错误提示音（"#wrong"，本机合成）。
  * 新的一句一来就把正在放的掐掉（写得快时只听最新的那句）。走通话音量，和小新说话一样大。
+ * 缓存老化见 CacheDir：30 天没用到的删掉（短语是共用的：笔画名 26 种 + 数字 + 固定话，一个音色总共也就几 MB）。
  */
 public final class Phrases {
     private static final int RATE = 24000;
-    private static final int GAP_MS = 60;  // 段与段之间留一点点，听着像一句话
+    private static final int GAP_MS = 260;  // 段与段之间：每段都是完整的一句，句与句之间自然停一下
     private final File dir;
     private final String base, key;
     private volatile String voice = "";
@@ -33,6 +34,7 @@ public final class Phrases {
         this.dir = new File(context.getFilesDir(), "phrases");
         this.base = base.endsWith("/") ? base : base + "/";
         this.key = key;
+        new Thread(() -> CacheDir.prune(dir), "phrases-prune").start();
     }
 
     public void setVoice(String v) {
@@ -48,7 +50,11 @@ public final class Phrases {
     public void prefetch(String[] texts) {
         dir.mkdirs();
         for (String t : texts) {
-            if (t == null || t.isEmpty() || t.startsWith("#") || file(t).isFile()) {
+            if (t == null || t.isEmpty() || t.startsWith("#")) {
+                continue;
+            }
+            if (file(t).isFile()) {
+                CacheDir.touch(file(t));  // 这个字要用到：也算一次命中，免得常用短语刚好被清
                 continue;
             }
             try {
@@ -123,6 +129,7 @@ public final class Phrases {
                 try {
                     File f = file(p);
                     pcm = f.isFile() ? Files.readAllBytes(f.toPath()) : null;
+                    CacheDir.touch(f);
                 } catch (IOException ignored) {
                     pcm = null;
                 }

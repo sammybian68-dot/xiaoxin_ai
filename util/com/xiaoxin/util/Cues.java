@@ -33,6 +33,7 @@ public final class Cues {
         this.dir = new File(context.getFilesDir(), "cues");
         this.base = base.endsWith("/") ? base : base + "/";
         this.key = key;
+        new Thread(() -> CacheDir.prune(dir), "cues-prune").start();  // 换过的旧音色、旧版本的文件 30 天后清掉
     }
 
     /** 服务端改了提示的字或换了内置音色的参考（2：「在」→「我在的」；3：男声换成少年梓辛）就加一，旧缓存不再用 */
@@ -50,6 +51,7 @@ public final class Cues {
         for (String name : new String[] {ZAI, BYE}) {
             File f = file(name, voice);
             if (f.isFile() && f.length() > 0) {
+                CacheDir.touch(f);
                 continue;
             }
             try {
@@ -109,6 +111,7 @@ public final class Cues {
         } catch (IOException e) {
             return 0;
         }
+        CacheDir.touch(f);
         if (pcm.length < 2) {
             return 0;
         }

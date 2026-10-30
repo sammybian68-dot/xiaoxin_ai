@@ -80,6 +80,7 @@ public class ClockService extends Service {
         cpu = getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "xiaoxin:clock");
         cpu.acquire();  // 一直插着电，换「熄屏也准时」
         loadLocal();
+        new Thread(() -> com.xiaoxin.util.CacheDir.prune(new File(getFilesDir(), "ring")), "ring-prune").start();
         alive = true;
         running = this;
         new Thread(this::poll, "clock-poll").start();
@@ -457,6 +458,7 @@ public class ClockService extends Service {
         }
         File f = speechFile(text);
         try {
+            com.xiaoxin.util.CacheDir.touch(f);
             return f.isFile() ? Files.readAllBytes(f.toPath()) : null;
         } catch (Exception e) {
             return null;
@@ -474,7 +476,11 @@ public class ClockService extends Service {
             }
         }
         for (String text : texts) {
-            if (text.isEmpty() || speechFile(text).isFile()) {
+            if (text.isEmpty()) {
+                continue;
+            }
+            if (speechFile(text).isFile()) {
+                com.xiaoxin.util.CacheDir.touch(speechFile(text));  // 闹钟还在：算命中，一年一响的也不会被清
                 continue;
             }
             try {
