@@ -232,6 +232,13 @@ function replayUtterance(m, row, btn) {
 const ACTION_TAB = { alarm_set: "alarms", alarm_update: "alarms", alarm_delete: "alarms", timer_start: "timers",
   timer_control: "timers", stopwatch: "stopwatch" };
 function showAction(row, a) {
+  if (a.name === "query_time") {  // 报时：插一个会走的钟（timecard.js），不出文字条
+    if (typeof timeCardFor === "function") {
+      row.querySelector(".bubble").insertBefore(timeCardFor(a), row.querySelector(".bubble .text"));
+      scrollDown();
+    }
+    return;
+  }
   if (a.name === "show_stroke_order") {  // 笔顺：直接插一张能动的卡（hanzi.js）
     const card = typeof strokeCardFor === "function" ? strokeCardFor(a) : null;
     if (card) { row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text")); scrollDown(); return; }
@@ -1660,7 +1667,7 @@ function renderCtx(c) {
   const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
   const ep = c.epoch ? ` · 压缩过 ${c.epoch} 次` : "";
   $("ctx-note").textContent = busy ? `正在后台写摘要，照常聊${ep}`
-    : c.error ? `上次压缩没成功：${c.error}`
+    : c.error && !/太短/.test(c.error) ? `上次压缩没成功：${c.error}`
     : `${k(c.tokens)} / ${k(c.limit)} token${ep}`;
   clearTimeout(ctxPoll);
   if (busy) ctxPoll = setTimeout(loadCtx, 2000);  // 压缩中：每 2 秒看一眼，压好就更新

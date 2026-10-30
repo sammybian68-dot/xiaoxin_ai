@@ -133,7 +133,7 @@ def me() -> dict:
 def _index_html() -> Response:
     """index.html 里的 app.js / app.css 地址带上文件修改时间，部署后浏览器和 pad 一定拿新的。"""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for name in ("app.js", "app.css", "clock.js", "clock.css", "hanzi.js", "hanzi.css"):
+    for name in ("app.js", "app.css", "clock.js", "clock.css", "hanzi.js", "hanzi.css", "timecard.js", "timecard.css"):
         v = int((STATIC / name).stat().st_mtime)
         html = html.replace(f'static/{name}"', f'static/{name}?v={v}"')
     return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
@@ -487,9 +487,8 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
                     out = (registry.run_local(c["name"], c["arguments"]) if clock_calls <= MAX_CLOCK_CALLS
                            else "失败：这一轮调太多次了，先停下，告诉用户已经做了什么")
                     log.info("tool %s %s -> %s", c["name"], c["arguments"][:120], out[:120])
-                    if c["name"] != "query_time":
-                        actions.append({"name": c["name"], "arguments": c["arguments"], "result": out})
-                        put("tool", {"name": c["name"], "arguments": c["arguments"], "result": out})
+                    actions.append({"name": c["name"], "arguments": c["arguments"], "result": out})
+                    put("tool", {"name": c["name"], "arguments": c["arguments"], "result": out})
                     msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
                     continue
                 if searches >= MAX_SEARCHES:

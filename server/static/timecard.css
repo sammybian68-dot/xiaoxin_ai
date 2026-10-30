@@ -1,0 +1,47 @@
+/* 报时卡：天蓝表盘 + 暖白底，和笔顺卡同一个家族（圆角大卡、字大、颜色少）。
+   12 小时制用暖红，24 小时制用深蓝：两个写法两种颜色，表盘内圈红字、外圈蓝字对应上，孩子一眼对上号。 */
+.tc {
+  --tc-paper: #fffaf2; --tc-ink: #2b2420; --tc-12: #e0452b; --tc-24: #2c5fa8; --tc-soft: #8a7d72; --tc-dial: #eaf3fb;
+  align-self: stretch; background: var(--tc-paper); color: var(--tc-ink); border-radius: 22px; padding: 18px 22px 16px;
+  display: grid; grid-template-columns: auto 1fr; gap: 14px 26px; align-items: center;
+  font-family: "PingFang SC", "Noto Sans SC", sans-serif; max-width: 100%;
+}
+.tc-clock { width: 220px; height: 220px; }
+.tc-face { width: 100%; height: 100%; }
+.tc-face .dial { fill: var(--tc-dial); stroke: #c9dcee; stroke-width: 2; }
+.tc-face .ticks line { stroke: #9fb7cf; stroke-width: 1; }
+.tc-face .ticks line.big { stroke: var(--tc-ink); stroke-width: 2.2; }
+.tc-face text { text-anchor: middle; dominant-baseline: central; font-variant-numeric: tabular-nums; }
+.tc-face .inner text { font-size: 15px; font-weight: 700; fill: var(--tc-12); }
+.tc-face .outer text { font-size: 9.5px; font-weight: 600; fill: var(--tc-24); }
+.tc-face .hand { stroke-linecap: round; transition: transform .25s cubic-bezier(.4, 2.2, .6, 1); }
+.tc-face .hand.h { stroke: var(--tc-ink); stroke-width: 6; }
+.tc-face .hand.m { stroke: var(--tc-ink); stroke-width: 4; }
+.tc-face .hand.s { stroke: var(--tc-12); stroke-width: 1.6; }
+.tc-face .hub { fill: var(--tc-12); }
+
+.tc-side { display: grid; gap: 12px; min-width: 0; }
+.tc-date { font-size: 17px; color: var(--tc-soft); }
+.tc-pair { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; border: 0; background: none; padding: 0; text-align: left; color: inherit; cursor: pointer; }
+.tc-pair > span:not(.tc-eq) { display: grid; gap: 2px; }
+.tc-pair small { font-size: 13px; color: var(--tc-soft); }
+.tc-pair b { font-size: 40px; line-height: 1.05; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.tc-eq { font-size: 30px; color: var(--tc-soft); }
+.tc-pair b.is12 { color: var(--tc-12); }
+.tc-pair b.is24 { color: var(--tc-24); }
+.tc-hint { font-size: 16px; background: #f6efe5; border-radius: 12px; padding: 8px 12px; line-height: 1.5; }
+
+.tc-day { grid-column: 1 / -1; display: grid; gap: 4px; }
+.tc-day-bar { position: relative; height: 12px; border-radius: 6px;
+  background: linear-gradient(90deg, #2d3557 0%, #2d3557 22%, #f7c86a 27%, #9fd3ff 40%, #9fd3ff 66%, #f4a46a 76%, #2d3557 82%, #2d3557 100%); }
+.tc-day-now { position: absolute; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
+  background: var(--tc-12); border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .25); }
+.tc-day-lab { display: flex; justify-content: space-between; font-size: 12px; color: var(--tc-soft); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 640px) {
+  .tc { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+  .tc-clock { width: min(220px, 70vw); height: min(220px, 70vw); }
+  .tc-pair { justify-content: center; }
+  .tc-pair b { font-size: 32px; }
+}
+@media (prefers-reduced-motion: reduce) { .tc-face .hand { transition: none; } }
