@@ -200,19 +200,45 @@ class Talk:
     async def on_vad_start(self) -> None:
         self._client_vad = True
         self._utt = bytearray()
-        if self.busy:
-            log.info("talk barge-in during turn %d", self.turn_id)
-            await self.cancel_turn()
-            await self.send("interrupt")
         await self.send("listening")
 
     async def on_vad_end(self) -> None:
         self._client_vad = True
         utt, self._utt = self._utt, None
-        if utt is None:
+        if utt is not None:
+            self._hear(bytes(utt))
+
+    def _hear(self, utt: bytes) -> None:
+        """一句说完：先识别，认出字了才算这一句。小新正在想 / 在说时，认出字才打断（barge-in）。
+
+        不在开口时就打断：开口可能是咳嗽、回声、唤醒词尾巴，认出来是空的。之前一开口就取消，
+        「你好小新给我设一个倒计时」刚送进模型，0.1 秒后一段 0.6 秒的杂音把它取消了，结果什么都不答（2026-10-30）。"""
+        task = asyncio.create_task(self._recognize(utt))
+        _BACKGROUND.add(task)
+        task.add_done_callback(_BACKGROUND.discard)
+
+    async def _recognize(self, utt: bytes) -> None:
+        t0 = time.monotonic()
+        try:
+            text = (await asyncio.to_thread(self._transcribe, self.asr_engine, utt)).strip()
+        except Exception as e:
+            await self.send("error", detail=f"识别失败：{str(e)[:120]}")
             return
+        t_asr = time.monotonic() - t0
+        if self.closed:
+            return
+        if not text:
+            log.info("talk heard %.1fs audio in %.2fs: (空，不算)", len(utt) / 32000, t_asr)
+            self._local = []
+            if not self.busy:
+                await self.send("idle")
+            return
+        if self.busy:
+            log.info("talk barge-in during turn %d: %s", self.turn_id, text[:30])
+            await self.cancel_turn()
+            await self.send("interrupt")
         self.turn_id += 1
-        self.turn = asyncio.create_task(self.answer(self.turn_id, bytes(utt)))
+        self.turn = asyncio.create_task(self.answer(self.turn_id, utt, text=text, t_asr=t_asr))
 
     async def on_pcm(self, pcm: bytes) -> None:
         if self._client_vad:
@@ -221,14 +247,9 @@ class Talk:
             return
         for kind, utt in self.vad.feed(pcm):
             if kind == "start":
-                if self.busy:
-                    log.info("talk barge-in during turn %d", self.turn_id)
-                    await self.cancel_turn()
-                    await self.send("interrupt")
                 await self.send("listening")
             else:
-                self.turn_id += 1
-                self.turn = asyncio.create_task(self.answer(self.turn_id, utt))
+                self._hear(utt)
 
     async def on_wake(self, text: str, quiet: bool = False) -> None:
         """quiet：端侧已经用本机缓存的「在」应答过了（pad），只喊了唤醒词时这边不再合成应答。"""
@@ -258,19 +279,15 @@ class Talk:
                 pass
 
     # ---------------------------------------------------------------- 一轮
-    async def answer(self, turn_id: int, utt: bytes, text: str | None = None, ack: bool = False) -> None:
-        """一轮：识别（端侧已经认好就跳过）→ 模型 → 朗读。ack=True 时 text 是固定应答，不问模型。"""
-        t0 = time.monotonic()
+    async def answer(self, turn_id: int, utt: bytes, text: str | None = None, ack: bool = False,
+                     t_asr: float = 0.0) -> None:
+        """一轮：（已经识别好的）text → 模型 → 朗读。ack=True 时 text 是固定应答，不问模型。
+        t_asr 是识别花的时间；首响计时从说完算，所以 t0 往前挪 t_asr。"""
+        t0 = time.monotonic() - t_asr
         if ack:
             await self.speak_only(text)
             return
-        if text is None:
-            try:
-                text = (await asyncio.to_thread(self._transcribe, self.asr_engine, utt)).strip()
-            except Exception as e:
-                await self.send("error", detail=f"识别失败：{str(e)[:120]}")
-                return
-        t_asr = time.monotonic() - t0
+        text = (text or "").strip()
         local, self._local = " / ".join(self._local), []
         log.info("talk turn %d heard %.1fs audio in %.2fs: %s%s", turn_id, len(utt) / 32000, t_asr, text[:60],
                  f" (端侧: {local[:60]})" if local else "")

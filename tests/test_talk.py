@@ -158,9 +158,8 @@ def test_barge_in_cancels_turn_and_tells_device(call, fakes, monkeypatch):
     c = call()
     c.send_pcm(said())
     c.until("thinking")
-    c.send_pcm(silence(0.2) + tone(1.0, amp=2000))   # 插话
+    c.send_pcm(silence(0.2) + tone(1.0, amp=2000) + silence(1.0))   # 插话，说完、认出字才打断
     c.until("interrupt")
-    c.send_pcm(silence(1.0))
     gate.set()
     c.until("idle")
     k = c.kinds()
@@ -183,10 +182,9 @@ def test_barge_in_while_speaking_stops_audio(call, fakes, monkeypatch):
     c = call()
     c.send_pcm(said())
     c.until("speaking")
-    c.send_pcm(silence(0.2) + tone(1.0, amp=2000))
+    c.send_pcm(silence(0.2) + tone(1.0, amp=2000) + silence(1.0))
     c.until("interrupt")
     before = c.audio
-    c.send_pcm(silence(1.0))
     c.until("heard")
     # 插话之后旧这一轮不再下发音频（新一轮的音频在 heard 之后才有）
     assert c.audio == before
@@ -488,4 +486,31 @@ def test_client_vad_barge_in(call, fakes, monkeypatch):
     c.ws.send_text(json.dumps({"type": "vad_end"}))
     c.until("thinking")
     c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.5, amp=2000))
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
     assert c.until("interrupt")["type"] == "interrupt"
+
+
+def test_noise_does_not_cancel_answer(call, fakes, monkeypatch):
+    """小新在想的时候来一段杂音（识别为空）：不打断，原来那句照常答完（2026-10-30「设一个倒计时」被 0.6 秒杂音取消）。"""
+    from src.llm import client as llm
+
+    gate = threading.Event()
+    real = llm.iter_stream
+
+    def slow(model, history, **kw):
+        gate.wait(5)
+        yield from real(model, history, **kw)
+
+    monkeypatch.setattr(llm, "iter_stream", slow)
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学给我设一个倒计时"}))
+    c.until("thinking")
+    fakes.doubao_text = ""
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.6, amp=2000))
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    time.sleep(0.3)
+    gate.set()
+    c.until("reply")
+    assert "interrupt" not in c.kinds()
