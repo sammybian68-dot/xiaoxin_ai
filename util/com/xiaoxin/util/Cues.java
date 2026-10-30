@@ -36,7 +36,7 @@ public final class Cues {
     }
 
     /** 服务端改了提示的字或换了内置音色的参考（2：「在」→「我在的」；3：男声换成少年梓辛）就加一，旧缓存不再用 */
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;  // 4：服务端加了「念完整」检查
 
     private File file(String name, String v) {
         return new File(dir, (v.isEmpty() ? "default" : v.replaceAll("[^A-Za-z0-9_.-]", "_")) + "." + name

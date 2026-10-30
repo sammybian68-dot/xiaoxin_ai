@@ -83,6 +83,16 @@ public final class Talk {
      * audioDelayMs > 0：调用方正在放「我在的」，这么久之后才开通话音频（开早了会切到通话模式，把这句吞掉，
      * 2026-10-30 实测：通话播放器里放 0.5 秒的提示，切通路时整句听不到）。握手和它同时进行，藏在这句话里。
      */
+    /** 待命那边接手过来的麦克风（还开着、唤醒后一直在录）。有它就不再新开，也就不用等「我在的」放完。 */
+    private volatile WakeListener.Mic adopted;
+    /** 「我在的」在放：这之前录到的帧当静音送（是小新自己的声音，AEC 还没收敛） */
+    private volatile long muteUntil;
+
+    public void adoptMic(WakeListener.Mic mic, long cueMs) {
+        adopted = mic;
+        muteUntil = cueMs > 0 ? System.nanoTime() + cueMs * 1_000_000 : 0;
+    }
+
     public void startWoken(String url, String key, String wakeText, boolean acked, long audioDelayMs)
             throws IOException {
         String hello;
@@ -116,8 +126,8 @@ public final class Talk {
                 pending.add(new byte[Pcm.FRAME_BYTES]);
             }
         }
-        if (audioDelayMs <= 0) {
-            startAudio();
+        if (audioDelayMs <= 0 || adopted != null) {
+            startAudio();  // 接手了待命的麦克风：不用等「我在的」放完，提示音期间的帧在 uplink 里静音掉
         } else {
             long at = System.nanoTime() + audioDelayMs * 1_000_000;
             Thread a = new Thread(() -> {
@@ -222,12 +232,25 @@ public final class Talk {
         track.setStartThresholdInFrames(PLAY_RATE / 10);
         track.play();
 
-        int min = AudioRecord.getMinBufferSize(Pcm.SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT);
-        rec = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, Pcm.SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, Pcm.FRAME_BYTES * 8));
+        WakeListener.Mic mic = adopted;
+        adopted = null;
+        if (mic != null) {
+            rec = mic.rec;  // 待命那条录音一直没关，接着用；唤醒后录到的先排进上传队列
+            for (int i = 0; i < mic.frames.size(); i++) {
+                byte[] b = mic.frames.get(i);
+                if (muteUntil != 0 && mic.at.get(i) < muteUntil) {
+                    java.util.Arrays.fill(b, (byte) 0);  // 「我在的」放的时候录的
+                }
+                queueFrame(b, b.length);
+            }
+        } else {
+            int min = AudioRecord.getMinBufferSize(Pcm.SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+            rec = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, Pcm.SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, Math.max(min, Pcm.FRAME_BYTES * 8));
+            rec.startRecording();
+        }
         running = true;
-        rec.startRecording();
         Thread up = new Thread(this::uplink, "talk-mic");
         up.setDaemon(true);
         up.start();
@@ -268,6 +291,9 @@ public final class Talk {
             if (n <= 0) {
                 continue;
             }
+            if (muteUntil != 0 && System.nanoTime() < muteUntil) {
+                java.util.Arrays.fill(frame, 0, n, (byte) 0);  // 「我在的」还在放
+            }
             Pcm.Level level = Pcm.level(frame, n);
             listener.onLevel(Math.min(100, level.rms * 100 / 3000));
             Vad v = exitVad;
@@ -292,20 +318,32 @@ public final class Talk {
             }
             WebSocket w = ws;
             if (w == null) {
-                if (pending.size() >= MAX_PENDING + PREAMBLE_MS / 100) {
-                    pending.poll();
-                }
-                pending.add(java.util.Arrays.copyOf(frame, n));
+                queueFrame(frame, n);
                 continue;
             }
             try {
-                for (byte[] b; (b = pending.poll()) != null; ) {
+                for (byte[] b; (b = pollPending()) != null; ) {
                     w.sendBinary(b, b.length);
                 }
                 w.sendBinary(frame, n);
             } catch (IOException e) {
                 break;  // 断线由 onClosed 处理
             }
+        }
+    }
+
+    private byte[] pollPending() {
+        synchronized (pending) {
+            return pending.poll();
+        }
+    }
+
+    private void queueFrame(byte[] frame, int n) {
+        synchronized (pending) {
+            if (pending.size() >= MAX_PENDING + PREAMBLE_MS / 100) {
+                pending.poll();
+            }
+            pending.add(java.util.Arrays.copyOf(frame, n));
         }
     }
 

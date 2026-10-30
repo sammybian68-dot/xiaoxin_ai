@@ -452,3 +452,21 @@ def test_cue_trims_silence():
 
 def test_cue_unknown(client):
     assert client.get("/api/cue/hello").status_code == 404
+
+
+def test_cue_retries_when_cut_short(client, fakes, monkeypatch):
+    """CosyVoice 念到逗号就停：太短的重来一次。"""
+    from server import main
+    from tests.audio import silence, tone
+
+    takes = [tone(0.4, rate=24000, amp=3000) + silence(0.3, rate=24000), tone(2.0, rate=24000, amp=3000)]
+    calls = []
+
+    def synth(text, voice_id=None):
+        calls.append(text)
+        from src.voice import doubao
+        return doubao.Speech(takes[min(len(calls), 2) - 1], 24000, 0.1, 0.5), voice_id, ""
+
+    monkeypatch.setattr(main.voices, "synth", synth)
+    r = client.get("/api/cue/ring", params={"text": "卞依一，5秒倒计时到啦！"})
+    assert r.status_code == 200 and len(calls) == 2 and len(r.content) / 48000 > 1.5

@@ -853,6 +853,32 @@ def _trim_pcm(pcm: bytes, rate: int, lead_ms: int = 30, tail_ms: int = 150, fade
     return out.tobytes()
 
 
+CUE_MIN_S_PER_CHAR = 0.12  # 正常每字 0.2–0.3 秒；短于这个多半是念了半句就停了
+
+
+def _cue_synth(text: str, voice_id: str, tries: int = 3) -> bytes:
+    """合成一句提示并去掉首尾静音。CosyVoice 偶尔念到逗号就停（「卞依一，5秒倒计时到啦」只剩「卞依一」，
+    2026-10-30 实测 12 条里 3 条），太短的重来，最多 tries 次；都短就用最长的那条。缓存后一直用，所以值得多试。"""
+    import re
+
+    chars = len(re.sub(r"[\s，。！？、,.!?~～]", "", text))
+    best = b""
+    for _ in range(tries):
+        try:
+            speech, _, _ = voices.synth(text, voice_id)
+        except (voices.VoiceError, doubao.DoubaoError) as e:
+            raise HTTPException(502, f"合成失败：{e}")
+        if speech.sample_rate != 24000:
+            raise HTTPException(502, f"采样率不对：{speech.sample_rate}")
+        pcm = _trim_pcm(speech.pcm, 24000)
+        if len(pcm) > len(best):
+            best = pcm
+        if len(pcm) / 48000 >= CUE_MIN_S_PER_CHAR * chars:
+            return pcm
+        log.warning("cue %r too short: %.2fs for %d chars, retry", text, len(pcm) / 48000, chars)
+    return best
+
+
 @app.get("/api/cue/{name}")
 def cue(name: str, voice: str = "", text: str = "") -> Response:
     """当前音色（或 ?voice= 指定）说「我在的」/「拜拜」/ 响铃提示（ring，?text= 给要念的话，不给用默认提示），
@@ -874,18 +900,13 @@ def cue(name: str, voice: str = "", text: str = "") -> Response:
         raise HTTPException(400, str(e))
     # 内置男声换过参考素材：素材名也算进去，换了就重新合成
     ref = voices.BUILTIN_MALE_SOURCE if v["id"] == voices.BUILTIN else ""
-    key = hashlib.sha1(f"{v['id']}|{engine}|{text}|{ref}".encode()).hexdigest()[:16]
+    key = hashlib.sha1(f"{v['id']}|{engine}|{text}|{ref}|v2".encode()).hexdigest()[:16]  # v2：加了念完整的检查
     path = store.VOICE / "cues" / f"{key}.pcm"
     if not path.is_file():
-        try:
-            speech, _, _ = voices.synth(text, v["id"])
-        except (voices.VoiceError, doubao.DoubaoError) as e:
-            raise HTTPException(502, f"合成失败：{e}")
-        if speech.sample_rate != 24000:
-            raise HTTPException(502, f"采样率不对：{speech.sample_rate}")
+        pcm = _cue_synth(text, v["id"])
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(_trim_pcm(speech.pcm, 24000))
+        tmp.write_bytes(pcm)
         tmp.replace(path)
     return Response(path.read_bytes(), media_type="application/octet-stream",
                     headers={"X-Voice": v["id"], "X-Sample-Rate": "24000", "Cache-Control": "no-cache"})

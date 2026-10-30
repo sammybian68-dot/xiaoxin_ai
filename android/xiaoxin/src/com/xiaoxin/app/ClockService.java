@@ -447,7 +447,8 @@ public class ClockService extends Service {
     // ---------------------------------------------------------------- 念的话：按文字缓存，拿到快照就提前下好
 
     private File speechFile(String text) {
-        return new File(new File(getFilesDir(), "ring"), Integer.toHexString(text.hashCode()) + "_" + text.length() + ".pcm");
+        // v2：服务端加了「念完整」检查，旧缓存里有念了半句的
+        return new File(new File(getFilesDir(), "ring"), "v2_" + Integer.toHexString(text.hashCode()) + "_" + text.length() + ".pcm");
     }
 
     private byte[] speech(String text) {

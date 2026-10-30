@@ -68,6 +68,7 @@ public class TalkActivity extends Activity {
     private volatile String hangupTone = "down";
     private Cues cues;
     private volatile boolean wakeAcked;
+    private volatile long handoffCueMs;
     private String talkUrl = "";
     private long lastActivity;
     private final android.os.Handler idle = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -499,8 +500,13 @@ public class TalkActivity extends Activity {
         // 待命在听的话先松开麦克风，不然和这通电话抢同一个麦克风（手动点「自由对话」时会这样）
         WakeListener w = wake;
         wake = null;
+        WakeListener.Mic mic = null;
         if (w != null) {
             w.stop();
+            mic = wakeText != null ? w.takeMic() : null;
+            if (mic == null) {
+                w.dropMic();
+            }
         }
         woken = wakeText != null;
         xiaoxinBusy = woken;  // 唤醒带着问题来的：小新马上要答，答完才开始计时
@@ -540,6 +546,9 @@ public class TalkActivity extends Activity {
         });
         Talk t = talk;
         self[0] = t;
+        if (mic != null) {
+            t.adoptMic(mic, handoffCueMs);
+        }
         // 本机听退出词：和唤醒词同一个模型、同一套比对，命中就在这台 pad 上立刻挂断
         if (localAsr != null) {
             t.watchExit(localAsr, exitWords, vadEndMs,
@@ -652,7 +661,10 @@ public class TalkActivity extends Activity {
                         boolean oneShot = Keywords.restAfterWake(text, wakeWords) > 0;
                         long ms = oneShot || cues == null ? 0 : cues.play(Cues.ZAI);
                         wakeAcked = ms > 0;
-                        openTalk(talkUrl, text, ms > 0 ? ms + 80 : 0);
+                        // 麦克风不关：待命那条录音直接交给这通电话，唤醒词说完后的每一帧都送上去。
+                        // 「我在的」放的时候那几帧当静音送（不然会把小新自己的声音当成用户说话）
+                        handoffCueMs = ms > 0 ? ms + 80 : 0;
+                        openTalk(talkUrl, text, handoffCueMs);
                     }
 
                     @Override
