@@ -333,7 +333,8 @@ def test_chat_offers_search_tool_and_tells_date(client, fakes):
     chat(client)
     req = fakes.llm_requests[0]
     assert req["tools"][0]["function"]["name"] == "search_web"
-    assert "现在是 20" in req["system"] and "search_web" in req["system"]
+    assert "search_web" in req["system"] and "现在大约是" not in req["system"]  # 时间不进 system（KV cache）
+    assert req["messages"][0]["content"].startswith("[system] 现在大约是 20")  # 作为 [system] 消息插在前面
 
 
 def test_chat_search_then_answer(client, fakes):
@@ -418,7 +419,7 @@ def test_saved_search_history_is_not_resent_as_tool_messages(client, fakes):
     cid, _ = chat(client)
     client.post(f"/api/conversations/{cid}/messages", json={"text": "再说说"})
     hist = fakes.llm_requests[-1]["messages"]
-    assert [m["role"] for m in hist] == ["user", "assistant", "user"]  # 历史里只留正文，不留 tool 消息
+    assert [m["role"] for m in hist if not str(m.get("content")).startswith("[system]")] == ["user", "assistant", "user"]  # 历史里只留正文
 
 
 # ---------------------------------------------------------------- 唤醒「在」/ 主动退出「拜拜」

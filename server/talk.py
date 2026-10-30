@@ -133,7 +133,8 @@ class Talk:
     """一通电话。run() 跑到挂断。外部依赖都从 main 传进来，方便测试替换。"""
 
     def __init__(self, ws, *, asr_engine: str, model: str, conversation: str | None,
-                 llm_thread, make_speech, transcribe, reply_record, history, models=(), stream_asr=None):
+                 llm_thread, make_speech, transcribe, reply_record, history, models=(), stream_asr=None,
+                 before_turn=None, after_turn=None):
         self.ws = ws
         self.asr_engine = asr_engine
         self.model = model
@@ -143,6 +144,8 @@ class Talk:
         self._make_speech = make_speech  # () -> (TurnSpeech, note)
         self._transcribe = transcribe    # (engine, pcm) -> text，同步，放线程里跑
         self._stream_asr = stream_asr    # (engine) -> 流式识别对象（async with / feed / partials / finish），没有就整句识别
+        self._before_turn = before_turn  # (cid) 新一轮前：换压缩好的 epoch、插 [system] 现状
+        self._after_turn = after_turn    # (cid, end) -> ctx 状态：记 token、超阈值后台压缩
         self._reply_record = reply_record
         self._history = history          # conv -> OpenAI messages
         self.vad = Vad(end_ms=voices.engines()["vad_end_ms"])
@@ -424,6 +427,8 @@ class Talk:
             return
         model = self.model
         t_search, search_at, first_text, saved_id = 0.0, None, None, None
+        if self._before_turn:
+            self._before_turn(self.cid)
         user = store.append(self.cid, {"role": "user", "text": text, "files": [], "via": "talk",
                                        "local": local, "audio": bool(utt)})
         if utt:
@@ -470,7 +475,8 @@ class Talk:
                             await tts.finish_text()
                             saved = store.append(self.cid, self._reply_record(reply, end))
                             saved_id = saved["id"]
-                            await self.send("reply", message=saved)
+                            ctx = self._after_turn(self.cid, end) if self._after_turn else None
+                            await self.send("reply", message=saved, ctx=ctx)
                         else:
                             await tts.cancel()
                             await self.send("error", detail=end["error"] or "没收到回答")

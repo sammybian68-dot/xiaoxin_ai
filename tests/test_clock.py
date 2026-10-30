@@ -140,17 +140,23 @@ def test_tools_report_result_for_model(at, fakes):
     assert tools.run("alarm_set", "not json") == "失败：参数不是 JSON 对象"
 
 
-def test_prompt_contains_clock_state(at, fakes):
+def test_prompt_is_static_and_note_carries_clock_state(at, fakes):
+    """system prompt 不随时间 / 闹钟变（KV cache）；闹钟状态在 [system] note 里。"""
+    from server import context
+
     at("2026-10-30 21:00")
-    assert "## 当前状态\n无" in prompts.build()
+    before = prompts.build()
     clock.add_alarm("07:00", "weekdays", "上学")
     clock.start_timer(600, "刷牙")
-    text = prompts.build()
-    assert "- a1 闹钟 07:00 工作日 「上学」，响时说「卞依一，时间到了！」，下次 周一 07:00" in text
-    assert "- t2 倒计时 10分钟 「刷牙」，响时说「卞依一，时间到了！」，剩 10分钟" in text
-    assert "默认提示「卞依一，时间到了！」" in text
-    assert "{" not in text  # 占位符都填了
-    assert "语音通话" not in text and "语音通话" in prompts.build(voice=True)
+    at("2026-10-30 21:07")
+    assert prompts.build() == before  # 时间变了、闹钟变了，system 一字不变
+    assert "默认提示「卞依一，时间到了！」" in before and "{" not in before
+    assert "语音通话" not in before and "语音通话" in prompts.build(voice=True)
+    note = context.note_for({"messages": []})
+    assert "- a1 闹钟 07:00 工作日 「上学」，响时说「卞依一，时间到了！」，下次 周一 07:00" in note["text"]
+    assert "- t2 倒计时 10分钟 「刷牙」，响时说「卞依一，时间到了！」" in note["text"]
+    assert note["text"].startswith("[system] 现在大约是 2026-10-30 星期五 晚上 9 点左右")
+    assert "剩 3分钟" in note["text"]  # 倒计时 21:00 开的 10 分钟，21:07 剩 3 分钟
 
 
 def test_specs_are_valid_function_schemas():
@@ -208,15 +214,15 @@ def test_model_sets_alarm_via_tool(client, fakes, at):
     second = fakes.llm_requests[-1]
     tool_msg = second["messages"][-1]
     assert tool_msg["role"] == "tool" and tool_msg["content"].startswith("已设闹钟 a1 07:00")
-    assert "- a1 闹钟 07:00" in second["system"]  # 第二次请求的 prompt 已经带上新闹钟
+    assert "a1" not in second["system"]  # system 不变；新闹钟在工具结果里
     assert any(t["function"]["name"] == "alarm_delete" for t in second["tools"])
 
 
 def test_prompts_endpoint(client):
     d = client.get("/api/prompts").json()
     assert [p["name"] for p in d["parts"]] == ["persona", "time", "search", "clock", "hanzi", "voice"]
-    assert d["parts"][3]["text"].startswith("# 闹钟") and "{clock_state}" in d["parts"][3]["text"]
-    assert "现在是 20" in d["system"] and "语音通话" in d["system_voice"]
+    assert d["parts"][3]["text"].startswith("# 闹钟") and "{clock_state}" not in d["parts"][3]["text"]
+    assert "语音通话" in d["system_voice"] and "compact" in d and "## 学习进度" in d["compact"]
     assert {"alarm_set", "timer_control", "stopwatch", "search_web", "query_time"} <= {t["name"] for t in d["tools"]}
 
 
@@ -310,6 +316,7 @@ def test_history_replays_tool_calls(client, fakes, at):
     client.post(f"/api/conversations/{cid}/messages", json={"text": "明早七点叫我"})
     client.post(f"/api/conversations/{cid}/messages", json={"text": "谢谢"})
     msgs = fakes.llm_requests[-1]["messages"]
+    msgs = [m for m in msgs if not str(m.get("content") or "").startswith("[system]")]
     roles = [m["role"] for m in msgs]
     assert roles == ["user", "assistant", "tool", "assistant", "user"]
     call = msgs[1]["tool_calls"][0]

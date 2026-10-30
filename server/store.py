@@ -59,7 +59,10 @@ def list_conversations() -> list[dict]:
             c = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        out.append({"id": c["id"], "title": c.get("title") or "新对话", "updated": c.get("updated", 0)})
+        cs = c.get("compact") or {}
+        out.append({"id": c["id"], "title": c.get("title") or "新对话", "updated": c.get("updated", 0),
+                    "ctx_tokens": c.get("ctx_tokens") or 0, "epoch": c.get("epoch") or 0,
+                    "compacting": cs.get("state") in ("running", "ready")})
     return sorted(out, key=lambda c: c["updated"], reverse=True)
 
 
@@ -123,6 +126,15 @@ def append(cid: str, msg: dict) -> dict:
         conv["updated"] = msg["created"]
         _write_json(CONV / f"{cid}.json", conv)
     return msg
+
+
+def update_conv(cid: str, **fields) -> dict:
+    """改对话顶层字段（ctx_tokens、epoch、summary、compact…），不动 messages、不刷新 updated。"""
+    with _lock:
+        conv = get(cid)
+        conv.update(fields)
+        _write_json(CONV / f"{cid}.json", conv)
+    return conv
 
 
 def update_message(cid: str, mid: str, **fields) -> dict | None:

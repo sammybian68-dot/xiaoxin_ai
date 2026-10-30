@@ -176,10 +176,56 @@ def voice_pick(request: Request, name: str = "index.html") -> FileResponse:
 # ---------------------------------------------------------------- 提示词和工具（设置页查看）
 
 @app.get("/api/prompts")
-def prompt_view() -> dict:
-    """每个 md 的原文、当前拼好的完整 system prompt（文字 / 语音两份）、注册的工具。"""
-    return {"parts": prompts.parts(), "system": prompts.build(), "system_voice": prompts.build(voice=True),
-            "tools": registry.listing()}
+def prompt_view(conversation: str = "") -> dict:
+    """每个 md 的原文、当前拼好的完整 system prompt（文字 / 语音两份）、注册的工具、压缩用的提示词；
+    给了 ?conversation= 再带上这段对话上一次压缩出来的摘要。"""
+    from server import compact
+
+    out = {"parts": prompts.parts(), "system": prompts.build(), "system_voice": prompts.build(voice=True),
+           "tools": registry.listing(), "compact": compact.prompt_text()}
+    if conversation:
+        try:
+            conv = store.get(conversation)
+        except KeyError:
+            conv = None
+        if conv:
+            out["summary"] = {"title": conv.get("title") or "新对话", "text": conv.get("summary") or "",
+                              **compact.state(conv)}
+    return out
+
+
+@app.get("/api/conversations/{cid}/ctx")
+def conversation_ctx(cid: str) -> dict:
+    """左侧栏电量条：用了多少 token、阈值、压缩过几次、现在在不在压。"""
+    from server import compact
+
+    try:
+        return compact.state(store.get(cid))
+    except KeyError:
+        raise HTTPException(404, "没有这段对话")
+
+
+@app.post("/api/conversations/{cid}/compact")
+def conversation_compact(cid: str) -> dict:
+    """「立即压缩」：不看阈值，后台压一次；压好后下一轮开始时换上。"""
+    from server import compact
+
+    try:
+        store.get(cid)
+    except KeyError:
+        raise HTTPException(404, "没有这段对话")
+    started = compact.maybe_kick(cid, force=True)
+    return {"started": started, **compact.state(store.get(cid))}
+
+
+@app.put("/api/ctx_limit")
+def ctx_limit_set(body: dict = Body(...)) -> dict:
+    from server import compact
+
+    try:
+        return {"limit": compact.set_limit(body.get("limit"))}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------------------------------------------------------------- 笔顺
@@ -313,11 +359,22 @@ def _attachments(file_ids: list) -> list[dict]:
 
 
 def _llm_messages(conv: dict) -> list[dict]:
-    """对话转成 OpenAI 格式。只有最后一条用户消息带图片本体，之前的图片换成一句占位，免得每轮重传。"""
-    msgs = conv["messages"][-40:]
+    """对话转成 OpenAI 格式：压缩摘要（有的话）+ 这个 epoch 的原文（含 `[system]` 现状消息，按原位置回放）。
+
+    前缀稳定（KV cache）：同一个 epoch 里，前面发过的消息每轮都原样重放，只在末尾追加；不按条数截断
+    （截了前缀就变）。长了靠 compact 换 epoch，见 server/compact.py。
+    只有最后一条用户消息带图片本体，之前的图片换成一句占位，免得每轮重传。"""
+    from server import compact
+
+    msgs = conv["messages"][conv.get("epoch_start") or 0:]
     last_user = max((i for i, m in enumerate(msgs) if m["role"] == "user"), default=-1)
     out = []
+    if conv.get("summary"):
+        out.append({"role": "user", "content": compact.SUMMARY_PREFIX + conv["summary"]})
     for i, m in enumerate(msgs):
+        if m["role"] == "note":
+            out.append({"role": "user", "content": m["text"]})
+            continue
         if m["role"] == "assistant":
             # 这一轮调过闹钟类工具：按原样回放「调用 → 结果」，不然模型只看到自己说「设好了」，
             # 下一轮会学着不调工具直接说「删掉了」（2026-10-30 27B 实测 3 轮里 2 轮这样）
@@ -459,6 +516,27 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
                 "searches": searched, "actions": actions})
 
 
+def _turn_begin(cid: str) -> None:
+    """新一轮开始前：有压好的摘要就换上（epoch +1）；该说现状（时间粗到半小时、闹钟变了）就插一条 `[system]`。"""
+    from server import compact, context
+
+    compact.maybe_swap(cid)
+    note = context.note_for(store.get(cid))
+    if note:
+        store.append(cid, {"role": "note", **note})
+
+
+def _turn_end(cid: str, end: dict) -> dict:
+    """一轮答完：记下这一轮实际的 prompt token 数（电量条），超阈值就后台开压。返回给界面的 ctx 状态。"""
+    from server import compact
+
+    tokens = int((end.get("usage") or {}).get("prompt_tokens") or 0)
+    if tokens:
+        store.update_conv(cid, ctx_tokens=tokens)
+    compact.maybe_kick(cid)
+    return compact.state(store.get(cid))
+
+
 def _reply_record(text: str, end: dict) -> dict:
     """存进对话的那条 assistant 消息。搜过就带上搜了什么、出处，界面上列来源用。"""
     rec = {"role": "assistant", "text": text, "model": end["served"], "usage": end["usage"]}
@@ -539,6 +617,7 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
         raise HTTPException(400, f"不支持的模型 {model}")
     if model in NO_VISION and any(f["kind"] == "image" for f in files):
         model = VISION
+    _turn_begin(cid)
     user = store.append(cid, {"role": "user", "text": text, "files": files, "via": body.get("via") or "text"})
     history = _llm_messages(store.get(cid))
 
@@ -586,7 +665,7 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
                         reply = "".join(parts)
                         if reply:
                             saved = store.append(cid, _reply_record(reply, end))
-                            yield _sse("done", saved)
+                            yield _sse("done", {**saved, "ctx": _turn_end(cid, end)})
                         else:
                             yield _sse("error", end["error"] or "没收到回答")
                     elif tts:
@@ -841,7 +920,7 @@ async def talk(ws: WebSocket) -> None:
     session = Talk(ws, asr_engine=asr_engine, model=model, conversation=q.get("conversation") or None,
                    llm_thread=_llm_thread, make_speech=_turn_speech, transcribe=_transcribe,
                    reply_record=_reply_record, history=_llm_messages, models=[m["id"] for m in MODELS],
-                   stream_asr=_stream_asr)
+                   stream_asr=_stream_asr, before_turn=_turn_begin, after_turn=_turn_end)
     log.info("talk open asr=%s model=%s conversation=%s", asr_engine, model, session.cid)
     try:
         await session.run()

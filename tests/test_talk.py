@@ -92,7 +92,7 @@ def test_one_turn_end_to_end(call, fakes):
     assert next(m for m in c.msgs if m["type"] == "heard")["text"] == fakes.doubao_text
     assert c.audio > 0  # 二进制音频帧
     cid = c.msgs[0]["conversation"]
-    roles = [(m["role"], m.get("via")) for m in store.get(cid)["messages"]]
+    roles = [(m["role"], m.get("via")) for m in store.get(cid)["messages"] if m["role"] != "note"]
     assert roles == [("user", "talk"), ("assistant", None)]
 
 
@@ -114,7 +114,8 @@ def test_continue_existing_conversation(call, fakes):
     assert c.msgs[0]["conversation"] == cid
     c.send_pcm(said())
     c.until("idle")
-    assert [m["role"] for m in fakes.llm_requests[-1]["messages"]] == ["user", "user"]
+    sent = [m for m in fakes.llm_requests[-1]["messages"] if not m["content"].startswith("[system]")]
+    assert [m["role"] for m in sent] == ["user", "user"]
 
 
 def test_unknown_conversation(client, fakes):
@@ -421,7 +422,7 @@ def test_utterance_audio_saved_and_replayable(call, client, fakes):
     c.until("idle")
     assert h["audio"] is True and h["local"] == "退一下"
     cid = c.msgs[0]["conversation"]
-    user = store.get(cid)["messages"][0]
+    user = [m for m in store.get(cid)["messages"] if m["role"] == "user"][0]
     assert user["id"] == h["id"] and user["local"] == "退一下" and user["audio"] is True
     r = client.get(f"/api/conversations/{cid}/audio/{h['id']}")
     assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
@@ -476,7 +477,7 @@ def test_client_vad_segments_utterances(call, fakes):
     c.until("idle")
     assert c.kinds().count("heard") == 1
     assert fakes.calls.count(("doubao.stream_asr",)) == 1  # 一句一个流式识别，只送 vad_start..vad_end 那段
-    msgs = store.get(c.msgs[0]["conversation"])["messages"]
+    msgs = [m for m in store.get(c.msgs[0]["conversation"])["messages"] if m["role"] == "user"]
     wav = store.utterance_path(c.msgs[0]["conversation"], msgs[0]["id"]).read_bytes()
     assert abs((len(wav) - 44) / 32000 - 1.0) < 0.05
 
