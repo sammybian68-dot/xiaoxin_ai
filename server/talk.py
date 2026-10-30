@@ -8,6 +8,7 @@
         文本帧 {"type":"wake","text":"<端侧认出的整句>","acked":true}  pad 待命唤醒后发的第一句：端侧 Paraformer 已经认好了，
                  服务端去掉开头的唤醒词，剩下有内容就直接当这一轮的问题（省掉云端识别）；只喊了唤醒词：
                  acked 表示 pad 已经用本机缓存说了「我在的」，这边就不再合成；没 acked 才合成一句
+        文本帧 {"type":"hush"}  端侧自己要出声了（描红播报），这一轮停下
         文本帧 {"type":"say","text":"…"}  让小新念一句固定的话（比如描红写完的成绩），不问模型、不进记录
         文本帧 {"type":"vad_start"} / {"type":"vad_end"}  端侧断句（pad 上的 TEN-VAD，和 carHer2 一样按人声概率）。
                  收到过一次就改用端侧断句：vad_start 起收音频，vad_end 时把这段送识别；服务端自己的能量 VAD 不再用。
@@ -190,6 +191,12 @@ class Talk:
                 cmd = json.loads(msg.get("text") or "{}")
                 if cmd.get("type") == "stop":
                     return
+                if cmd.get("type") == "hush":
+                    # 端侧自己要出声（描红播报）：小新这一轮停下，不说了
+                    if self.busy:
+                        log.info("talk hush turn %d", self.turn_id)
+                        await self.cancel_turn()
+                    continue
                 if cmd.get("type") == "say":
                     await self.on_say(str(cmd.get("text") or ""))
                     continue

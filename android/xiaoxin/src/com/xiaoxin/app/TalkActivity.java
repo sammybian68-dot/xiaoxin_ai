@@ -30,6 +30,7 @@ import com.xiaoxin.util.Cues;
 import com.xiaoxin.util.Earcon;
 import com.xiaoxin.util.Keywords;
 import com.xiaoxin.util.LocalAsr;
+import com.xiaoxin.util.Phrases;
 import com.xiaoxin.util.Talk;
 import com.xiaoxin.util.WakeListener;
 
@@ -67,6 +68,7 @@ public class TalkActivity extends Activity {
     private volatile int vadEndMs = 800;
     private volatile String hangupTone = "down";
     private Cues cues;
+    private Phrases phrases;
     private volatile boolean wakeAcked;
     private volatile long handoffCueMs;
     private String talkUrl = "";
@@ -117,6 +119,7 @@ public class TalkActivity extends Activity {
         // 免密链接：?k= 让服务端种 cookie 再跳回去，key 不留在地址栏
         web.loadUrl(base() + "?k=" + Uri.encode(key()));
         cues = new Cues(this, base(), key());
+        phrases = new Phrases(this, base(), key());
         // 闹钟和倒计时：前台服务，熄屏也在，到点亮屏响铃
         ClockService.listener = ev -> emitClock(ev.toString());
         ClockService.start(this);
@@ -333,6 +336,30 @@ public class TalkActivity extends Activity {
             });
         }
 
+        /** 描红播报：先把要用的短语下好（JSON 数组字符串）。 */
+        @JavascriptInterface
+        public void phrasePrefetch(String json) {
+            Phrases p = phrases;
+            if (p == null) {
+                return;
+            }
+            new Thread(() -> p.prefetch(jsonArray(json)), "phrase-prefetch").start();
+        }
+
+        /** 描红播报：按顺序拼着放这几段（"#wrong" 是错误音），掐掉之前的；小新正在说就先停它（清空通话播放）。 */
+        @JavascriptInterface
+        public void phrasePlay(String json) {
+            Phrases p = phrases;
+            Talk t = talk;
+            if (t != null) {
+                t.sendText("{\"type\":\"hush\"}");  // 服务端停掉这一轮朗读
+                t.flushNow();
+            }
+            if (p != null) {
+                p.play(jsonArray(json));
+            }
+        }
+
         /** 设置页试听「在」「拜拜」。 */
         @JavascriptInterface
         public void playCue(String name) {
@@ -372,6 +399,19 @@ public class TalkActivity extends Activity {
         }
     }
 
+    private static String[] jsonArray(String json) {
+        try {
+            org.json.JSONArray a = new org.json.JSONArray(json);
+            String[] out = new String[a.length()];
+            for (int i = 0; i < a.length(); i++) {
+                out[i] = a.optString(i);
+            }
+            return out;
+        } catch (Exception e) {
+            return new String[0];
+        }
+    }
+
     private String cueVoice = "";
 
     /** 后台拉当前音色的「在」「拜拜」；同一个音色只拉一次，已经存在本机的不重下。 */
@@ -385,6 +425,9 @@ public class TalkActivity extends Activity {
         }
         if (!cueVoice.isEmpty()) {
             ClockService.clearSpeech(this);  // 换了音色，响铃念的话也换
+        }
+        if (phrases != null) {
+            phrases.setVoice(v);
         }
         cueVoice = v;
         Cues c = cues;

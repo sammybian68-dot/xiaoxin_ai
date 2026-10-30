@@ -166,9 +166,11 @@ function strokeCard(chars) {
       showHintAfterMisses: 2, markStrokeCorrectAfterMisses: 4, leniency: 1.3,
       onCorrectStroke: (d) => {
         const i = d.strokeNum + 1;
+        // 最后一笔不在这念：和写完的成绩合成一句（不然两句互相掐）
+        if (i < st.data.count && name(d.strokeNum)) hzPlay([name(d.strokeNum)]);
         if (i < st.data.count) { showNow(i); $c(".hz-now").innerHTML = `写对了！下一笔：<b>${esc(name(i) || `第 ${i + 1} 笔`)}</b>`; }
       },
-      onMistake: (d) => { st.wrong[d.strokeNum] = (st.wrong[d.strokeNum] || 0) + 1; $c(".hz-now").innerHTML = d.mistakesOnStroke >= 2 ? `看红色提示，第 <b>${d.strokeNum + 1}</b> 笔从这里起笔` : `再试一次，第 <b>${d.strokeNum + 1}</b> 笔是<b>${esc(name(d.strokeNum) || "")}</b>`; },
+      onMistake: (d) => { st.wrong[d.strokeNum] = (st.wrong[d.strokeNum] || 0) + 1; hzPlay(["#wrong"]); $c(".hz-now").innerHTML = d.mistakesOnStroke >= 2 ? `看红色提示，第 <b>${d.strokeNum + 1}</b> 笔从这里起笔` : `再试一次，第 <b>${d.strokeNum + 1}</b> 笔是<b>${esc(name(d.strokeNum) || "")}</b>`; },
       onComplete: (d) => {
         st.quiz = false;
         st.needBoard = true;  // 格子里现在是孩子写的字，下次演示前换回演示用的画板
@@ -176,9 +178,11 @@ function strokeCard(chars) {
         $c('[data-a="quiz"]').classList.remove("quiz-on");
         $c('[data-a="quiz"]').textContent = "✍ 再写一次";
         showNow(-1);
-        const said = quizResult(st.ch, st.data, st.wrong, d.totalMistakes);
-        $c(".hz-cheer").textContent = (d.totalMistakes === 0 ? "🎉 " : "") + said;
-        hzAnnounce(said);
+        const parts = quizResultParts(st.data, st.wrong, d.totalMistakes);
+        const last = name(st.data.count - 1);
+        hzPlay(last ? [last, ...parts] : parts);
+        $c(".hz-cheer").textContent = (d.totalMistakes === 0 ? "🎉 " : "") + parts.join("")
+          .replace(/错了[^次]+次/, `错了 ${d.totalMistakes} 次`).replace(/第([^笔]+)笔/g, (m, n) => `第 ${HZ_DIGITS.indexOf(n) + 1 || 2} 笔`);
       },
     });
   }
@@ -230,6 +234,7 @@ function strokeCard(chars) {
     st.step = -1;
     strip();
     showNow(-1);
+    hzPrefetch(d);  // 描红播报要用的短语先下好，写的时候本机直接放
     play();
   }
 
@@ -257,16 +262,87 @@ function strokeCardFor(action) {
   return strokeCard(chars);
 }
 
-// 描红写完的那句话：全对夸一句；有错说错了几次、错在哪几笔（最多说两笔，太长小朋友记不住）
-function quizResult(ch, data, wrong, total) {
-  if (!total) return `全对，真棒！「${ch}」写得很好。`;
-  const worst = Object.entries(wrong).sort((a, b) => b[1] - a[1]).slice(0, 2)
-    .map(([k]) => { const n = data.names?.[k]; return `第 ${+k + 1} 笔${n ? n : ""}`; });
-  return `写完啦！错了 ${total} 次，${worst.join("和")}要多注意，再写一遍吧。`;
+// ---------------------------------------------------------------- 描红播报
+// 不现场 TTS：每句拆成固定短语，短语提前用当前音色合成好存在本机（pad 原生 Phrases；浏览器存在内存），播的时候拼起来，几十毫秒出声。
+//   写对一笔：念这一笔的名字（「卧钩」）
+//   写错一笔：「嘟嘟」一声（本机合成）
+//   写完：全对「全对，真棒！」；有错「错了」+「N」+「次」+「第」+「K」+「笔」+ 笔画名 +「要注意」
+// 每次播都会掐掉之前在放的（包括小新正在说的话）。
+const HZ_DIGITS = ["一", "两", "三", "四", "五", "六", "七", "八", "九", "十"];
+const HZ_FIXED = ["全对，真棒！", "写完啦，", "错了", "次，", "第", "笔", "要注意，再写一遍吧。", "和"];
+
+function hzNum(n) {  // 1–20 读法；更大的直接说「好多」
+  if (n <= 10) return HZ_DIGITS[n - 1];
+  if (n < 20) return "十" + HZ_DIGITS[n - 11];
+  return n === 20 ? "二十" : "好多";
+}
+function hzNumOrd(n) { return n === 2 ? "二" : hzNum(n); }  // 「第二笔」不说「第两笔」
+
+// 这个字描红可能用到的所有短语：笔画名 + 数字 + 固定话
+function hzPhrases(data) {
+  const set = new Set([...HZ_FIXED, ...(data.names || []).filter(Boolean)]);
+  for (let n = 1; n <= Math.min(20, Math.max(data.count, 10)); n++) { set.add(hzNum(n)); set.add(hzNumOrd(n)); }
+  set.add("好多");
+  return [...set];
 }
 
-// 念出来：在自由对话里就让小新用通话的声音说（不和它的回答抢）；不在通话就走普通朗读
-function hzAnnounce(text) {
-  if (talk?.on) { talkSend({ type: "say", text }); return; }
-  try { speak(text, document.createElement("button")); } catch (_) { /* 念不了就只显示 */ }
+function hzPrefetch(data) {
+  const list = hzPhrases(data);
+  if (native?.phrasePrefetch) { native.phrasePrefetch(JSON.stringify(list)); return; }
+  for (const t of list) hzWebPcm(t).catch(() => {});
+}
+
+function quizResultParts(data, wrong, total) {
+  if (!total) return ["全对，真棒！"];
+  const worst = Object.entries(wrong).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => +k);
+  const parts = ["写完啦，", "错了", hzNum(total), "次，"];
+  worst.forEach((k, i) => {
+    if (i) parts.push("和");
+    parts.push("第", hzNumOrd(k + 1), "笔");
+    if (data.names?.[k]) parts.push(data.names[k]);
+  });
+  parts.push("要注意，再写一遍吧。");
+  return parts;
+}
+
+function hzPlay(parts) {
+  if (native?.phrasePlay) { native.phrasePlay(JSON.stringify(parts)); return; }
+  hzWebPlay(parts);
+}
+
+// ---- 浏览器里：同样按短语缓存（内存），Web Audio 拼着放
+const hzWebCache = {};
+function hzWebPcm(text) {
+  if (!hzWebCache[text]) {
+    hzWebCache[text] = api(`api/cue/say?text=${encodeURIComponent(text)}`).then((r) => r.arrayBuffer())
+      .catch((e) => { delete hzWebCache[text]; throw e; });
+  }
+  return hzWebCache[text];
+}
+let hzWebStream = null;
+async function hzWebPlay(parts) {
+  hzWebStream?.stop();
+  stopSpeaking?.();
+  talk?.stream?.stop?.();
+  if (talk?.on) talkSend({ type: "hush" });
+  const s = (hzWebStream = new PcmStream(24000));
+  for (const p of parts) {
+    if (s.stopped) return;
+    if (p === "#wrong") { s.pushBytes(hzWrongTone()); continue; }
+    try { s.pushBytes((await hzWebPcm(p)).slice(0)); } catch (_) { /* 缺这段就跳过 */ }
+  }
+  s.close();
+}
+function hzWrongTone() {
+  const r = 24000, n = Math.round(r * 0.09), gap = Math.round(r * 0.05);
+  const pcm = new Int16Array(n * 2 + gap);
+  let pos = 0;
+  for (const f of [330, 262]) {
+    for (let i = 0; i < n; i++) {
+      const env = Math.min(1, i / (r * 0.006), (n - i) / (r * 0.03));
+      pcm[pos++] = Math.round(32767 * 0.32 * env * (0.75 * Math.sin(2 * Math.PI * f * i / r) + 0.25 * Math.sin(4 * Math.PI * f * i / r)));
+    }
+    if (f === 330) pos += gap;
+  }
+  return pcm.buffer;
 }

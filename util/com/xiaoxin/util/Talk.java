@@ -403,6 +403,11 @@ public final class Talk {
         }
     }
 
+    /** 端侧要自己出声（描红播报）：把小新正在念的立刻掐掉。 */
+    public void flushNow() {
+        flushPlayback();
+    }
+
     /** 用户插话：已经排进播放器的音频立刻丢掉。 */
     private synchronized void flushPlayback() {
         AudioTrack t = track;

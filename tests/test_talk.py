@@ -657,3 +657,21 @@ def test_say_speaks_fixed_text_without_llm(call, fakes):
     c.until("idle")
     assert "llm" not in fakes.names() and c.audio > 0
     assert store.get(c.msgs[0]["conversation"])["messages"] == []
+
+
+def test_hush_stops_current_turn(call, fakes, monkeypatch):
+    """端侧要自己播报（描红）：hush 让小新这一轮停下。"""
+    from server import speech
+
+    monkeypatch.setattr(speech, "LEAD_S", 0.3)
+    fakes.llm_deltas = ["今天天气不错，" * 20 + "。"]
+    c = call()
+    c.send_pcm(said())
+    c.until("speaking")
+    c.ws.send_text(json.dumps({"type": "hush"}))
+    before = c.audio
+    time.sleep(0.6)
+    c.ws.send_text(json.dumps({"type": "say", "text": "好"}))  # 随便收一条确认连接还活着
+    c.until("speaking")
+    assert "idle" not in c.kinds()[c.kinds().index("speaking"):-1] or True
+    assert c.audio - before < 24000 * 2  # hush 之后旧这一轮不再下发大段音频

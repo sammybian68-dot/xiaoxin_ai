@@ -470,3 +470,13 @@ def test_cue_retries_when_cut_short(client, fakes, monkeypatch):
     monkeypatch.setattr(main.voices, "synth", synth)
     r = client.get("/api/cue/ring", params={"text": "卞依一，5秒倒计时到啦！"})
     assert r.status_code == 200 and len(calls) == 2 and len(r.content) / 48000 > 1.5
+
+
+def test_cue_say_short_phrases(client, fakes):
+    r = client.get("/api/cue/say", params={"text": "卧钩"})
+    assert r.status_code == 200 and len(r.content) > 0
+    assert client.get("/api/cue/say", params={"text": ""}).status_code == 400
+    assert client.get("/api/cue/say", params={"text": "长" * 21}).status_code == 400
+    n = len(fakes.calls)
+    client.get("/api/cue/say", params={"text": "卧钩"})  # 第二次读缓存，不再合成
+    assert len(fakes.calls) == n

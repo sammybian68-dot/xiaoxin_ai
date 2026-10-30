@@ -915,6 +915,11 @@ def cue(name: str, voice: str = "", text: str = "") -> Response:
             text = clock._check_say(text) or clock.ring_text()
         except clock.ClockError as e:
             raise HTTPException(400, str(e))
+    elif name == "say":
+        # 描红播报用的短语（笔画名、「第 3 笔」「错了两次」…）：端侧按段缓存、拼起来放，所以只认短的固定话
+        text = text.strip()
+        if not 1 <= len(text) <= 20:
+            raise HTTPException(400, "say 的话 1–20 个字")
     else:
         text = CUES.get(name)
     if text is None:
