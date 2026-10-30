@@ -163,19 +163,27 @@ class Recognition:
     audio_seconds: float
 
 
+def _hotword_corpus(hotwords: list[str]) -> dict:
+    """热词照 carHer2：放 request.corpus.context（JSON 字符串）。v3 sauc 不认顶层 hot_words。"""
+    return {"context": json.dumps({"hotwords": [{"word": w} for w in hotwords]}, ensure_ascii=False)}
+
+
 def asr(pcm: bytes, *, sample_rate: int = 16000, chunk_ms: int = 200, realtime: bool = False,
-        hotwords: list[str] | None = None, timeout: float = 15) -> Recognition:
-    """一段 16 kHz s16le 单声道 PCM 送流式 ASR。realtime=True 按真实时长慢慢发，测的才是边说边出字的延迟。"""
+        hotwords: list[str] | None = None, nonstream: bool = True, timeout: float = 15) -> Recognition:
+    """一段 16 kHz s16le 单声道 PCM 送流式 ASR。realtime=True 按真实时长慢慢发，测的才是边说边出字的延迟。
+
+    nonstream=True（默认，照 carHer2）：二遍识别，发完最后一包（负序号）后豆包用非流式模型整句再认一遍，
+    最终结果在带「最后一包」标记的那帧里，要等到它才算完。"""
     from websockets.sync.client import connect
 
     req: dict = {
         "user": {"uid": "xiaoxin"},
         "audio": {"format": "pcm", "codec": "raw", "rate": sample_rate, "bits": 16, "channel": 1},
         "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True, "enable_ddc": True,
-                    "show_utterances": True, "end_window_size": 800},
+                    "enable_nonstream": nonstream, "show_utterances": True, "end_window_size": 800},
     }
     if hotwords:
-        req["request"]["hot_words"] = [{"word": w, "scale": 3.0} for w in hotwords]
+        req["request"]["corpus"] = _hotword_corpus(hotwords)
     headers = {"X-Api-Key": api_key(), "X-Api-App-Key": APP_KEY, "X-Api-Resource-Id": ASR_RESOURCE,
                "X-Api-Request-Id": str(uuid.uuid4())}
     step = sample_rate * 2 * chunk_ms // 1000
@@ -229,7 +237,7 @@ class StreamingAsr:
     nonstream=True 是两遍识别：边说边出字，说完再整句精修一次，更准但松手后多等一点。
     """
 
-    def __init__(self, *, sample_rate: int = 16000, hotwords: list[str] | None = None, nonstream: bool = False,
+    def __init__(self, *, sample_rate: int = 16000, hotwords: list[str] | None = None, nonstream: bool = True,
                  timeout: float = 10):
         self.rate, self.hotwords, self.nonstream, self.timeout = sample_rate, hotwords, nonstream, timeout
         self.text, self.seconds, self.error = "", 0.0, ""
@@ -251,7 +259,7 @@ class StreamingAsr:
                         "show_utterances": True, "enable_nonstream": self.nonstream, "end_window_size": 800},
         }
         if self.hotwords:
-            req["request"]["hot_words"] = [{"word": w, "scale": 3.0} for w in self.hotwords]
+            req["request"]["corpus"] = _hotword_corpus(self.hotwords)
         headers = {"X-Api-Key": api_key(), "X-Api-App-Key": APP_KEY, "X-Api-Resource-Id": ASR_RESOURCE,
                    "X-Api-Request-Id": str(uuid.uuid4())}
         try:
