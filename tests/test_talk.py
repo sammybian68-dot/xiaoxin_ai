@@ -514,3 +514,36 @@ def test_noise_does_not_cancel_answer(call, fakes, monkeypatch):
     gate.set()
     c.until("reply")
     assert "interrupt" not in c.kinds()
+
+
+@pytest.mark.parametrize("heard, interrupts", [("嗯。", False), ("好", False), ("等等", True), ("退下吧", True)])
+def test_barge_in_needs_two_chars(call, fakes, monkeypatch, heard, interrupts):
+    """小新在想的时候：认出 1 个字不打断（附和、回声），2 个字以上才打断；退出词照样生效。"""
+    from src.llm import client as llm
+
+    gate = threading.Event()
+    real = llm.iter_stream
+
+    def slow(model, history, **kw):
+        if len(fakes.llm_requests) == 0:
+            fakes.llm_requests.append({"messages": history, "tools": kw.get("tools")})
+            gate.wait(3)
+        yield from real(model, history, **kw)
+
+    monkeypatch.setattr(llm, "iter_stream", slow)
+    voices.set_engines(exit_words=["退下吧"])
+    c = call()
+    c.ws.send_text(json.dumps({"type": "wake", "text": "小新同学讲个故事"}))
+    c.until("thinking")
+    fakes.doubao_text = heard
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.5, amp=2000))
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    if interrupts:
+        c.until("bye" if heard == "退下吧" else "interrupt")
+        gate.set()
+    else:
+        time.sleep(0.3)
+        gate.set()
+        c.until("reply")
+        assert "interrupt" not in c.kinds()

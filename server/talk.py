@@ -58,6 +58,7 @@ log = logging.getLogger("xiaoxin.talk")
 # 语音通话额外拼上 server/prompts/voice.md：不然模型以为在打字聊天，会说「我听不到声音，请打字」（deepseek 实测这么回过）
 
 
+BARGE_IN_MIN_CHARS = 2  # 小新在想 / 在说时，识别出至少这么多字（不算标点空格）才算插话；退出词不受限
 WAKE_ACK = "我在的。"  # 端侧没缓存时（浏览器）服务端合成；pad 用本机缓存的同一句（/api/cue/zai）
 _PUNCT = "，。！？、；：,.!?;: 　"
 
@@ -234,6 +235,11 @@ class Talk:
                 await self.send("idle")
             return
         if self.busy:
+            if len(_bare(text)) < BARGE_IN_MIN_CHARS and not is_exit(text, voices.engines()["exit_words"]):
+                # 小新在想 / 在说时只认出一个字（「嗯」「啊」「好」，多半是附和、回声或杂音）：不打断，这句也不答
+                log.info("talk ignore short barge-in during turn %d: %s", self.turn_id, text)
+                self._local = []
+                return
             log.info("talk barge-in during turn %d: %s", self.turn_id, text[:30])
             await self.cancel_turn()
             await self.send("interrupt")
