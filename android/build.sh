@@ -20,7 +20,8 @@ TP="$ANDROID/xiaoxin/third_party"
 # 库和模型不在仓库里，没有就先跑 android/xiaoxin/fetch_asr.sh。
 native_xiaoxin() {
   out="$1"
-  if [ ! -f "$TP/lib/arm64-v8a/libsherpa-onnx-c-api.so" ] || [ ! -f "$TP/assets/asr/model.int8.onnx" ]; then
+  if [ ! -f "$TP/lib/arm64-v8a/libsherpa-onnx-c-api.so" ] || [ ! -f "$TP/assets/asr/model.int8.onnx" ] \
+     || [ ! -f "$TP/lib/arm64-v8a/libten_vad.so" ]; then
     echo "缺端侧识别的库或模型，先跑 sh android/xiaoxin/fetch_asr.sh" >&2
     exit 1
   fi
@@ -29,7 +30,10 @@ native_xiaoxin() {
   cc="$(ls "$NDK"/toolchains/llvm/prebuilt/*/bin/aarch64-linux-android31-clang | head -1)"
   "$cc" -shared -fPIC -O2 -I"$TP/include" "$ANDROID/xiaoxin/jni/wake_jni.c" \
     -L"$TP/lib/arm64-v8a" -lsherpa-onnx-c-api -o "$lib/libxiaoxin-wake.so"
-  cp "$TP/lib/arm64-v8a/libsherpa-onnx-c-api.so" "$TP/lib/arm64-v8a/libonnxruntime.so" "$lib/"
+  "$cc" -shared -fPIC -O2 -I"$TP/include" "$ANDROID/xiaoxin/jni/ten_vad_jni.c" \
+    -L"$TP/lib/arm64-v8a" -lten_vad -o "$lib/libxiaoxin-tenvad.so"
+  cp "$TP/lib/arm64-v8a/libsherpa-onnx-c-api.so" "$TP/lib/arm64-v8a/libonnxruntime.so" \
+    "$TP/lib/arm64-v8a/libten_vad.so" "$lib/"
 }
 
 build() {

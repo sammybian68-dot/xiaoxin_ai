@@ -190,7 +190,7 @@ public final class WakeListener {
             return;
         }
         int vadMs = endMs;
-        Vad vad = new Vad(vadMs);  // 跟主系统设置的「停多久算说完」，设置改了马上换
+        TenVad vad = new TenVad(vadMs);  // TEN-VAD，和 carHer2 同一套；「停多久算说完」跟主系统设置，改了马上换
         byte[] frame = new byte[Pcm.FRAME_BYTES];
         boolean[] woke = {false};
         try {
@@ -201,7 +201,8 @@ public final class WakeListener {
                 }
                 if (endMs != vadMs) {
                     vadMs = endMs;
-                    vad = new Vad(vadMs);
+                    vad.release();
+                    vad = new TenVad(vadMs);
                 }
                 vad.feed(frame, n, pcm -> {
                     long t0 = System.nanoTime();
@@ -218,6 +219,7 @@ public final class WakeListener {
                     }
                 });
             }
+            vad.release();
             if (woke[0]) {
                 carry(rec);  // 麦克风不关，接着录，等 Talk 拿走
                 return;      // rec 归 Talk 了，这里不 release

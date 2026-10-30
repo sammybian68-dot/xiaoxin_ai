@@ -269,7 +269,11 @@ public final class Talk {
         this.exitAsr = asr;
         this.exitWords = exitWords;
         this.onExit = onExit;
-        this.exitVad = new Vad(endMs);
+        TenVad old = this.exitVad;
+        this.exitVad = new TenVad(endMs);
+        if (old != null) {
+            old.release();
+        }
     }
 
     /** 通话中改了设置里的退出词，马上生效。 */
@@ -280,13 +284,38 @@ public final class Talk {
     private volatile LocalAsr exitAsr;
     private volatile String[] exitWords = new String[0];
     private volatile Runnable onExit;
-    private Vad exitVad;
+    private volatile TenVad exitVad;
     private final java.util.concurrent.ExecutorService exitPool =
             java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "talk-exit-asr");
                 t.setDaemon(true);
                 return t;
             });
+
+    /**
+     * 端侧断句的开口 / 说完：排在音频后面发（和音频走同一条连接、同一个发送顺序），服务端收到 vad_end 时这句的音频已经全到了。
+     * 连上之前的也排进 pending（标成控制帧），连上后按顺序补发。
+     */
+    private final TenVad.Events vadEvents = new TenVad.Events() {
+        @Override
+        public void onStart() {
+            control("{\"type\":\"vad_start\"}");
+        }
+
+        @Override
+        public void onEnd() {
+            control("{\"type\":\"vad_end\"}");
+        }
+    };
+    private static final byte[] CONTROL = new byte[0];
+    private final java.util.ArrayDeque<String> controls = new java.util.ArrayDeque<>();
+
+    private void control(String json) {
+        synchronized (pending) {
+            controls.add(json);
+            pending.add(CONTROL);  // 占位：发到这里时发一条控制消息
+        }
+    }
 
     private void uplink() {
         byte[] frame = new byte[Pcm.FRAME_BYTES];  // 100 ms
@@ -300,9 +329,12 @@ public final class Talk {
             }
             Pcm.Level level = Pcm.level(frame, n);
             listener.onLevel(Math.min(100, level.rms * 100 / 3000));
-            Vad v = exitVad;
-            if (v != null && exitAsr != null) {
-                v.feed(frame, n, pcm -> exitPool.execute(() -> {
+            queueFrame(frame, n);  // 先排这一帧，这一帧触发的 VAD 事件排在它后面
+            TenVad v = exitVad;
+            if (v != null) {
+                // 端侧 TEN-VAD 断句（和 carHer2 一样）：开口 / 说完都告诉服务端，服务端按这个切句，不再自己按音量猜。
+                // 同一句整句音频顺带过本机 Paraformer 判退出词
+                v.feed(frame, n, exitAsr == null ? null : pcm -> exitPool.execute(() -> {
                     if (!running) {
                         return;
                     }
@@ -318,18 +350,26 @@ public final class Talk {
                             // 拼 JSON 不会失败
                         }
                     }
-                }));
+                }), vadEvents);
             }
             WebSocket w = ws;
             if (w == null) {
-                queueFrame(frame, n);
-                continue;
+                continue;  // 连上后按顺序补发
             }
             try {
                 for (byte[] b; (b = pollPending()) != null; ) {
-                    w.sendBinary(b, b.length);
+                    if (b == CONTROL) {
+                        String c;
+                        synchronized (pending) {
+                            c = controls.poll();
+                        }
+                        if (c != null) {
+                            w.sendText(c);
+                        }
+                    } else {
+                        w.sendBinary(b, b.length);
+                    }
                 }
-                w.sendBinary(frame, n);
             } catch (IOException e) {
                 break;  // 断线由 onClosed 处理
             }
@@ -344,7 +384,7 @@ public final class Talk {
 
     private void queueFrame(byte[] frame, int n) {
         synchronized (pending) {
-            if (pending.size() >= MAX_PENDING + PREAMBLE_MS / 100) {
+            if (pending.size() >= MAX_PENDING + PREAMBLE_MS / 100 && pending.peek() != CONTROL) {
                 pending.poll();
             }
             pending.add(java.util.Arrays.copyOf(frame, n));
@@ -426,6 +466,11 @@ public final class Talk {
         }
         running = false;
         exitPool.shutdownNow();
+        TenVad v = exitVad;
+        exitVad = null;
+        if (v != null) {
+            v.release();
+        }
         if (rec != null) {
             try {
                 rec.stop();

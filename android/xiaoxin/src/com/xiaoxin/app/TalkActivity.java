@@ -548,10 +548,9 @@ public class TalkActivity extends Activity {
             t.adoptMic(w, handoffCueMs);
         }
         // 本机听退出词：和唤醒词同一个模型、同一套比对，命中就在这台 pad 上立刻挂断
-        if (localAsr != null) {
-            t.watchExit(localAsr, exitWords, vadEndMs,
-                    () -> runOnUiThread(() -> { if (talk == t) hangUp("退下了，要用再叫我"); }));
-        }
+        // 端侧 TEN-VAD 断句一直开（服务端按它切句）；本机模型在的话顺带判退出词
+        t.watchExit(localAsr, exitWords, vadEndMs,
+                () -> runOnUiThread(() -> { if (talk == t) hangUp("退下了，要用再叫我"); }));
         new Thread(() -> {
             try {
                 if (wakeText != null) {

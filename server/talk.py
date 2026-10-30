@@ -8,6 +8,9 @@
         文本帧 {"type":"wake","text":"<端侧认出的整句>","acked":true}  pad 待命唤醒后发的第一句：端侧 Paraformer 已经认好了，
                  服务端去掉开头的唤醒词，剩下有内容就直接当这一轮的问题（省掉云端识别）；只喊了唤醒词：
                  acked 表示 pad 已经用本机缓存说了「我在的」，这边就不再合成；没 acked 才合成一句
+        文本帧 {"type":"vad_start"} / {"type":"vad_end"}  端侧断句（pad 上的 TEN-VAD，和 carHer2 一样按人声概率）。
+                 收到过一次就改用端侧断句：vad_start 起收音频，vad_end 时把这段送识别；服务端自己的能量 VAD 不再用。
+                 没有端侧断句的（浏览器）照旧用服务端 VAD。事件和音频同一条连接按顺序到，vad_end 时这句音频已经到齐
         文本帧 {"type":"local","text":"<端侧 Paraformer 认出的一句>"}  pad 通话中本机断句识别的结果（排查用），
                  记到下一条存下的用户消息上（local 字段），和云端识别、原声放一起对照
   下行  文本帧 JSON：
@@ -141,6 +144,8 @@ class Talk:
         self._send_lock = asyncio.Lock()
         self.closed = False
         self._local: list[str] = []  # 端侧认出、还没对上用户消息的句子
+        self._client_vad = False     # 端侧在断句（收到过 vad_start / vad_end）
+        self._utt: bytearray | None = None  # 端侧断句时，这句正在收的音频
 
     # ---------------------------------------------------------------- 下行
     async def send(self, kind: str, **data) -> None:
@@ -178,6 +183,10 @@ class Talk:
                 if cmd.get("type") == "model" and cmd.get("model") in self._models:
                     self.model = cmd["model"]  # 下一轮起生效，正在答的这一轮不换
                     await self.send("model", model=self.model)
+                elif cmd.get("type") == "vad_start":
+                    await self.on_vad_start()
+                elif cmd.get("type") == "vad_end":
+                    await self.on_vad_end()
                 elif cmd.get("type") == "local":
                     text = str(cmd.get("text") or "").strip()[:200]
                     if text:
@@ -188,7 +197,28 @@ class Talk:
             self.closed = True
             await self.cancel_turn()
 
+    async def on_vad_start(self) -> None:
+        self._client_vad = True
+        self._utt = bytearray()
+        if self.busy:
+            log.info("talk barge-in during turn %d", self.turn_id)
+            await self.cancel_turn()
+            await self.send("interrupt")
+        await self.send("listening")
+
+    async def on_vad_end(self) -> None:
+        self._client_vad = True
+        utt, self._utt = self._utt, None
+        if utt is None:
+            return
+        self.turn_id += 1
+        self.turn = asyncio.create_task(self.answer(self.turn_id, bytes(utt)))
+
     async def on_pcm(self, pcm: bytes) -> None:
+        if self._client_vad:
+            if self._utt is not None:
+                self._utt += pcm
+            return
         for kind, utt in self.vad.feed(pcm):
             if kind == "start":
                 if self.busy:

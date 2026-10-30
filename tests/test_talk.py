@@ -465,3 +465,27 @@ def test_same_sound_keeps_original_text_when_stripping_wake():
     from server.talk import strip_wake_word
 
     assert strip_wake_word("小新同学，推荐一本书", ["小新同学"]) == "推荐一本书"
+
+
+def test_client_vad_segments_utterances(call, fakes):
+    """pad 发了端侧断句：服务端按 vad_start / vad_end 切句，能量 VAD 不管了（中间一直有声也照样切）。"""
+    c = call()
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(1.0, amp=2000))
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    c.send_pcm(tone(2.0, amp=2000))  # 句子之间的声音（电视）不算
+    assert c.until("heard")["text"] == fakes.doubao_text
+    c.until("idle")
+    assert c.kinds().count("heard") == 1
+    secs = [x[1] / 32000 for x in fakes.calls if x[0] == "doubao.asr"]
+    assert secs and abs(secs[-1] - 1.0) < 0.05  # 只送了 vad_start..vad_end 那一段
+
+
+def test_client_vad_barge_in(call, fakes, monkeypatch):
+    c = call()
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    c.send_pcm(tone(0.5, amp=2000))
+    c.ws.send_text(json.dumps({"type": "vad_end"}))
+    c.until("thinking")
+    c.ws.send_text(json.dumps({"type": "vad_start"}))
+    assert c.until("interrupt")["type"] == "interrupt"
