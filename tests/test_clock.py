@@ -52,7 +52,7 @@ def test_repeat_alarm(at, fakes):
     at("2026-10-30 21:00")  # 周五
     a = clock.add_alarm("07:00", "weekdays")
     assert clock.when_label(clock.next_fire(a)) == "周一 07:00"  # 跳过周末
-    assert clock.repeat_label(a["repeat"]) == "工作日"
+    assert clock.repeat_label(a["repeat"]) == "周一到周五"
     b = clock.add_alarm("09:00", [6])
     assert clock.when_label(clock.next_fire(b)) == "明天 09:00"
     assert clock.repeat_label([1, 3, 5]) == "每周一、三、五"
@@ -129,10 +129,10 @@ def test_stopwatch(at, fakes):
 def test_tools_report_result_for_model(at, fakes):
     at("2026-10-30 21:00")
     out = tools.run("alarm_set", json.dumps({"time": "07:00", "label": "起床", "say": "依依起床啦"}))
-    assert out.startswith("已设闹钟 a1 07:00 一次「起床」") and "明天 07:00" in out and out.endswith("响时说「依依起床啦」")
+    assert out.startswith("已设闹钟 a1 07:00 一次「起床」") and "明天 07:00" in out and "响时说「依依起床啦」" in out and out.endswith("播报：好的，明天早上 7 点叫你。")
     assert tools.run("alarm_set", '{"time": "08:00"}') == "失败：缺 say（响铃时说什么），先问用户"
     assert tools.run("alarm_set", '{"time": "7点", "say": "x"}').startswith("失败：时间要 HH:MM")
-    assert tools.run("alarm_delete", '{"ids": ["a1"]}') == "已删闹钟 a1 07:00"
+    assert tools.run("alarm_delete", '{"ids": ["a1"]}') == "已删闹钟 a1 07:00\n播报：好的，删掉了明天早上 7 点的闹钟。"
     assert tools.run("timer_start", '{"seconds": 300}').startswith("失败：缺 say")
     assert tools.run("timer_start", '{"seconds": 300, "say": "泡面好了"}').startswith("已开倒计时 t2 5分钟，21:05:00 响")
     assert tools.run("timer_control", '{"id": "t2", "action": "cancel"}') == "已取消倒计时 t2"
@@ -153,7 +153,7 @@ def test_prompt_is_static_and_note_carries_clock_state(at, fakes):
     assert "默认提示「卞依一，时间到了！」" in before and "{" not in before
     assert "语音通话" not in before and "语音通话" in prompts.build(voice=True)
     note = context.note_for({"messages": []})
-    assert "- a1 闹钟 07:00 工作日 「上学」，响时说「卞依一，时间到了！」，下次 周一 07:00" in note["text"]
+    assert "- a1 闹钟 07:00 周一到周五 「上学」，响时说「卞依一，时间到了！」，下次 周一 07:00" in note["text"]
     assert "- t2 倒计时 10分钟 「刷牙」，响时说「卞依一，时间到了！」" in note["text"]
     assert note["text"].startswith("[system] 现在大约是 2026-10-30 星期五 晚上 9 点左右")
     assert "剩 3分钟" in note["text"]  # 倒计时 21:00 开的 10 分钟，21:07 剩 3 分钟
@@ -322,3 +322,21 @@ def test_history_replays_tool_calls(client, fakes, at):
     call = msgs[1]["tool_calls"][0]
     assert call["function"]["name"] == "alarm_set" and "卞依一" in call["function"]["arguments"]
     assert msgs[2]["tool_call_id"] == call["id"] and msgs[2]["content"].startswith("已设闹钟")
+
+
+def test_alarm_list_index_and_spoken_lines(at, fakes):
+    """alarm_list 按建的先后带序号（改时间不换号）；「第 N 个」能改能删；每个结果最后一行是标准播报。"""
+    at("2026-10-30 21:00")
+    tools.run("alarm_set", json.dumps({"time": "21:30", "say": "该睡觉了"}))
+    tools.run("alarm_set", json.dumps({"time": "06:40", "repeat": "weekdays", "say": "上学了"}))
+    tools.run("alarm_set", json.dumps({"time": "08:00", "repeat": "weekends", "say": "起床打球"}))
+    out = tools.run("alarm_list", "{}")
+    lines = out.splitlines()
+    assert lines[1].startswith("1. a1 21:30") and lines[2].startswith("2. a2 06:40") and lines[3].startswith("3. a3 08:00")
+    assert lines[-1] == "播报：一共 3 个闹钟，3 个开着，都列在屏幕上了。"
+    out = tools.run("alarm_update", json.dumps({"id": "3", "time": "07:00", "repeat": "workday", "say": "起床了，卞依一"}))
+    assert out.startswith("已改闹钟 a3 07:00 法定工作日") and out.endswith("播报：好的，闹钟改好了，法定工作日早上 7 点响。")
+    assert tools.run("alarm_update", json.dumps({"id": "第一个", "enabled": False})).endswith("播报：好的，闹钟关掉了。")
+    assert tools.run("alarm_delete", json.dumps({"ids": ["2"]})).endswith("播报：好的，删掉了周一到周五早上 6 点 40 分的闹钟。")
+    assert tools.run("alarm_update", json.dumps({"id": "9", "enabled": False})) == "失败：只有 2 个闹钟，没有第 9 个"
+    assert tools.run("alarm_list", "{}").endswith("播报：一共 2 个闹钟，1 个开着，都列在屏幕上了。")

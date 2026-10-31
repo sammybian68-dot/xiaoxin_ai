@@ -235,6 +235,13 @@ function replayUtterance(m, row, btn) {
 const ACTION_TAB = { alarm_set: "alarms", alarm_update: "alarms", alarm_delete: "alarms", timer_start: "timers",
   timer_control: "timers", stopwatch: "stopwatch" };
 function showAction(row, a) {
+  if (a.name === "alarm_list") {  // 闹钟清单：插一张能改能删的卡（alarmcard.js），不出文字条
+    if (typeof alarmCard === "function" && clk.snap) {
+      row.querySelector(".bubble").insertBefore(alarmCard(), row.querySelector(".bubble .text"));
+      scrollDown();
+    }
+    return;
+  }
   if (a.name === "query_time") {  // 报时：插一个会走的钟（timecard.js），不出文字条
     if (typeof timeCardFor === "function") {
       row.querySelector(".bubble").insertBefore(timeCardFor(a), row.querySelector(".bubble .text"));
@@ -1702,17 +1709,43 @@ $("compact-yes").addEventListener("click", async () => {
 // 每一步：最近 20 轮，每轮里每次发给主脑的请求——用的模型、耗时、token、回了什么、调了什么工具；
 // 点开看这次请求的原样：system、messages（[system] 现状消息、压缩摘要、工具结果都在里面）。
 // 上下文：电量、压缩次数、上次摘要。提示词：分模块 / 完整 system / 压缩提示词。工具：注册的工具和参数。
-const dbg = { view: "turns", data: null, prompts: null, timer: null };
+const dbg = { view: "turns", data: null, prompts: null, timer: null, turns: [], hasMore: false, loading: false };
 
 async function loadDebug() {
   const body = $("debug-body");
   if (!state.conv?.id) { body.innerHTML = '<p class="voice-tip">先打开或开始一段对话。</p>'; return; }
   try {
-    const [d, p] = await Promise.all([api(`api/debug/${state.conv.id}`).then(json),
+    const [d, p] = await Promise.all([api(`api/debug/${state.conv.id}?limit=3`).then(json),
       dbg.prompts ? Promise.resolve(dbg.prompts) : api(`api/prompts?conversation=${state.conv.id}`).then(json)]);
-    dbg.data = d; dbg.prompts = p;
+    dbg.data = d; dbg.prompts = p; dbg.turns = d.turns; dbg.hasMore = d.has_more;
   } catch (e) { body.textContent = e.message; return; }
   renderDebug();
+}
+
+// 往上翻到顶：再拿更早的 3 轮插在上面，滚动位置不跳
+async function dbgLoadOlder() {
+  if (dbg.loading || !dbg.hasMore || !dbg.turns?.length) return;
+  dbg.loading = true;
+  try {
+    const d = await api(`api/debug/${state.conv.id}?limit=3&before=${dbg.turns[0].id}`).then(json);
+    const body = $("debug-body"), flow = body.querySelector(".dflow");
+    if (!flow) return;
+    const keep = body.scrollHeight - body.scrollTop;
+    flow.insertAdjacentHTML("afterbegin", d.turns.map(dbgTurn).join(""));
+    dbg.turns = [...d.turns, ...dbg.turns];
+    dbg.hasMore = d.has_more;
+    body.querySelector(".dmore").hidden = !dbg.hasMore;
+    body.querySelector(".dstart").hidden = dbg.hasMore;
+    wireDbgFull(flow);
+    body.scrollTop = body.scrollHeight - keep;
+  } catch (e) { toast(e.message); } finally { dbg.loading = false; }
+}
+
+function wireDbgFull(root) {
+  for (const b of root.querySelectorAll("[data-full]:not([data-wired])")) {
+    b.dataset.wired = "1";
+    b.addEventListener("click", () => dbgFull(b));
+  }
 }
 
 function dbgMsg(m) {
@@ -1748,13 +1781,13 @@ function dbgInput(m) {
   if (m.role === "user") return dbgLine("👤", "user", "is-user", dbgPre(text));
   return "";
 }
+// 一轮在对话流里 = 这一轮的输入（[system] 现状、👤 user）+ 🤖 assistant 一个块：里面 iter 1 → tool → iter 2 …
 function dbgTurn(t) {
   const when = new Date(t.at * 1000).toLocaleTimeString("zh-CN", { hour12: false });
   const c0 = t.calls[0] || {};
-  const tokIn = t.calls.reduce((n, c) => Math.max(n, c.usage?.prompt_tokens || 0), 0);
-  let rows = "";
-  // 这一轮的入参：第一次请求里「这一轮」那段（[system] 现状 + 用户这句）
-  for (const m of c0.tail || []) rows += dbgInput(m);
+  let input = "";
+  for (const m of c0.tail || []) input += dbgInput(m);
+  let steps = "";
   t.calls.forEach((c, i) => {
     const u = c.usage || {};
     const meta = `<span class="dl-meta">${esc(c.served || c.model)} · ${c.seconds ?? "…"}s · ${u.prompt_tokens ? `${u.prompt_tokens.toLocaleString()} 入 / ${u.completion_tokens || 0} 出` : ""}`
@@ -1765,26 +1798,32 @@ function dbgTurn(t) {
     for (const tc of c.tool_calls || []) out += `<div class="dl-call">→ <b>${esc(tc.name)}</b> <code>${esc(tc.arguments)}</code></div>`;
     if (c.reply) out += dbgPre(c.reply, 800);
     if (!out) out = '<i class="dl-none">（没有输出）</i>';
-    rows += dbgLine("🧠", `iter ${i + 1}`, "is-iter", meta + out);
-    // 工具结果：在下一次请求的入参末尾（tool 消息）
+    steps += dbgLine("🧠", `iter ${i + 1}`, "is-iter", meta + out);
     const next = t.calls[i + 1];
     if (c.tool_calls?.length) {
       const results = next ? (next.tail || []).filter((m) => m.role === "tool").slice(-c.tool_calls.length) : [];
       c.tool_calls.forEach((tc, k) => {
         const r = results[k];
         const text = r ? dbgContent(r) : ((t.actions || []).find((a) => a.name === tc.name)?.result || "（结果没记下）");
-        rows += dbgLine("📥", "tool", "is-tool", `<div class="dl-tname">${esc(tc.name)} · ${String(text).length} 字</div>${dbgPre(text, 500)}`);
+        steps += dbgLine("📥", "tool", "is-tool", `<div class="dl-tname">${esc(tc.name)} · ${String(text).length} 字</div>${dbgPre(text, 500)}`);
       });
     }
   });
-  const head = `<header><b>${when}</b><span>${t.voice ? "📞 语音" : "⌨ 文字"}</span><span>${esc(t.served || t.model)}</span>`
-    + `<span>⟳ ${t.calls.length} iter</span>${tokIn ? `<span>${(tokIn / 1000).toFixed(1)}k token</span>` : ""}`
-    + `${t.error ? `<i class="bad">${esc(t.error)}</i>` : ""}</header>`;
-  const params = `<div class="dl-params">${esc(c0.model || "")} · thinking=${esc(c0.thinking || "")} · max_tokens=${c0.max_tokens || ""} · ${esc(c0.provider || "")}</div>`
-    + `<details class="pm"><summary><b>system_prompt</b><small>${(t.system || "").length} 字（完整原文）</small></summary><pre class="sys-prompt">${esc(t.system || "")}</pre></details>`
-    + `<details class="pm"><summary><b>tools</b><small>${(c0.tools || []).length} 个</small></summary><div class="dl-tools">${(c0.tools || []).map((x) => `<code>${esc(x)}</code>`).join(" ")}</div></details>`;
-  return `<section class="dt">${head}<div class="dt-body">${params}${rows}</div></section>`;
+  const tok = t.calls.reduce((n, c) => Math.max(n, c.usage?.prompt_tokens || 0), 0);
+  const head = `<div class="da-head"><b>🤖 assistant</b><span>${when}</span><span>${t.voice ? "📞 语音" : "⌨ 文字"}</span>`
+    + `<span>${esc(t.served || t.model)}</span><span>⟳ ${t.calls.length} iter</span>${tok ? `<span>${(tok / 1000).toFixed(1)}k token</span>` : ""}`
+    + `${t.error ? `<i class="bad">${esc(t.error)}</i>` : ""}${t.done ? "" : '<span class="dl-live">进行中…</span>'}</div>`;
+  return `<div class="dturn" data-tid="${t.id}">${input}<div class="da">${head}<div class="da-steps">${steps}</div></div></div>`;
 }
+
+// 顶上固定：本对话用的模型参数、system_prompt、tools（system 不变，取最新一轮的就行）
+function dbgTop(t) {
+  const c0 = t?.calls?.[0] || {};
+  return `<div class="dl-params">${esc(c0.model || "")} · thinking=${esc(c0.thinking || "")} · max_tokens=${c0.max_tokens || ""} · ${esc(c0.provider || "")}</div>`
+    + `<details class="pm"><summary><b>system_prompt</b><small>${(t?.system || "").length} 字（完整原文）</small></summary><pre class="sys-prompt">${esc(t?.system || "")}</pre></details>`
+    + `<details class="pm"><summary><b>tools</b><small>${(c0.tools || []).length} 个</small></summary><div class="dl-tools">${(c0.tools || []).map((x) => `<code>${esc(x)}</code>`).join(" ")}</div></details>`;
+}
+
 async function dbgFull(btn) {
   const [tid, k] = btn.dataset.full.split("/");
   try {
@@ -1802,9 +1841,15 @@ function renderDebug() {
   for (const b of document.querySelectorAll("[data-dv]")) b.setAttribute("aria-selected", String(b.dataset.dv === dbg.view));
   if (!d) return;
   if (dbg.view === "turns") {
-    if (!d.turns.length) { body.innerHTML = '<p class="voice-tip">这段对话还没有记录（服务重启后清空；说一句就有）。</p>'; return; }
-    body.innerHTML = d.turns.map(dbgTurn).join("");
-    for (const b of body.querySelectorAll("[data-full]")) b.addEventListener("click", () => dbgFull(b));
+    // 对话流：最上面 system，往下 user / assistant（含 iter）交替，最新的在最下面；打开就在最底下，往上翻懒加载更早的
+    const turns = dbg.turns || [];
+    if (!turns.length) { body.innerHTML = '<p class="voice-tip">这段对话还没有记录（服务重启后清空；说一句就有）。</p>'; return; }
+    body.innerHTML = `<div class="dtop">${dbgTop(turns[turns.length - 1])}</div>`
+      + `<div class="dmore"${dbg.hasMore ? "" : " hidden"}>往上翻加载更早的…</div><div class="dstart"${dbg.hasMore ? " hidden" : ""}>—— 这段对话的记录从这里开始 ——</div>`
+      + `<div class="dflow">${turns.map(dbgTurn).join("")}</div>`;
+    wireDbgFull(body);
+    body.scrollTop = body.scrollHeight;
+    body.onscroll = () => { if (body.scrollTop < 120) dbgLoadOlder(); };
   } else if (dbg.view === "ctx") {
     const c = d.ctx || {};
     body.innerHTML = `<div class="dk"><span>已用</span><b>${(c.tokens || 0).toLocaleString()} token</b><span>阈值</span><b>${(c.limit || 0).toLocaleString()}</b>`
@@ -1830,7 +1875,23 @@ function openDebug() {
   clearInterval(dbg.timer);
   // 自动刷新（4 秒）：只在没有展开任何东西时刷，免得正在看的被冲掉
   dbg.timer = setInterval(() => {
-    if (!$("debug").hidden && dbg.view === "turns" && !$("debug-body").querySelector("details[open], .dl-fullbox")) loadDebug();
+    // 只在有新一轮时刷新；正在看的（展开了 system / 完整入参）不动
+    if ($("debug").hidden || dbg.view !== "turns" || $("debug-body").querySelector(".pm[open], .dl[open], .dl-fullbox")) return;
+    api(`api/debug/${state.conv?.id}?limit=2`).then(json).then((d) => {
+      const body = $("debug-body"), flow = body.querySelector(".dflow");
+      if (!flow) { dbg.turns = d.turns; dbg.hasMore = d.has_more; renderDebug(); return; }
+      const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+      let changed = false;
+      for (const t of d.turns) {
+        const i = dbg.turns.findIndex((x) => x.id === t.id);
+        if (i >= 0 && JSON.stringify(dbg.turns[i]) === JSON.stringify(t)) continue;
+        changed = true;
+        const html = dbgTurn(t);
+        if (i >= 0) { dbg.turns[i] = t; flow.querySelector(`[data-tid="${t.id}"]`).outerHTML = html; }
+        else { dbg.turns.push(t); flow.insertAdjacentHTML("beforeend", html); }
+      }
+      if (changed) { wireDbgFull(flow); if (atBottom) body.scrollTop = body.scrollHeight; }  // 在底下就跟着新的走；往上翻着看就不打扰
+    }).catch(() => {});
   }, 4000);
 }
 function closeDebug() { $("debug").hidden = true; document.body.classList.remove("debug-on"); clearInterval(dbg.timer); }

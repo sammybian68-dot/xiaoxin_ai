@@ -1,0 +1,75 @@
+/* 闹钟清单卡（对话里 alarm_list 弹出来的）：和笔顺卡、报时卡一家——暖白纸、圆角大卡、字大。
+   颜色只有三种意思：琥珀 = 会响的（开着、下次时间）；灰 = 关着的；红 = 删除。 */
+.ac {
+  --ac-paper: #fffaf2; --ac-ink: #2b2420; --ac-soft: #8a7d72; --ac-line: #eadfce; --ac-chip: #f6efe5;
+  --ac-amber: #e8930c; --ac-amber-bg: #fff1d6; --ac-red: #d9483b; --ac-blue: #2c5fa8;
+  align-self: stretch; background: var(--ac-paper); color: var(--ac-ink); border-radius: 22px; padding: 16px 18px 14px;
+  display: grid; gap: 10px; font-family: "PingFang SC", "Noto Sans SC", sans-serif; container-type: inline-size;
+}
+.ac-head { display: flex; align-items: baseline; gap: 10px; }
+.ac-head b { font-size: 20px; }
+.ac-head span { color: var(--ac-soft); font-size: 14px; }
+.ac-list { display: grid; gap: 8px; }
+.ac-empty { color: var(--ac-soft); padding: 18px 4px; font-size: 16px; }
+
+.ac-row { display: grid; grid-template-columns: 30px 1fr auto; gap: 2px 12px; align-items: center; padding: 10px 14px;
+  border-radius: 16px; background: #fff; border: 1.5px solid var(--ac-line); cursor: pointer; text-align: left; width: 100%; color: inherit; }
+.ac-row:hover { border-color: #e2c9a3; }
+.ac-row.off { background: #faf7f2; }
+.ac-row.off .ac-time, .ac-row.off .ac-say { color: var(--ac-soft); }
+.ac-no { grid-row: 1 / span 2; width: 26px; height: 26px; border-radius: 13px; background: var(--ac-chip); display: grid; place-items: center;
+  font-size: 13px; font-weight: 700; color: var(--ac-soft); font-variant-numeric: tabular-nums; }
+.ac-main { min-width: 0; display: flex; align-items: baseline; gap: 8px 10px; flex-wrap: wrap; }
+.ac-name { font-size: 16px; font-weight: 600; }
+.ac-time { font-size: 34px; font-weight: 300; line-height: 1.05; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.ac-per { font-size: 15px; color: var(--ac-soft); }
+.ac-rep { font-size: 14px; padding: 2px 10px; border-radius: 10px; background: var(--ac-chip); white-space: nowrap; }
+.ac-rep.legal { background: #e7f0fb; color: var(--ac-blue); }
+.ac-sub { grid-column: 2; min-width: 0; display: flex; gap: 8px; align-items: baseline; font-size: 14px; color: var(--ac-soft); flex-wrap: wrap; }
+.ac-say { color: var(--ac-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.ac-next { color: var(--ac-amber); font-weight: 600; white-space: nowrap; }
+.ac-sw { grid-row: 1 / span 2; grid-column: 3; appearance: none; width: 52px; height: 30px; border-radius: 15px; background: #d9d1c5; position: relative; cursor: pointer; margin: 0; transition: background .15s; }
+.ac-sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 12px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s; }
+.ac-sw:checked { background: var(--ac-amber); }
+.ac-sw:checked::after { transform: translateX(22px); }
+
+/* 编辑：原地展开 */
+.ac-edit { border-radius: 18px; background: #fff; border: 2px solid var(--ac-amber); padding: 14px 16px; display: grid; gap: 14px; }
+.ac-edit h4 { margin: 0; font-size: 14px; color: var(--ac-soft); font-weight: 600; }
+.ac-tp { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.ac-wheel { display: grid; justify-items: center; gap: 2px; }
+.ac-wheel button { width: 64px; height: 34px; border-radius: 12px; border: 0; background: var(--ac-chip); color: var(--ac-soft); font-size: 17px; }
+.ac-wheel button:hover { color: var(--ac-ink); }
+.ac-wheel input { width: 84px; text-align: center; font-size: 46px; font-weight: 300; border: 0; background: none; color: var(--ac-ink); padding: 0; font-variant-numeric: tabular-nums; }
+.ac-wheel input:focus { outline: none; color: var(--ac-amber); }
+.ac-colon { font-size: 40px; color: var(--ac-soft); padding-bottom: 4px; }
+.ac-both { display: grid; gap: 2px; font-size: 15px; }
+.ac-both b { font-size: 20px; }
+.ac-both .t12 { color: var(--ac-red); } .ac-both .t24 { color: var(--ac-blue); }
+.ac-reps { display: flex; flex-wrap: wrap; gap: 8px; }
+.ac-reps button { height: 42px; padding: 0 16px; border-radius: 21px; border: 1.5px solid var(--ac-line); background: #fff; color: var(--ac-ink); font-size: 15px; }
+.ac-reps button small { display: block; font-size: 11px; color: var(--ac-soft); line-height: 1; }
+.ac-reps button[aria-pressed="true"] { background: var(--ac-amber); border-color: var(--ac-amber); color: #fff; font-weight: 600; }
+.ac-reps button[aria-pressed="true"] small { color: #fff3dd; }
+.ac-days { display: flex; gap: 6px; flex-wrap: wrap; }
+.ac-days button { width: 40px; height: 40px; border-radius: 20px; border: 1.5px solid var(--ac-line); background: #fff; color: var(--ac-soft); font-size: 15px; }
+.ac-days button[aria-pressed="true"] { background: var(--ac-amber-bg); border-color: var(--ac-amber); color: var(--ac-ink); font-weight: 600; }
+.ac-legal-note { font-size: 13px; color: var(--ac-soft); }
+.ac-say-row { display: flex; gap: 8px; }
+.ac-say-row input { flex: 1; min-width: 0; height: 44px; border-radius: 12px; border: 1.5px solid var(--ac-line); background: var(--ac-paper); padding: 0 12px; font-size: 16px; color: var(--ac-ink); }
+.ac-say-row input:focus { outline: none; border-color: var(--ac-amber); }
+.ac-say-row button { width: 44px; height: 44px; border-radius: 12px; border: 1.5px solid var(--ac-line); background: #fff; font-size: 15px; color: var(--ac-ink); }
+.ac-label { height: 40px; border-radius: 12px; border: 1.5px solid var(--ac-line); background: var(--ac-paper); padding: 0 12px; font-size: 15px; color: var(--ac-ink); }
+.ac-err { color: var(--ac-red); font-size: 14px; min-height: 1em; margin: -6px 0 0; }
+.ac-acts { display: flex; gap: 8px; }
+.ac-acts button { height: 46px; border-radius: 14px; border: 1.5px solid var(--ac-line); background: #fff; font-size: 16px; color: var(--ac-ink); flex: 1; }
+.ac-acts .save { background: var(--ac-amber); border: 0; color: #fff; font-weight: 700; }
+.ac-acts .del { flex: none; padding: 0 16px; color: var(--ac-red); border-color: #f1c9c3; }
+.ac-acts .del.sure { background: var(--ac-red); color: #fff; border: 0; }
+.ac-add { height: 48px; border-radius: 16px; border: 1.5px dashed #e2c9a3; background: none; color: var(--ac-amber); font-size: 16px; font-weight: 600; }
+
+@container (max-width: 460px) {
+  .ac-time { font-size: 28px; }
+  .ac-wheel input { width: 70px; font-size: 38px; }
+}
+@media (prefers-reduced-motion: reduce) { .ac-sw, .ac-sw::after { transition: none; } }

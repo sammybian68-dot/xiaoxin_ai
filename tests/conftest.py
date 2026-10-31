@@ -50,6 +50,7 @@ def isolate_env(request, tmp_path, monkeypatch):
 
     monkeypatch.setattr(voices, "COSYVOICE_ASSET", request.getfixturevalue("fake_cosyvoice_asset"))
     monkeypatch.setenv("XIAOXIN_KEY", TEST_KEY)
+    monkeypatch.setenv("XIAOXIN_TEST", "1")  # 不起后台线程（节假日刷新会连外网）
     monkeypatch.setenv("DOUBAO_TTS_API_KEY", "fake-doubao-key")
 
 

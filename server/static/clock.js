@@ -38,6 +38,7 @@ function applySnap(s) {
   renderClock();
   checkRinging();
   updateTopBadge();
+  if (typeof refreshAlarmCards === "function") refreshAlarmCards();
 }
 
 async function clockApi(path, method = "POST", body) {
@@ -161,7 +162,8 @@ function alarmEditor(a) {
   const now = new Date(nowS() * 1000);
   const st = {
     h: a ? +a.time.slice(0, 2) : 7, m: a ? +a.time.slice(3) : 0,
-    days: new Set(a ? a.repeat : []), label: a?.label || "", say: a?.say || "",
+    days: new Set(Array.isArray(a?.repeat) ? a.repeat : []), legal: typeof a?.repeat === "string" ? a.repeat : "",
+    label: a?.label || "", say: a?.say || "",
   };
   if (!a && now.getHours() >= 7 && now.getHours() < 20) { st.h = now.getHours() + 1; st.m = 0; }
   const box = el(`<div class="alarm-edit">
@@ -173,7 +175,7 @@ function alarmEditor(a) {
         <input id="ae-m" class="clk-num" inputmode="numeric" maxlength="2" aria-label="分钟"><button type="button" data-d="m-5" aria-label="减五分钟">﹀</button></div>
     </div>
     <div class="ae-days" role="group" aria-label="重复">${WEEKDAY.map((d, i) => `<button type="button" data-day="${i + 1}" aria-pressed="false">${d}</button>`).join("")}</div>
-    <div class="ae-presets"><button type="button" data-p="">只响一次</button><button type="button" data-p="1,2,3,4,5">工作日</button><button type="button" data-p="6,7">周末</button><button type="button" data-p="1,2,3,4,5,6,7">每天</button></div>
+    <div class="ae-presets"><button type="button" data-p="">只响一次</button><button type="button" data-p="1,2,3,4,5">周一到周五</button><button type="button" data-p="6,7">周末</button><button type="button" data-p="1,2,3,4,5,6,7">每天</button><button type="button" data-l="workday">法定工作日</button><button type="button" data-l="offday">节假日和周末</button></div>
     <input id="ae-label" class="ae-label" maxlength="10" placeholder="名字（可不填），比如 起床、练琴">
     <input id="ae-say" class="ae-label" maxlength="40" aria-label="响铃时小新说的话">
     <p class="ae-err" aria-live="polite"></p>
@@ -182,7 +184,8 @@ function alarmEditor(a) {
   const hIn = box.querySelector("#ae-h"), mIn = box.querySelector("#ae-m");
   const sync = () => {
     hIn.value = pad2(st.h); mIn.value = pad2(st.m);
-    for (const b of box.querySelectorAll("[data-day]")) b.setAttribute("aria-pressed", String(st.days.has(+b.dataset.day)));
+    for (const b of box.querySelectorAll("[data-day]")) b.setAttribute("aria-pressed", String(!st.legal && st.days.has(+b.dataset.day)));
+    for (const b of box.querySelectorAll("[data-l]")) b.setAttribute("aria-pressed", String(st.legal === b.dataset.l));
   };
   box.querySelector("#ae-label").value = st.label;
   const sayIn = box.querySelector("#ae-say");
@@ -201,17 +204,20 @@ function alarmEditor(a) {
   readNum(hIn, 23, "h"); readNum(mIn, 59, "m");
   for (const b of box.querySelectorAll("[data-day]")) b.addEventListener("click", () => {
     const d = +b.dataset.day;
+    st.legal = "";
     st.days.has(d) ? st.days.delete(d) : st.days.add(d);
     sync();
   });
   for (const b of box.querySelectorAll("[data-p]")) b.addEventListener("click", () => {
     st.days = new Set(b.dataset.p ? b.dataset.p.split(",").map(Number) : []);
+    st.legal = "";
     sync();
   });
+  for (const b of box.querySelectorAll("[data-l]")) b.addEventListener("click", () => { st.legal = b.dataset.l; sync(); });
   box.querySelector(".cancel").addEventListener("click", () => { clk.editing = null; renderClock(); });
   box.querySelector(".del")?.addEventListener("click", async () => { if (await clockApi(`/alarms/${a.id}`, "DELETE")) { clk.editing = null; renderClock(); } });
   box.querySelector(".primary").addEventListener("click", async () => {
-    const body = { time: `${pad2(st.h)}:${pad2(st.m)}`, repeat: [...st.days].sort(), label: box.querySelector("#ae-label").value.trim(),
+    const body = { time: `${pad2(st.h)}:${pad2(st.m)}`, repeat: st.legal || [...st.days].sort(), label: box.querySelector("#ae-label").value.trim(),
       say: sayIn.value.trim() };
     if (a) body.enabled = true;
     const ok = await clockApi(a ? `/alarms/${a.id}` : "/alarms", a ? "PATCH" : "POST", body);

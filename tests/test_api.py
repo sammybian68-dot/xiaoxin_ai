@@ -486,6 +486,7 @@ def test_cue_say_short_phrases(client, fakes):
 @pytest.mark.parametrize("chunks, out", [
     (["[assistant]", " 好的"], "好的"), (["[assi", "stant]\n\n今天", "几件"], "今天几件"), (["[", "我觉得"], "[我觉得"),
     (["好的", "[assistant]"], "好的[assistant]"), (["小新：", "你好"], "你好"), (["小", "朋友好"], "小朋友好"),
+    (["播报", "：好的，闹钟改好了。"], "好的，闹钟改好了。"), (["播放", "音乐"], "播放音乐"),
 ])
 def test_role_tag_filter(chunks, out):
     from server.main import RoleTagFilter
@@ -507,7 +508,7 @@ def test_debug_trace_records_each_request(client, fakes):
     cid = client.post("/api/conversations").json()["id"]
     client.post(f"/api/conversations/{cid}/messages", json={"text": "现在几点"})
     d = client.get(f"/api/debug/{cid}").json()
-    t = d["turns"][0]
+    t = d["turns"][-1]
     assert t["voice"] is False and len(t["calls"]) == 2 and t["done"] is True and t["system"]
     it1, it2 = t["calls"]
     assert [m["role"] for m in it1["tail"]] == ["user", "user"]  # [system] 现状 + 这句问话
@@ -523,3 +524,16 @@ def test_debug_trace_records_each_request(client, fakes):
 
 def test_debug_requires_auth(anon):
     assert anon.get("/api/debug/0123456789abcdef").status_code == 401
+
+
+def test_debug_pagination_oldest_first(client, fakes):
+    cid = client.post("/api/conversations").json()["id"]
+    for q in ("一", "二", "三", "四", "五"):
+        client.post(f"/api/conversations/{cid}/messages", json={"text": q})
+    d = client.get(f"/api/debug/{cid}?limit=2").json()
+    qs = [t["calls"][0]["tail"][-1]["content"] for t in d["turns"]]
+    assert qs == ["四", "五"] and d["has_more"] is True  # 最近两轮，旧的在前
+    older = client.get(f"/api/debug/{cid}?limit=2&before={d['turns'][0]['id']}").json()
+    assert [t["calls"][0]["tail"][-1]["content"] for t in older["turns"]] == ["二", "三"] and older["has_more"] is True
+    oldest = client.get(f"/api/debug/{cid}?limit=2&before={older['turns'][0]['id']}").json()
+    assert len(oldest["turns"]) == 1 and oldest["has_more"] is False

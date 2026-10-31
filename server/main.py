@@ -54,6 +54,16 @@ log = logging.getLogger("xiaoxin")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 app = FastAPI(title="xiaoxin", version="0.1.0")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    """节假日：后台每天看一次有没有新年份的安排（国务院一般 11 月公布下一年）。测试里不连外网。"""
+    import os
+
+    if not os.environ.get("XIAOXIN_TEST"):
+        from server import holidays
+        holidays.start_refresher()
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -135,7 +145,8 @@ def me() -> dict:
 def _index_html() -> Response:
     """index.html 里的 app.js / app.css 地址带上文件修改时间，部署后浏览器和 pad 一定拿新的。"""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for name in ("app.js", "app.css", "clock.js", "clock.css", "hanzi.js", "hanzi.css", "timecard.js", "timecard.css"):
+    for name in ("app.js", "app.css", "clock.js", "clock.css", "hanzi.js", "hanzi.css", "timecard.js", "timecard.css",
+                 "alarmcard.js", "alarmcard.css"):
         v = int((STATIC / name).stat().st_mtime)
         html = html.replace(f'static/{name}"', f'static/{name}?v={v}"')
     return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
@@ -197,12 +208,17 @@ def prompt_view(conversation: str = "") -> dict:
 
 
 @app.get("/api/debug/{cid}")
-def debug_turns(cid: str) -> dict:
+def debug_turns(cid: str, before: int = 0, limit: int = 3) -> dict:
     """调试面板：这段对话最近 20 轮里每次发给主脑的请求原样（system、messages、tools、回了什么、用量、耗时），
     加上当前的上下文状态和压缩摘要。只在内存里，服务重启就没了。"""
     from server import compact, trace
 
-    out = {"turns": [trace.compact_turn(t) for t in trace.turns(cid)]}
+    # 懒加载：默认给最近 limit 轮（时间正序，最新的在最后）；before=某轮 id 时给它之前的 limit 轮。has_more 表示更早还有
+    all_turns = list(reversed(trace.turns(cid)))  # 旧 → 新
+    if before:
+        all_turns = [t for t in all_turns if t["id"] < before]
+    page = all_turns[-max(1, min(limit, 20)):]
+    out = {"turns": [trace.compact_turn(t) for t in page], "has_more": len(all_turns) > len(page)}
     try:
         conv = store.get(cid)
         out["ctx"] = compact.state(conv)
@@ -451,8 +467,9 @@ def _run_tool(name: str, arguments: str) -> web_search.Result:
 
 
 # 回答开头不该出现的角色标记：对话里有「[system] …」现状消息，27B 偶尔学着在自己回答开头写「[assistant]」
-ROLE_TAG = re.compile(r"^\s*(\[(assistant|system|user)\]|assistant\s*[:：]|小新\s*[:：])\s*", re.I)
-ROLE_TAG_PREFIXES = ("[assistant]", "[system]", "[user]", "assistant:", "assistant：", "小新:", "小新：")
+# 「播报：」：闹钟工具结果最后一行是「播报：…」，模型偶尔连前缀一起照抄
+ROLE_TAG = re.compile(r"^\s*(\[(assistant|system|user)\]|assistant\s*[:：]|小新\s*[:：]|播报\s*[:：])\s*", re.I)
+ROLE_TAG_PREFIXES = ("[assistant]", "[system]", "[user]", "assistant:", "assistant：", "小新:", "小新：", "播报:", "播报：")
 
 
 def strip_role_tag(text: str) -> str:

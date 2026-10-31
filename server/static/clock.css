@@ -72,6 +72,7 @@
 .ae-days button[aria-pressed="true"] { background: var(--clk-amber); border-color: var(--clk-amber); color: #2b1a00; font-weight: 600; }
 .ae-presets { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
 .ae-presets button { height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid var(--line); background: none; color: var(--muted); font-size: 13px; }
+.ae-presets button[aria-pressed="true"] { background: var(--clk-amber); border-color: var(--clk-amber); color: #2b1a00; font-weight: 600; }
 .ae-label { height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--raised); padding: 0 14px; font-size: 16px; }
 .ae-actions { display: flex; gap: 10px; }
 .ae-actions button { height: 46px; border-radius: 14px; border: 1px solid var(--line); background: var(--raised); flex: 1; font-size: 15px; }

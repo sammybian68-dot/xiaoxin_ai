@@ -105,13 +105,19 @@ def _parse_time(value) -> str:
     return f"{int(m.group(1)):02d}:{m.group(2)}"
 
 
-def _parse_repeat(value) -> list[int]:
+# 重复方式：[] 一次；[1..7] 每周几；"workday" 法定工作日（跳过节假日、调休上班的周末照响）；"offday" 法定休息日
+LEGAL = ("workday", "offday")
+
+
+def _parse_repeat(value):
     if value in (None, "", "once"):
         return []
     presets = {"daily": [1, 2, 3, 4, 5, 6, 7], "weekdays": [1, 2, 3, 4, 5], "weekends": [6, 7]}
     if isinstance(value, str):
         if value in presets:
             return presets[value]
+        if value in LEGAL:
+            return value
         raise ClockError(f"repeat 不认识：{value!r}")
     try:
         days = sorted({int(d) for d in value})
@@ -131,6 +137,16 @@ def _parse_date(value) -> str | None:
         raise ClockError(f"date 要 YYYY-MM-DD，收到 {value!r}") from None
 
 
+def _day_matches(repeat, day: dt.date) -> bool:
+    from server import holidays
+
+    if repeat == "workday":
+        return holidays.is_workday(day)
+    if repeat == "offday":
+        return not holidays.is_workday(day)
+    return day.isoweekday() in repeat
+
+
 def next_fire(alarm: dict, after: dt.datetime | None = None) -> dt.datetime | None:
     """下次响的时刻；关着的、一次性且已经过了的返回 None。正在「再睡一会」的，先响贪睡那一次。"""
     after = after or now()
@@ -147,9 +163,9 @@ def next_fire(alarm: dict, after: dt.datetime | None = None) -> dt.datetime | No
             return at if at > after else None
         at = after.replace(hour=h, minute=m, second=0, microsecond=0)
         return at if at > after else at + dt.timedelta(days=1)
-    for k in range(8):
+    for k in range(40):  # 法定工作日：国庆、春节最长连休 8–9 天，40 天内一定碰到
         day = (after + dt.timedelta(days=k)).replace(hour=h, minute=m, second=0, microsecond=0)
-        if day.isoweekday() in alarm["repeat"] and day > after:
+        if day > after and _day_matches(alarm["repeat"], day.date()):
             return day
     return None
 
@@ -167,7 +183,7 @@ def ringing_at(alarm: dict, at: dt.datetime | None = None) -> float | None:
     for back in (0, 1):
         day = (at - dt.timedelta(days=back)).replace(hour=h, minute=m, second=0, microsecond=0)
         if alarm["repeat"]:
-            ok = day.isoweekday() in alarm["repeat"]
+            ok = _day_matches(alarm["repeat"], day.date())
         else:
             ok = alarm.get("date") == day.date().isoformat()
         ts = day.timestamp()
@@ -176,13 +192,17 @@ def ringing_at(alarm: dict, at: dt.datetime | None = None) -> float | None:
     return None
 
 
-def repeat_label(days: list[int]) -> str:
+def repeat_label(days) -> str:
+    if days == "workday":
+        return "法定工作日"
+    if days == "offday":
+        return "法定节假日和周末"
     if not days:
         return "一次"
     if days == [1, 2, 3, 4, 5, 6, 7]:
         return "每天"
     if days == [1, 2, 3, 4, 5]:
-        return "工作日"
+        return "周一到周五"  # 不叫「工作日」：和「法定工作日」分开
     if days == [6, 7]:
         return "周末"
     return "每周" + "、".join(WEEK[d - 1] for d in days)
