@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response, Streamin
 from fastapi.staticfiles import StaticFiles
 
 from server import clock, prompts, store, voices
+from server.family import members
 from server.tools import registry
 from src.llm import client
 from src.search import web_search
@@ -85,14 +86,56 @@ def _token(key: str) -> str:
     return hmac.new(key.encode(), b"xiaoxin-web", hashlib.sha256).hexdigest()
 
 
-def _authed(request: Request) -> bool:
+DEVICE_COOKIE = "xiaoxin_device"
+
+
+def _who(request) -> "members.Who | None":
+    """这次请求是谁：管理员（XIAOXIN_KEY 的 cookie / Bearer）或某台设备（设备 token 的 cookie / Bearer），都不是返回 None。
+    request 可以是 Request 也可以是 WebSocket（只用 cookies 和 headers）。"""
     key = _key()
     cookie = request.cookies.get(COOKIE) or ""
     if cookie and _same(cookie, _token(key)):
-        return True
+        return members.ADMIN
     auth = request.headers.get("authorization") or ""
     given = auth[7:] if auth.lower().startswith("bearer ") else ""
-    return bool(given) and _same(given, key)
+    if given and _same(given, key):
+        return members.ADMIN
+    return members.authenticate(given or request.cookies.get(DEVICE_COOKIE) or "")
+
+
+def _authed(request: Request) -> bool:
+    return _who(request) is not None
+
+
+def who(request: Request) -> "members.Who":
+    w = getattr(request.state, "who", None)
+    if w is None:  # 中间件之外（测试直接调）兜底
+        w = _who(request)
+        if w is None:
+            raise HTTPException(401, "要先登录")
+    return w
+
+
+def need(request: Request, role: str) -> "members.Who":
+    w = who(request)
+    if not w.at_least(role):
+        raise HTTPException(403, {"admin": "这个只有管理员能做", "parent": "这个只有家长能做"}.get(role, "没有权限"))
+    return w
+
+
+def own_thread(request: Request, tid: str) -> "members.Who":
+    """这台设备能不能进这条线程：孩子只能进自己的，家长能进每个孩子的。不能进一律 404（不告诉它这条存在）。"""
+    w = who(request)
+    if not members.can_thread(w, tid):
+        raise HTTPException(404, "没有这段对话")
+    return w
+
+
+def kid_for(request: Request, wanted: str = "") -> dict:
+    k = members.default_kid(who(request), wanted)
+    if k is None:
+        raise HTTPException(404, "还没有孩子账号，先在管理台建一个")
+    return k
 
 
 def _remember(request: Request, resp: Response, key: str) -> Response:
@@ -107,14 +150,15 @@ def _remember(request: Request, resp: Response, key: str) -> Response:
 @app.middleware("http")
 async def guard(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and path != "/api/health":
+    if path.startswith("/api/") and path not in ("/api/health", "/api/pair"):
         try:
-            ok = _authed(request)
+            w = _who(request)
         except HTTPException as e:
             return Response(json.dumps({"detail": e.detail}, ensure_ascii=False), e.status_code,
                             media_type="application/json")
-        if not ok:
+        if w is None:
             return Response('{"detail":"要先登录"}', 401, media_type="application/json")
+        request.state.who = w
     response = await call_next(request)
     # 页面和 static/ 下的 js / css 都要每次跟服务端确认：不然部署后 pad 的 WebView 还拿着旧的 app.js / app.css，
     # 新旧混着用，样式和逻辑对不上（2026-10-30 端侧调试列表就因为旧 css 挤成一团）
@@ -137,9 +181,17 @@ def health() -> dict:
 
 
 @app.get("/api/me")
-def me() -> dict:
+def me(request: Request) -> dict:
+    """界面按这个排：我是谁（admin / parent / kid）、能看哪些孩子的线程。"""
+    w = who(request)
+    kids = [k for k in members.kids() if members.can_thread(w, k["thread"])]
     return {"ok": True, "models": MODELS, "default_model": MODELS[0]["id"], "system_prompt": prompts.build(),
-            "vision_model": VISION, "fallback_model": FALLBACK}
+            "vision_model": VISION, "fallback_model": FALLBACK,
+            "who": {"kind": w.kind, "role": w.role, "id": w.id,
+                    "name": "管理员" if w.kind == "admin" else w.member["name"],
+                    "device": w.device["name"] if w.device else ""},
+            "kids": [{"id": k["id"], "name": k["name"], "call": k["call"], "avatar": k["avatar"],
+                      "thread": k["thread"]} for k in kids]}
 
 
 def _index_html() -> Response:
@@ -195,14 +247,14 @@ def voice_pick(request: Request, name: str = "index.html") -> FileResponse:
 # ---------------------------------------------------------------- 提示词和工具（设置页查看）
 
 @app.get("/api/prompts")
-def prompt_view(conversation: str = "") -> dict:
+def prompt_view(request: Request, conversation: str = "") -> dict:
     """每个 md 的原文、当前拼好的完整 system prompt（文字 / 语音两份）、注册的工具、压缩用的提示词；
     给了 ?conversation= 再带上这段对话上一次压缩出来的摘要。"""
     from server import compact
 
     out = {"parts": prompts.parts(), "system": prompts.build(), "system_voice": prompts.build(voice=True),
            "tools": registry.listing(), "compact": compact.prompt_text()}
-    if conversation:
+    if conversation and members.can_thread(who(request), conversation):
         try:
             conv = store.get(conversation)
         except KeyError:
@@ -214,11 +266,13 @@ def prompt_view(conversation: str = "") -> dict:
 
 
 @app.get("/api/debug/{cid}")
-def debug_turns(cid: str, before: int = 0, limit: int = 3) -> dict:
+def debug_turns(request: Request, cid: str, before: int = 0, limit: int = 3) -> dict:
     """调试面板：这段对话最近 20 轮里每次发给主脑的请求原样（system、messages、tools、回了什么、用量、耗时），
     加上当前的上下文状态和压缩摘要。只在内存里，服务重启就没了。"""
     from server import compact, trace
 
+    need(request, "parent")
+    own_thread(request, cid)
     # 懒加载：默认给最近 limit 轮（时间正序，最新的在最后）；before=某轮 id 时给它之前的 limit 轮。has_more 表示更早还有
     all_turns = list(reversed(trace.turns(cid)))  # 旧 → 新
     if before:
@@ -236,10 +290,12 @@ def debug_turns(cid: str, before: int = 0, limit: int = 3) -> dict:
 
 
 @app.get("/api/debug/{cid}/{turn_id}/{k}")
-def debug_call(cid: str, turn_id: int, k: int) -> dict:
+def debug_call(request: Request, cid: str, turn_id: int, k: int) -> dict:
     """某一轮第 k 次请求的完整入参（system + 全部 messages），调试面板点「完整入参」时拉。"""
     from server import trace
 
+    need(request, "parent")
+    own_thread(request, cid)
     for t in trace.turns(cid):
         if t["id"] == turn_id and 0 <= k < len(t["calls"]):
             c = t["calls"][k]
@@ -248,10 +304,11 @@ def debug_call(cid: str, turn_id: int, k: int) -> dict:
 
 
 @app.get("/api/conversations/{cid}/ctx")
-def conversation_ctx(cid: str) -> dict:
+def conversation_ctx(request: Request, cid: str) -> dict:
     """左侧栏电量条：用了多少 token、阈值、压缩过几次、现在在不在压。"""
     from server import compact
 
+    own_thread(request, cid)
     try:
         return compact.state(store.get(cid))
     except KeyError:
@@ -259,10 +316,11 @@ def conversation_ctx(cid: str) -> dict:
 
 
 @app.post("/api/conversations/{cid}/compact")
-def conversation_compact(cid: str) -> dict:
+def conversation_compact(request: Request, cid: str) -> dict:
     """「立即压缩」：不看阈值，后台压一次；压好后下一轮开始时换上。"""
     from server import compact
 
+    own_thread(request, cid)
     try:
         store.get(cid)
     except KeyError:
@@ -272,9 +330,10 @@ def conversation_compact(cid: str) -> dict:
 
 
 @app.put("/api/ctx_limit")
-def ctx_limit_set(body: dict = Body(...)) -> dict:
+def ctx_limit_set(request: Request, body: dict = Body(...)) -> dict:
     from server import compact
 
+    need(request, "parent")
     try:
         return {"limit": compact.set_limit(body.get("limit"))}
     except ValueError as e:
@@ -296,84 +355,92 @@ def hanzi_char(ch: str) -> Response:
 
 
 # ---------------------------------------------------------------- 闹钟 / 倒计时 / 正计时
+# 每个孩子一份（server/clock.py 的 use()）：孩子的 pad 只管自己的；家长、管理员带 ?kid= 选哪个孩子（不带就第一个）。
 
-def _clock_call(fn, *args, **kw):
-    try:
-        fn(*args, **kw)
-    except clock.ClockError as e:
-        raise HTTPException(400, str(e))
-    return clock.snapshot()
+def _clock_call(request: Request, fn, *args, **kw):
+    with clock.use(kid_for(request, request.query_params.get("kid", ""))["id"]):
+        try:
+            fn(*args, **kw)
+        except clock.ClockError as e:
+            raise HTTPException(400, str(e))
+        return clock.snapshot()
 
 
 @app.get("/api/clock")
-async def clock_state(since: int = -1, wait: float = 0) -> dict:
+async def clock_state(request: Request, since: int = -1, wait: float = 0, kid: str = "") -> dict:
     """since 是上次拿到的 version：有变化马上返回，没有就最多等 wait 秒（pad 长轮询用，最多 55 秒）。"""
-    if since >= 0 and wait > 0:
-        return await asyncio.to_thread(clock.wait_change, since, min(wait, 55.0))
-    return clock.snapshot()
+    k = kid_for(request, kid)["id"]
+
+    def run():
+        with clock.use(k):
+            return clock.wait_change(since, min(wait, 55.0)) if since >= 0 and wait > 0 else clock.snapshot()
+
+    return await asyncio.to_thread(run) if since >= 0 and wait > 0 else run()
 
 
 @app.post("/api/clock/alarms")
-def alarm_add(body: dict = Body(...)) -> dict:
-    return _clock_call(clock.add_alarm, body.get("time"), body.get("repeat"), body.get("label") or "",
+def alarm_add(request: Request, body: dict = Body(...)) -> dict:
+    return _clock_call(request, clock.add_alarm, body.get("time"), body.get("repeat"), body.get("label") or "",
                        body.get("date"), body.get("say") or "")
 
 
 @app.patch("/api/clock/alarms/{aid}")
-def alarm_edit(aid: str, body: dict = Body(...)) -> dict:
+def alarm_edit(request: Request, aid: str, body: dict = Body(...)) -> dict:
     fields = {k: body[k] for k in ("time", "repeat", "date", "label", "say", "enabled") if k in body}
-    return _clock_call(clock.update_alarm, aid, **fields)
+    return _clock_call(request, clock.update_alarm, aid, **fields)
 
 
 @app.post("/api/clock/alarms/{aid}/snooze")
-def alarm_snooze(aid: str, body: dict | None = Body(None)) -> dict:
-    return _clock_call(clock.snooze_alarm, aid, (body or {}).get("minutes"))
+def alarm_snooze(request: Request, aid: str, body: dict | None = Body(None)) -> dict:
+    return _clock_call(request, clock.snooze_alarm, aid, (body or {}).get("minutes"))
 
 
 @app.post("/api/clock/alarms/{aid}/dismiss")
-def alarm_dismiss(aid: str) -> dict:
-    return _clock_call(clock.dismiss_alarm, aid)
+def alarm_dismiss(request: Request, aid: str) -> dict:
+    return _clock_call(request, clock.dismiss_alarm, aid)
 
 
 @app.delete("/api/clock/alarms/{aid}")
-def alarm_remove(aid: str) -> dict:
-    return _clock_call(clock.delete_alarms, [aid])
+def alarm_remove(request: Request, aid: str) -> dict:
+    return _clock_call(request, clock.delete_alarms, [aid])
 
 
 @app.post("/api/clock/timers")
-def timer_add(body: dict = Body(...)) -> dict:
-    return _clock_call(clock.start_timer, body.get("seconds"), body.get("label") or "", body.get("say") or "")
+def timer_add(request: Request, body: dict = Body(...)) -> dict:
+    return _clock_call(request, clock.start_timer, body.get("seconds"), body.get("label") or "", body.get("say") or "")
 
 
 @app.post("/api/clock/timers/{tid}/{action}")
-def timer_act(tid: str, action: str, body: dict | None = Body(None)) -> dict:
-    return _clock_call(clock.control_timer, tid, action, (body or {}).get("seconds"))
+def timer_act(request: Request, tid: str, action: str, body: dict | None = Body(None)) -> dict:
+    return _clock_call(request, clock.control_timer, tid, action, (body or {}).get("seconds"))
 
 
 @app.put("/api/clock/ring_text")
-def ring_text_set(body: dict = Body(...)) -> dict:
-    return _clock_call(clock.set_ring_text, body.get("text"))
+def ring_text_set(request: Request, body: dict = Body(...)) -> dict:
+    return _clock_call(request, clock.set_ring_text, body.get("text"))
 
 
 @app.post("/api/clock/stopwatch/{action}")
-def stopwatch_act(action: str) -> dict:
-    return _clock_call(clock.control_stopwatch, action)
+def stopwatch_act(request: Request, action: str) -> dict:
+    return _clock_call(request, clock.control_stopwatch, action)
 
 
-# ---------------------------------------------------------------- 家庭线程（全家只有这一条）
+# ---------------------------------------------------------------- 孩子线程（每个孩子一条）
 
 @app.get("/api/thread")
-def family_thread() -> dict:
-    """全家唯一的那条对话。第一次调时把老的多段对话按时间并进来（先备份），见 store.migrate_to_thread。"""
-    return store.thread()
+def kid_thread(request: Request, kid: str = "") -> dict:
+    """某个孩子的线程。孩子的 pad 拿到的永远是自己的；家长、管理员带 ?kid= 选（不带就第一个孩子）。
+    第一次调时把阶段 1 那条线程认作第一个孩子的（members.ensure）。"""
+    k = kid_for(request, kid)
+    return {**store.get(k["thread"]), "kid": k["id"]}
 
 
 @app.post("/api/thread/new_chapter")
-def family_new_chapter(body: dict = Body(default={})) -> dict:
-    """设置里「开始新篇章」：小新的记忆窗口重新开始，聊天记录不动。keep_summary=true 带上到现在为止的摘要。"""
+def kid_new_chapter(request: Request, body: dict = Body(default={})) -> dict:
+    """设置里「开始新篇章」：小新对这个孩子的记忆窗口重新开始，聊天记录不动。keep_summary=true 带上摘要。"""
     from server import compact
 
-    tid = store.thread_id()
+    tid = kid_for(request, str(body.get("kid") or ""))["thread"]
     if (store.get(tid).get("compact") or {}).get("state") == "running":
         raise HTTPException(409, "正在后台压缩，等十几秒再试")
     try:
@@ -382,20 +449,131 @@ def family_new_chapter(body: dict = Body(default={})) -> dict:
         raise HTTPException(502, f"摘要没写成，这次没换：{e}")
 
 
+# ---------------------------------------------------------------- 成员和设备（管理台；docs/architecture.md 6.4、6.7）
+
+def _audit(request: Request, action: str, **detail) -> None:
+    """管理操作记一笔：audit.jsonl，一行一条，管理台「系统」页看。"""
+    w = who(request)
+    line = json.dumps({"at": time.time(), "by": w.id, "action": action, **detail}, ensure_ascii=False)
+    with (store.DATA / "audit.jsonl").open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def _member_view(m: dict) -> dict:
+    return {**m, "devices": [members.public(d) for d in members.devices(m["id"])]}
+
+
+@app.get("/api/members")
+def member_list(request: Request) -> dict:
+    """家长、孩子两组，每人带他的设备。家长能看（知道谁在线）；增删改只有管理员。"""
+    need(request, "parent")
+    ms = [_member_view(m) for m in members.all_members()]
+    return {"parents": [m for m in ms if m["role"] == "parent"], "kids": [m for m in ms if m["role"] == "kid"]}
+
+
+@app.post("/api/members")
+def member_add(request: Request, body: dict = Body(...)) -> dict:
+    need(request, "admin")
+    try:
+        m = members.add(body.get("role"), body.get("name"), body.get("call") or "", body.get("avatar") or "",
+                        body.get("grade") or "", body.get("style") or "")
+    except members.MemberError as e:
+        raise HTTPException(400, str(e))
+    _audit(request, "member.add", member=m["id"], role=m["role"], name=m["name"])
+    return _member_view(m)
+
+
+@app.patch("/api/members/{mid}")
+def member_edit(request: Request, mid: str, body: dict = Body(...)) -> dict:
+    need(request, "admin")
+    try:
+        if "active" in body:
+            members.set_status(mid, bool(body.pop("active")))
+        m = members.update(mid, **body)
+    except KeyError:
+        raise HTTPException(404, "没有这个成员")
+    except members.MemberError as e:
+        raise HTTPException(400, str(e))
+    _audit(request, "member.edit", member=mid, fields=sorted(body))
+    return _member_view(m)
+
+
+@app.delete("/api/members/{mid}")
+def member_remove(request: Request, mid: str, hard: int = 0) -> dict:
+    """默认停用（吊销设备，历史保留）；?hard=1 彻底删（孩子的线程先打包进 backup/）。"""
+    need(request, "admin")
+    try:
+        if hard:
+            members.remove(mid)
+        else:
+            members.set_status(mid, False)
+    except KeyError:
+        raise HTTPException(404, "没有这个成员")
+    _audit(request, "member.remove" if hard else "member.disable", member=mid)
+    return {"ok": True}
+
+
+@app.post("/api/members/{mid}/pair")
+def member_pair(request: Request, mid: str, body: dict = Body(default={})) -> dict:
+    """给这个成员加一台设备：发一个 6 位配对码（5 分钟、一次性），设备在 /pair 页输入。"""
+    need(request, "admin")
+    try:
+        p = members.pair_code(mid, body.get("kind") or "pad", body.get("name") or "")
+    except KeyError:
+        raise HTTPException(404, "没有这个成员")
+    except members.MemberError as e:
+        raise HTTPException(400, str(e))
+    _audit(request, "device.pair_code", member=mid)
+    return p
+
+
+@app.delete("/api/devices/{did}")
+def device_revoke(request: Request, did: str) -> dict:
+    need(request, "admin")
+    try:
+        members.revoke(did)
+    except KeyError:
+        raise HTTPException(404, "没有这台设备")
+    _audit(request, "device.revoke", device=did)
+    return {"ok": True}
+
+
+@app.post("/api/pair")
+def pair(request: Request, body: dict = Body(...)) -> Response:
+    """设备拿配对码换 token（不用先登录）。token 只在这里给一次：网页种成 cookie，APK 从返回值里存。"""
+    try:
+        token, d = members.redeem(body.get("code"))
+    except members.MemberError as e:
+        raise HTTPException(400, str(e))
+    m = members.get(d["member"])
+    resp = Response(json.dumps({"token": token, "device": d, "member": {"id": m["id"], "name": m["name"],
+                                                                        "role": m["role"]}}, ensure_ascii=False),
+                    media_type="application/json")
+    secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    prefix = (request.headers.get("x-forwarded-prefix") or "").rstrip("/")
+    resp.set_cookie(DEVICE_COOKIE, token, max_age=5 * 365 * 86400, httponly=True, samesite="lax", secure=secure,
+                    path=prefix + "/" if prefix.startswith("/") else "/")
+    return resp
+
+
 # ---------------------------------------------------------------- 对话（老接口：线程也是一段对话，按 id 访问照旧）
 
 @app.get("/api/conversations")
-def conversations() -> dict:
-    return {"conversations": store.list_conversations()}
+def conversations(request: Request) -> dict:
+    w = who(request)
+    return {"conversations": [c for c in store.list_conversations() if members.can_thread(w, c["id"])]}
 
 
 @app.post("/api/conversations")
-def new_conversation() -> dict:
+def new_conversation(request: Request) -> dict:
+    """老接口：只给管理员（调试、测试）。孩子的线程在管理台建孩子时自动建。"""
+    need(request, "admin")
     return store.create()
 
 
 @app.get("/api/conversations/{cid}")
-def conversation(cid: str) -> dict:
+def conversation(request: Request, cid: str) -> dict:
+    own_thread(request, cid)
     try:
         return store.get(cid)
     except KeyError:
@@ -403,8 +581,9 @@ def conversation(cid: str) -> dict:
 
 
 @app.get("/api/conversations/{cid}/audio/{mid}")
-def utterance(cid: str, mid: str) -> FileResponse:
+def utterance(request: Request, cid: str, mid: str) -> FileResponse:
     """自由对话里用户那句的原声（服务端断句后送去识别的那段），气泡上的小喇叭回放用。"""
+    own_thread(request, cid)
     try:
         path = store.utterance_path(cid, mid)
     except KeyError:
@@ -415,7 +594,10 @@ def utterance(cid: str, mid: str) -> FileResponse:
 
 
 @app.delete("/api/conversations/{cid}")
-def delete_conversation(cid: str) -> dict:
+def delete_conversation(request: Request, cid: str) -> dict:
+    need(request, "admin")
+    if members.kid_of_thread(cid):
+        raise HTTPException(409, "这是孩子的线程，要删在管理台删孩子")
     try:
         store.delete(cid)
     except KeyError:
@@ -423,11 +605,11 @@ def delete_conversation(cid: str) -> dict:
     return {"ok": True}
 
 
-def _attachments(file_ids: list) -> list[dict]:
+def _attachments(request: Request, file_ids: list) -> list[dict]:
     out = []
     for fid in file_ids[:10]:
         info = store.file_info(str(fid))
-        if info is None:
+        if info is None or not _can_file(who(request), info[1]):
             raise HTTPException(400, f"附件 {fid} 不存在")
         out.append(info[1])
     return out
@@ -533,6 +715,14 @@ MAX_CLOCK_CALLS = 8  # 一轮里本地工具（时间、闹钟）最多调几次
 
 
 def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False, cid: str | None = None) -> None:
+    """见 _llm_turn。外面包一层：这条线程是哪个孩子的，闹钟工具改他的那份、prompt 带他的档案。
+    跑在线程池里，contextvar 是这个线程自己的；用 with 包着，线程复用时不会带到下一个请求。"""
+    owner = members.kid_of_thread(cid) if cid else None
+    with clock.use(owner["id"] if owner else ""):
+        _llm_turn(model, history, q, loop, voice, cid, owner)
+
+
+def _llm_turn(model: str, history: list[dict], q, loop, voice: bool, cid: str | None, owner: dict | None) -> None:
     """在线程里跑同步的流式请求，每个事件丢回事件循环的队列。
 
     工具循环：模型要搜就搜（发 search 事件），把结果接在后面再问一次，一轮最多搜 MAX_SEARCHES 次。
@@ -560,7 +750,7 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False, c
         text = ""
         head_filter = RoleTagFilter()
         tools = registry.SPECS
-        system = prompts.build(voice=voice)
+        system = prompts.build(voice=voice, kid=owner)
         extra = client.SELF_HOSTED.get(m, (None, None, None, {}))[3]
         thinking = extra.get("chat_template_kwargs", {}).get("enable_thinking")
         rec = trace.add_call(tr, model=m, system=system, messages=[dict(x) for x in msgs],
@@ -651,11 +841,14 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False, c
 
 
 def _turn_begin(cid: str) -> None:
-    """新一轮开始前：有压好的摘要就换上（epoch +1）；该说现状（时间粗到半小时、闹钟变了）就插一条 `[system]`。"""
+    """新一轮开始前：有压好的摘要就换上（epoch +1）；该说现状（时间粗到半小时、闹钟变了）就插一条 `[system]`。
+    闹钟是这条线程主人（孩子）的那份。"""
     from server import compact, context
 
     compact.maybe_swap(cid)
-    note = context.note_for(store.get(cid))
+    owner = members.kid_of_thread(cid)
+    with clock.use(owner["id"] if owner else ""):
+        note = context.note_for(store.get(cid))
     if note:
         store.append(cid, {"role": "note", **note})
 
@@ -738,8 +931,9 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
 
     from server import speech
 
+    w = own_thread(request, cid)
     text = str(body.get("text") or "").strip()
-    files = _attachments(body.get("file_ids") or [])
+    files = _attachments(request, body.get("file_ids") or [])
     if not text and not files:
         raise HTTPException(400, "说点什么，或者发个图片 / 文件")
     try:
@@ -841,16 +1035,34 @@ async def upload(request: Request) -> dict:
                 out.write(chunk)
         if size == 0:
             raise HTTPException(400, "空文件")
-        return store.commit(fid, name, mime, size)
+        return store.commit(fid, name, mime, size, owner=who(request).id)
     except BaseException:
         store.abort(fid)
         raise
 
 
+def _can_file(w: "members.Who", meta: dict) -> bool:
+    """文件谁能拿：管理员、家长都能；孩子只能拿自己传的，或者出现在自己线程里的（家长发给他的）。
+    老文件（没有 owner）当作第一个孩子那条线程的。"""
+    if w.at_least("parent") or meta.get("owner") == w.id:
+        return True
+    thread = w.member.get("thread") if w.member else None
+    if not thread:
+        return False
+    if not meta.get("owner"):
+        first = members.kids()
+        return bool(first) and first[0]["id"] == w.id
+    try:
+        msgs = store.get(thread)["messages"]
+    except KeyError:
+        return False
+    return any(f.get("id") == meta["id"] for m in msgs for f in (m.get("files") or []))
+
+
 @app.get("/api/files/{fid}")
-def download(fid: str, download: int = 0) -> FileResponse:
+def download(request: Request, fid: str, download: int = 0) -> FileResponse:
     info = store.file_info(fid)
-    if info is None:
+    if info is None or not _can_file(who(request), info[1]):
         raise HTTPException(404, "没有这个文件")
     path, meta = info
     inline = meta["kind"] == "image" and not download
@@ -929,14 +1141,18 @@ ALLOWED_ORIGINS = {o.strip() for o in (doubao.env("XIAOXIN_ORIGINS")
 # IP 那个是 APK 里的 WebView 和直接用 IP 打开网页时的来源：gpu.cmbian.top 没备案，带域名的 TLS 会被掐掉
 
 
-def _ws_authed(ws: WebSocket) -> bool:
+def _ws_who(ws: WebSocket) -> "members.Who | None":
     origin = ws.headers.get("origin")
     if origin and origin not in ALLOWED_ORIGINS:
-        return False
+        return None
     try:
-        return _authed(ws)  # type: ignore[arg-type]  # 只用到 cookies / headers，WebSocket 也有
+        return _who(ws)
     except HTTPException:
-        return False
+        return None
+
+
+def _ws_authed(ws: WebSocket) -> bool:
+    return _ws_who(ws) is not None
 
 
 @app.websocket("/api/asr/stream")
@@ -1037,11 +1253,24 @@ async def talk(ws: WebSocket) -> None:
     """自由对话，协议见 server/talk.py。?conversation= 接着已有对话说，?model= 换模型，?asr= 临时换识别引擎。"""
     from server.talk import Talk
 
-    if not _ws_authed(ws):
+    w = _ws_who(ws)
+    if w is None:
         await ws.close(code=4401)
         return
     await ws.accept()
     q = ws.query_params
+    # 进哪条线程：孩子永远是自己的；家长、管理员按 ?conversation= / ?kid=，都没有就第一个孩子的。
+    # pad 还记着并进线程之前的老对话 id（已归档）：接到它主人的线程上
+    conv = q.get("conversation") or ""
+    if conv and store.archived(conv):
+        conv = ""
+    if not conv or (w.kind == "member" and w.role == "kid"):
+        k = members.default_kid(w, q.get("kid") or "")
+        conv = k["thread"] if k else ""
+    if not conv or not members.can_thread(w, conv):
+        await ws.send_text(json.dumps({"type": "error", "detail": "没有这段对话"}, ensure_ascii=False))
+        await ws.close()
+        return
     model = q.get("model") or MODELS[0]["id"]
     if model not in {m["id"] for m in MODELS}:
         model = MODELS[0]["id"]
@@ -1051,7 +1280,7 @@ async def talk(ws: WebSocket) -> None:
         await ws.send_text(json.dumps({"type": "error", "detail": e.detail}, ensure_ascii=False))
         await ws.close()
         return
-    session = Talk(ws, asr_engine=asr_engine, model=model, conversation=q.get("conversation") or None,
+    session = Talk(ws, asr_engine=asr_engine, model=model, conversation=conv,
                    llm_thread=_llm_thread, make_speech=_turn_speech, transcribe=_transcribe,
                    reply_record=_reply_record, history=_llm_messages, models=[m["id"] for m in MODELS],
                    stream_asr=_stream_asr, before_turn=_turn_begin, after_turn=_turn_end)
@@ -1118,14 +1347,15 @@ def _cue_synth(text: str, voice_id: str, tries: int = 3) -> bytes:
 
 
 @app.get("/api/cue/{name}")
-def cue(name: str, voice: str = "", text: str = "") -> Response:
+def cue(request: Request, name: str, voice: str = "", text: str = "", kid: str = "") -> Response:
     """当前音色（或 ?voice= 指定）说「我在的」/「拜拜」/ 响铃提示（ring，?text= 给要念的话，不给用默认提示），
     24 kHz s16le 单声道裸 PCM。按音色和文字缓存在数据目录，第二次直接读。"""
     import hashlib
 
     if name == "ring":
         try:
-            text = clock._check_say(text) or clock.ring_text()
+            with clock.use(kid_for(request, kid)["id"]):  # 默认响铃提示是这个孩子的
+                text = clock._check_say(text) or clock.ring_text()
         except clock.ClockError as e:
             raise HTTPException(400, str(e))
     elif name == "say":

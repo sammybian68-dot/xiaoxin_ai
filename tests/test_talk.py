@@ -427,9 +427,9 @@ def test_utterance_audio_saved_and_replayable(call, client, fakes):
     r = client.get(f"/api/conversations/{cid}/audio/{h['id']}")
     assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
     assert r.content[:4] == b"RIFF" and len(r.content) > 16000  # 至少半秒 16 kHz
-    # 删对话连原声一起删
-    client.delete(f"/api/conversations/{cid}")
-    assert client.get(f"/api/conversations/{cid}/audio/{h['id']}").status_code == 404
+    # 孩子的线程不能当普通对话删（要删在管理台删孩子）；原声跟着线程留着
+    assert client.delete(f"/api/conversations/{cid}").status_code == 409
+    assert client.get(f"/api/conversations/{cid}/audio/{h['id']}").status_code == 200
 
 
 def test_one_shot_wake_has_no_audio_but_local_text(call, fakes):

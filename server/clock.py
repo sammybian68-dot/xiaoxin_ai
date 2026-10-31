@@ -8,6 +8,8 @@ pad 原生服务长轮询 /api/clock?since=<version> 拿变化，本机存一份
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import datetime as dt
 import json
 import re
@@ -24,7 +26,7 @@ DONE_KEEP_S = 600          # 响完没人关的倒计时，这么久后自动清
 RING_WINDOW_S = 600        # 闹钟到点后这么久内没人关，都算「正在响」（pad 最多响 5 分钟）
 WEEK = "一二三四五六日"     # repeat 里 1..7 = 周一..周日
 
-_lock = threading.Lock()
+_lock = threading.RLock()  # ring_text() 在持锁的 snapshot() 里也要 _load()
 _changed = threading.Condition(_lock)
 
 
@@ -39,7 +41,20 @@ MAX_RING_TEXT = 40
 
 
 def ring_text() -> str:
-    return store.settings().get("ring_text") or RING_TEXT
+    """默认响铃提示：这个孩子自己设过的 > 「<称呼>，时间到了！」。没指定孩子（老路径）用全家设置。
+    迁移时女儿的 clock 文件里带上了老的全家设置（members.ensure），所以她的不变。"""
+    own = _load().get("ring_text")
+    if own:
+        return own
+    if not current.get():
+        return store.settings().get("ring_text") or RING_TEXT
+    try:
+        from server.family import members
+
+        call = members.get(current.get()).get("call") or ""
+    except KeyError:
+        call = ""
+    return f"{call}，时间到了！" if call else RING_TEXT
 
 
 def _check_say(text) -> str:
@@ -54,8 +69,12 @@ def set_ring_text(text) -> str:
     if not text:
         raise ClockError("默认响铃提示不能空")
     with _lock:
-        store.update_settings(ring_text=text)
-        _save(_load())  # 版本号加一，pad 马上拉到新文字、重新下载语音
+        data = _load()
+        if current.get():
+            data["ring_text"] = text  # 每个孩子自己的
+        else:
+            store.update_settings(ring_text=text)
+        _save(data)  # 版本号加一，pad 马上拉到新文字、重新下载语音
     return text
 
 
@@ -64,8 +83,23 @@ def ring_say(item: dict | None = None) -> str:
     return (item or {}).get("say") or ring_text()
 
 
+# 每个孩子一份（clock/<孩子 id>.json）：儿子、女儿的闹钟各管各的。当前是哪个孩子由请求设（use()），
+# 这样二十来个函数不用每个都多传一个参数。没设（老测试、只有一个孩子时的老路径）就用 clock.json。
+current: contextvars.ContextVar[str] = contextvars.ContextVar("clock_kid", default="")
+
+
+@contextlib.contextmanager
+def use(kid: str):
+    tok = current.set(kid or "")
+    try:
+        yield
+    finally:
+        current.reset(tok)
+
+
 def _path():
-    return store.DATA / "clock.json"
+    kid = current.get()
+    return store.DATA / "clock" / f"{kid}.json" if kid else store.DATA / "clock.json"
 
 
 def _empty() -> dict:

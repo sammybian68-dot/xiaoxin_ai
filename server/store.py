@@ -223,6 +223,16 @@ def migrate_to_thread() -> str:
         return tid
 
 
+def create_thread(owner: str = "") -> str:
+    """给一个新孩子建一条空线程（阶段 2：每个孩子一条，见 server/family/members.py）。"""
+    now = time.time()
+    conv = {"id": _new_id(), "title": owner or "小新", "created": now, "updated": now, "messages": [],
+            "epochs": [{"start": 0, "kind": "start", "at": now}]}
+    with _lock:
+        _write_json(CONV / f"{conv['id']}.json", conv)
+    return conv["id"]
+
+
 def archived(cid: str) -> bool:
     """这个 id 是不是并进线程之前的老对话（文件挪到了 conversations_archive/）。"""
     return _ID.match(cid or "") is not None and (ARCHIVE / f"{cid}.json").is_file()
@@ -285,10 +295,10 @@ def allocate() -> tuple[str, Path]:
     return fid, d / "blob"
 
 
-def commit(fid: str, name: str, mime: str, size: int) -> dict:
+def commit(fid: str, name: str, mime: str, size: int, owner: str = "") -> dict:
     name = Path(name or "file").name[:120] or "file"
     meta = {"id": fid, "name": name, "mime": mime or "application/octet-stream", "size": size,
-            "kind": _kind(name, mime or "", size), "created": time.time()}
+            "kind": _kind(name, mime or "", size), "created": time.time(), "owner": owner}
     _write_json(FILES / fid / "meta.json", meta)
     return meta
 

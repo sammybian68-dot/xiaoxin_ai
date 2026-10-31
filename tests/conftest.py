@@ -45,6 +45,11 @@ def isolate_env(request, tmp_path, monkeypatch):
     monkeypatch.setattr(store, "SETTINGS", data / "settings.json")
     monkeypatch.setattr(store, "ARCHIVE", data / "conversations_archive")
     monkeypatch.setattr(store, "BACKUP", data / "backup")
+    from server.family import members
+
+    members._pairs.clear()  # 配对码、限流计数是进程里的：每个测试从空开始
+    members._fails.clear()
+    members._seen_write.clear()
     monkeypatch.setattr(doubao, "ROOT", tmp_path)  # .env 从这里读，这里没有
     for name in ("DOUBAO_TTS_API_KEY", "DOUBAO_API_KEY", "XIAOXIN_ORIGINS"):
         monkeypatch.delenv(name, raising=False)

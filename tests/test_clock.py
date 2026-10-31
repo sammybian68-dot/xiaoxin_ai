@@ -190,8 +190,16 @@ def test_clock_long_poll_returns_on_change(client, fakes):
     import threading
     import time as _t
 
+    from server.family import members
+
     v = client.get("/api/clock").json()["version"]
-    threading.Timer(0.3, lambda: clock.start_timer(60)).start()
+    kid = members.kids()[0]["id"]  # HTTP 接口不带 ?kid= 时管的是第一个孩子那份
+
+    def later():
+        with clock.use(kid):
+            clock.start_timer(60)
+
+    threading.Timer(0.3, later).start()
     t0 = _t.monotonic()
     snap = client.get(f"/api/clock?since={v}&wait=5").json()
     assert snap["version"] == v + 1 and _t.monotonic() - t0 < 3
@@ -207,10 +215,10 @@ def test_model_sets_alarm_via_tool(client, fakes, at):
     at("2026-10-30 21:00")
     fakes.llm_script = [("tool", "alarm_set", {"time": "07:00", "label": "起床", "say": "依依起床啦"}),
                         ("text", "好的，明天早上 7 点叫你")]
-    cid = client.post("/api/conversations").json()["id"]
+    cid = client.get("/api/thread").json()["id"]  # 孩子的线程：模型设的闹钟进这个孩子那份
     body = client.post(f"/api/conversations/{cid}/messages", json={"text": "明早七点叫我起床"}).text
     assert "明天早上 7 点" in body
-    assert clock.snapshot()["alarms"][0]["label"] == "起床"
+    assert client.get("/api/clock").json()["alarms"][0]["label"] == "起床"
     second = fakes.llm_requests[-1]
     tool_msg = second["messages"][-1]
     assert tool_msg["role"] == "tool" and tool_msg["content"].startswith("已设闹钟 a1 07:00")
@@ -291,7 +299,7 @@ def test_alarm_ring_tool(at, fakes):
 
 
 def test_ring_text_default_and_per_item(client, fakes):
-    assert client.get("/api/clock").json()["ring_text"] == "卞依一，时间到了！"
+    assert client.get("/api/clock").json()["ring_text"] == "卞依一，时间到了！"  # 「<孩子称呼>，时间到了！」
     v = client.get("/api/clock").json()["version"]
     snap = client.put("/api/clock/ring_text", json={"text": "依依，时间到啦"}).json()
     assert snap["ring_text"] == "依依，时间到啦" and snap["version"] == v + 1

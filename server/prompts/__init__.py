@@ -30,15 +30,31 @@ def _slots() -> dict:
     return {"ring_default": clock.ring_text()}
 
 
+def kid_profile(kid: dict | None) -> str:
+    """这条线程是哪个孩子的：名字、称呼、年级、说话要求。每个孩子不一样，拼在 system prompt 最后
+    （同一个孩子一直不变，前缀缓存照样命中）。没有孩子（老路径、管理员的测试对话）就不加。"""
+    if not kid:
+        return ""
+    lines = [f"# 你在陪谁\n这是{kid['name']}的小新。叫他「{kid.get('call') or kid['name']}」。"]
+    if kid.get("grade"):
+        lines.append(f"- 年级：{kid['grade']}，讲题、用词按这个程度。")
+    if kid.get("style"):
+        lines.append(f"- 家长的要求：{kid['style']}")
+    return "\n".join(lines)
+
+
 def fill(text: str, slots: dict) -> str:
     return _SLOT.sub(lambda m: str(slots.get(m.group(1), m.group(0))), text)
 
 
-def build(voice: bool = False) -> str:
-    """当前完整的 system prompt（填好时间和闹钟状态）。"""
+def build(voice: bool = False, kid: dict | None = None) -> str:
+    """当前完整的 system prompt（填好默认响铃提示）；kid 给了就在最后加上这个孩子的档案。"""
     slots = _slots()
     names = ORDER + ([VOICE] if voice else [])
-    return "\n\n".join(fill(read(n), slots) for n in names)
+    parts = [fill(read(n), slots) for n in names]
+    if kid:
+        parts.append(kid_profile(kid))
+    return "\n\n".join(parts)
 
 
 def parts() -> list[dict]:
