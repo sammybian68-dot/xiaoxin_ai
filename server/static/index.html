@@ -65,9 +65,16 @@
   </aside>
   <div id="scrim" class="scrim" hidden></div>
 
+  <!-- 家长端首页：像微信的聊天列表，每个孩子一个群。只有家长（和管理员窄屏）才有，孩子的 pad 直接进自己的群 -->
+  <section id="chats" class="chats" hidden>
+    <header class="chats-top"><b>小新家长</b><button id="chats-settings" class="icon-btn" type="button" aria-label="设置">⚙</button></header>
+    <ul id="chat-list" class="chat-list"></ul>
+  </section>
+
   <main class="main">
     <header class="top">
-      <button id="menu" class="icon-btn only-narrow" type="button" aria-label="打开对话列表">☰</button>
+      <button id="back-chats" class="icon-btn" type="button" aria-label="返回聊天列表" hidden>‹</button>
+      <button id="menu" class="icon-btn only-narrow" type="button" aria-label="打开群信息">☰</button>
       <div class="top-title">
         <img src="static/icon.png" alt="" class="avatar sm only-narrow">
         <span id="conv-title">小新</span>
@@ -99,6 +106,8 @@
     <footer class="composer-wrap">
       <div id="pending" class="pending"></div>
       <div class="composer">
+        <button id="ask" class="ask" type="button" aria-pressed="false" hidden
+                title="点亮后这条是问小新的，小新会回答；不点亮就是发给孩子">问小新</button>
         <button id="mode" class="icon-btn" type="button" aria-label="切换到按住说话">🎤</button>
         <textarea id="input" rows="1" placeholder="发消息，或点左边按住说话" aria-label="消息"></textarea>
         <button id="hold" class="hold" type="button" hidden>按住 说话</button>
@@ -164,6 +173,16 @@
   </div>
   <div id="debug-body" class="debug-body"></div>
 </aside>
+
+<!-- 看大图：点气泡里的缩略图、侧栏的文件。不跳页（APK 里跳出去就回不来了） -->
+<dialog id="viewer" class="viewer" aria-label="看图">
+  <img id="viewer-img" alt="">
+  <div class="viewer-bar">
+    <a id="viewer-orig" href="#" target="_blank" rel="noopener" hidden>查看原图</a>
+    <span id="viewer-note"></span>
+    <button type="button" id="viewer-close">关闭</button>
+  </div>
+</dialog>
 
 <dialog id="compact-dialog" class="confirm" aria-labelledby="compact-title">
   <h2 id="compact-title">现在压缩这段对话？</h2>

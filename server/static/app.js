@@ -48,7 +48,15 @@ async function boot() {
   state.model = me.models.some((m) => m.id === saved) ? saved : me.default_model;
   $("model").innerHTML = me.models.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
   $("model").value = state.model;
-  await openThread();
+  // 家长：先看聊天列表（每个孩子一个群），点进去才是群聊；孩子的 pad 和管理员宽屏直接进群
+  if (state.me.role === "parent" || (state.me.kind === "admin" && matchMedia("(max-width: 820px)").matches && state.kids.length > 1)) {
+    document.body.classList.add("parent-mode");
+    $("ask").hidden = false;
+    $("input").placeholder = "发给孩子…";
+    await showChats();
+  } else {
+    await openThread();
+  }
   if (location.hash.startsWith("#settings")) openSettings(location.hash.split("/")[1]);
   if (native) api("api/voices").then(json).then((c) => syncVoiceToNative(c.current)).catch(() => {});
   pollClock();  // clock.js：长轮询闹钟状态，模型或别的设备改了马上同步
@@ -77,8 +85,9 @@ function esc(s) {
 
 // 小新是家里一个成员：全家只有一条线程（像微信里只有一个家庭群），没有「新对话」。
 // 上下文太长或乱了，在设置里「开始新篇章」换一个干净的记忆窗口，聊天记录一条不动，只多一条分界线。
-async function openThread() {
-  state.conv = await api("api/thread").then(json);
+async function openThread(kid) {
+  state.conv = await api("api/thread" + (kid ? `?kid=${encodeURIComponent(kid)}` : "")).then(json);
+  markRead(state.conv);
   localSet("conv", state.conv.id);
   renderThread();
   loadCtx();
@@ -100,7 +109,8 @@ function hubConnect() {
   ws.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (ev.type === "ping") { ws.send('{"type":"pong"}'); return; }
-    if ((ev.type === "msg" || ev.type === "msg.update") && ev.thread === state.conv?.id) hubMessage(ev.message, ev.type);
+    if (ev.type === "msg" && document.body.classList.contains("in-chats")) hubMessage(ev.message, ev.type);
+    else if ((ev.type === "msg" || ev.type === "msg.update") && ev.thread === state.conv?.id) hubMessage(ev.message, ev.type);
     if (ev.type === "presence") { state.online = new Set(ev.online); renderSide(); }
     if (ev.type === "file" && ev.thread === state.conv?.id) hubFile(ev.file);
   };
@@ -144,7 +154,7 @@ function renderSide() {
   }
   $("side-files-sec").hidden = !files.length;
   $("side-files-h").textContent = state.me?.role === "parent" ? "发给孩子的" : "爸妈发的";
-  $("side-files").innerHTML = files.slice(0, 5).map((f) => `<li><a href="${fileUrl(f)}" target="_blank" rel="noopener">`
+  $("side-files").innerHTML = files.slice(0, 5).map((f) => `<li><a href="${fileUrl(f, f.kind !== "image")}" ${f.kind === "image" ? `data-fid="${f.id}"` : ""}>`
     + (f.kind === "image" ? `<img src="api/files/${f.id}?v=thumb" alt="" loading="lazy">` : '<span class="fi">📄</span>')
     + `<span>${esc(f.name)}<small>${esc(person(f.from).name)} · ${esc(dayLabel2(f.at))}</small></span></a></li>`).join("");
   renderSideAlarm();
@@ -177,6 +187,7 @@ function hubFile(f) {
 }
 
 function hubMessage(m, kind) {
+  if (document.body.classList.contains("in-chats")) { if (kind === "msg") showChats(); return; }
   if (!state.conv) return;
   const known = state.conv.messages.findIndex((x) => x.id === m.id);
   if (known >= 0) state.conv.messages[known] = { ...state.conv.messages[known], ...m };
@@ -188,6 +199,7 @@ function hubMessage(m, kind) {
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
   appendMessage(m);
   scrollDown();
+  markRead(state.conv);
   if (m.files?.length) renderSide();
 }
 
@@ -264,7 +276,7 @@ function sizeLabel(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : 
 function attachmentsHtml(files) {
   return (files || []).map((f) => f.kind === "image"
     // 气泡里只拉 480 的缩略图（~30 KB，ECS 只有 5 Mbps）；点开才拿大图（没原图就是 2048 的 screen）
-    ? `<a href="${fileUrl(f)}" target="_blank" rel="noopener"><img class="att-img" src="api/files/${f.id}?v=thumb" alt="${esc(f.name)}" loading="lazy"></a>`
+    ? `<a href="${fileUrl(f)}" data-fid="${f.id}"><img class="att-img" src="api/files/${f.id}?v=thumb" alt="${esc(f.name)}" loading="lazy"></a>`
     : `<a class="att-file" href="${fileUrl(f, true)}"><b>📄</b><span>${esc(f.name)}<small>${sizeLabel(f.size)}</small></span></a>`).join("");
 }
 
@@ -277,7 +289,7 @@ function appendMessage(m) {
   row.className = "msg " + (m.role !== "user" ? "ai" : mine ? "me" : "peer");
   if (m.id) row.dataset.mid = m.id;  // hub 推来的同一条就不再画一遍
   if (m.role === "user" && !mine) {
-    const p = person(m.from);
+    const p = person(m.from || state.conv?.kid);  // 老消息没有 from：是这个群的孩子说的
     row.classList.add(p.role === "parent" ? "from-parent" : "from-kid");
     row.innerHTML = `<span class="avatar sm emoji" aria-hidden="true">${esc(p.avatar)}</span><div class="bubble">`
       + `<div class="who">${esc(p.name)}</div>${attachmentsHtml(m.files)}${m.text ? `<div class="text">${esc(m.text)}</div>` : ""}`
@@ -579,6 +591,8 @@ async function send(text, via = "text") {
   stopSpeaking();
   const files = state.pending.filter((p) => p.meta).map((p) => p.meta);
   if (!text && !files.length) return;
+  // 家长在孩子的群里：默认是发给孩子（小新不接话），点亮「问小新」才是问小新
+  if (state.me?.role === "parent" && !askOn()) return postOnly(text, files, via);
   state.sending = true;
   updateSend();
   const conv = await ensureConv();
@@ -1868,7 +1882,7 @@ $("chapter-yes").addEventListener("click", async () => {
       body: JSON.stringify({ keep_summary: $("chapter-keep").checked }) }).then(json);
     $("chapter-dialog").close();
     $("settings").close?.();
-    await openThread();
+    await openThread(state.conv?.kid);
     toast("翻开了新的一页，小新从这里重新记");
   } catch (e) { toast(e.message, 4000); }
   finally { yes.disabled = false; yes.textContent = "翻开新的一页"; }
@@ -2164,3 +2178,115 @@ $("mem-add").addEventListener("submit", async (e) => {
     loadMembers();
   } catch (err) { toast(err.message); }
 });
+
+
+// ---------------------------------------------------------------- 家长端：聊天列表（每个孩子一个群）
+// 未读 = 这台设备上次看这个群之后，别人（孩子、小新、另一个家长）发的条数；记在本机（localStorage），各设备各算各的。
+
+function lastSeen(tid) { return +(localGet("seen." + tid) || 0); }
+function markRead(conv) { const last = conv?.messages?.at(-1); if (last) localSet("seen." + conv.id, String(last.created || 0)); }
+
+async function showChats() {
+  $("chats").hidden = false;
+  document.body.classList.add("in-chats");
+  $("back-chats").hidden = false;
+  hubConnect();
+  const rows = await Promise.all((state.kids || []).map(async (k) => {
+    try {
+      const t = await api(`api/thread?kid=${encodeURIComponent(k.id)}`).then(json);
+      const msgs = t.messages.filter((m) => m.role !== "note");
+      const last = msgs.at(-1);
+      if (!localGet("seen." + t.id)) markRead(t);  // 这台设备第一次见这个群：以前的不算未读（不然一装好就 99+）
+      const unread = msgs.filter((m) => m.created > lastSeen(t.id) && m.from !== state.me.id).length;
+      return { k, last, unread };
+    } catch (_) { return { k, last: null, unread: 0 }; }
+  }));
+  $("chat-list").innerHTML = rows.map(({ k, last, unread }) => {
+    const who = !last ? "" : last.role === "assistant" ? "小新：" : last.from && last.from !== k.id ? `${person(last.from).name}：` : "";
+    const what = !last ? "还没有消息" : last.text ? last.text.replace(/\s+/g, " ").slice(0, 40) : last.files?.length ? "[图片 / 文件]" : "";
+    return `<li><button type="button" data-kid="${esc(k.id)}"><span class="ca">${esc(k.avatar || "🧒")}</span>`
+      + `<span class="cb"><span class="cn">${esc(k.name)}</span><span class="cl">${esc(who + what)}</span></span>`
+      + `<span class="cr"><small>${last ? esc(dayLabel2(last.created)) : ""}</small>${unread ? `<i>${unread > 99 ? "99+" : unread}</i>` : ""}</span></button></li>`;
+  }).join("") || '<li class="none">还没有孩子账号。管理员在「设置 → 成员」里添加。</li>';
+  for (const b of $("chat-list").querySelectorAll("[data-kid]")) b.addEventListener("click", () => enterChat(b.dataset.kid));
+}
+
+async function enterChat(kid) {
+  $("chats").hidden = true;
+  document.body.classList.remove("in-chats");
+  await openThread(kid);
+}
+
+$("back-chats").addEventListener("click", () => { markRead(state.conv); stopSpeaking(); showChats(); });
+$("chats-settings").addEventListener("click", () => openSettings());
+
+
+// ---------------------------------------------------------------- 家长发给孩子（不叫小新）
+
+function askOn() { return $("ask").getAttribute("aria-pressed") === "true"; }
+$("ask").addEventListener("click", () => {
+  const on = !askOn();
+  $("ask").setAttribute("aria-pressed", String(on));
+  $("input").placeholder = on ? "问小新…（小新会回答，孩子也看得到）" : "发给孩子…";
+});
+
+async function postOnly(text, files, via) {
+  state.sending = true;
+  updateSend();
+  $("input").value = "";
+  autoGrow();
+  state.pending = [];
+  renderPending();
+  try {
+    const r = await api(`api/conversations/${state.conv.id}/messages`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, file_ids: files.map((f) => f.id), via, ask: false }) });
+    const body = await r.text();
+    const user = JSON.parse(/event: user\ndata: (.*)/.exec(body)?.[1] || "null");
+    if (user && !$("messages").querySelector(`[data-mid="${CSS.escape(user.id)}"]`)) {
+      state.conv.messages.push(user);
+      appendMessage(user);
+      markRead(state.conv);
+    }
+    scrollDown(true);
+  } catch (e) { toast(e.message); }
+  finally { state.sending = false; updateSend(); }
+}
+
+
+// ---------------------------------------------------------------- 看大图（页内，不跳页）
+// 先给 2048 的大图；有原图（勾了「原图」、已传完）才出「查看原图」，点了再下原图（几 MB，ECS 只有 5 Mbps）
+function openViewer(f) {
+  const o = f.original;
+  $("viewer-img").src = `api/files/${f.id}?v=screen`;
+  $("viewer-orig").hidden = !(o && o.received >= o.size);
+  $("viewer-orig").href = `api/files/${f.id}`;
+  $("viewer-orig").textContent = o ? `查看原图（${sizeLabel(o.size)}）` : "查看原图";
+  $("viewer-note").textContent = o && o.received < o.size ? `对方原图上传中 ${Math.floor(o.received / o.size * 100)}%` : "";
+  $("viewer").showModal();
+}
+$("viewer-close").addEventListener("click", () => $("viewer").close());
+$("viewer").addEventListener("click", (e) => { if (e.target === $("viewer")) $("viewer").close(); });
+$("viewer-orig").addEventListener("click", (e) => {
+  e.preventDefault();
+  $("viewer-img").src = $("viewer-orig").href;
+  $("viewer-orig").hidden = true;
+});
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("a[data-fid]");
+  if (!a) return;
+  e.preventDefault();
+  const f = findFile(a.dataset.fid);
+  if (f) openViewer(f);
+});
+function findFile(id) {
+  for (const m of state.conv?.messages || []) for (const f of m.files || []) if (f.id === id) return f;
+  return null;
+}
+
+// 安卓返回键（小新家长 APK 先问这里）：关大图 > 关设置 > 群里回聊天列表；返回 true 表示处理了
+window.xiaoxinBack = () => {
+  if ($("viewer").open) { $("viewer").close(); return true; }
+  if ($("settings").open) { $("settings").close(); return true; }
+  if (document.body.classList.contains("parent-mode") && !document.body.classList.contains("in-chats")) { $("back-chats").click(); return true; }
+  return false;
+};

@@ -88,13 +88,23 @@ public class MainActivity extends Activity {
         openPage(intent);
     }
 
+    /** 返回键先问网页：开着大图就关、在群里就回聊天列表（window.xiaoxinBack 返回 true 表示处理了）；网页不管才退出。 */
     @Override
     public void onBackPressed() {
-        if (web != null && web.canGoBack()) {
-            web.goBack();
-        } else {
+        if (web == null) {
             super.onBackPressed();
+            return;
         }
+        web.evaluateJavascript("window.xiaoxinBack ? String(window.xiaoxinBack()) : 'false'", r -> {
+            if ("\"true\"".equals(r)) {
+                return;
+            }
+            if (web.canGoBack()) {
+                web.goBack();
+            } else {
+                finish();
+            }
+        });
     }
 
     @Override
