@@ -237,7 +237,11 @@ details.dl[open] > summary { display: none; }
 .only-narrow { display: none; }
 
 /* 消息 */
-.chat { flex: 1; overflow-y: auto; }
+.chat { flex: 1; overflow-y: auto; overflow-anchor: none; }  /* 自己管粘底，不要浏览器的滚动锚定来回抢 */
+.main { position: relative; }
+.chat-latest { position: absolute; right: 24px; bottom: 96px; z-index: 5; height: 36px; padding: 0 14px; border-radius: 18px;
+  border: 1px solid var(--line); background: var(--raised); color: var(--text); font-size: 13px; box-shadow: 0 4px 14px rgba(0, 0, 0, .35); }
+.chat-latest[hidden] { display: none; }
 .messages { max-width: 820px; margin: 0 auto; padding: 24px 16px 12px; display: flex; flex-direction: column; gap: 18px; }
 .empty { text-align: center; color: var(--muted); margin-top: 18vh; }
 .empty img { width: 88px; height: 88px; border-radius: 24px; display: block; margin: 0 auto 16px; }

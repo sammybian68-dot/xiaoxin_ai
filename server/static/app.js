@@ -392,22 +392,67 @@ async function speak(text, btn) {
   }
 }
 
-function scrollDown(force) {
+// 聊天区「粘底」，和微信一样：默认一直跟着最新的往下走（流式出字、TTS 念的时候、卡片插进来、图片加载完都跟）；
+// 只有用户手指往上翻才停，右下角出「↓ 回到最新」；翻回底部或者开始新一轮就又粘上。
+// 原来按「离底 < 160px 才跟」判断：一张 200 多 px 的卡插进来就超了，之后整轮都不跟（2026-10-31 两次反馈）。
+const chatStick = { on: true, programmatic: 0 };
+
+function chatToBottom(smooth) {
   const c = $("chat");
-  if (force || c.scrollHeight - c.scrollTop - c.clientHeight < 160) c.scrollTop = c.scrollHeight;
+  chatStick.programmatic = performance.now();
+  c.scrollTo({ top: c.scrollHeight, behavior: smooth ? "smooth" : "auto" });
 }
 
-// 回答里插了卡片（闹钟清单、笔顺、报时）或答完：把这条回答整个带进视野。
-// scrollDown 只在离底不到 160px 时才跟，一张 200 多 px 的卡插进来就超了，后面的字也不跟了，得手指往下滑。
-// 放得下就贴底（卡和下面那句话都看得到）；放不下（卡比屏高）就让回答顶到上面，从卡的开头看起
+function scrollDown(force) {
+  if (force) chatStick.on = true;
+  if (chatStick.on) chatToBottom(false);
+  $("chat-latest").hidden = chatStick.on;
+}
+
+// 卡片插进来：卡比屏高（笔顺卡）就从卡的开头看起，并且这一轮不再粘底（不然会把卡顶出去）；放得下就照常粘底
 function revealRow(row) {
   const c = $("chat");
   if (!row || !c.contains(row)) return;
   const cr = c.getBoundingClientRect(), rr = row.getBoundingClientRect();
-  const fits = rr.height <= c.clientHeight - 16;
-  const target = fits ? c.scrollHeight - c.clientHeight : c.scrollTop + (rr.top - cr.top) - 8;
-  c.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  if (rr.height <= c.clientHeight - 16) { scrollDown(); return; }
+  if (!chatStick.on) return;
+  chatStick.on = false;
+  chatStick.programmatic = performance.now();
+  c.scrollTo({ top: c.scrollTop + (rr.top - cr.top) - 8, behavior: "smooth" });
+  $("chat-latest").hidden = false;
 }
+
+(() => {
+  const c = $("chat");
+  // 判断「用户在往上翻」看手指 / 滚轮本身，不看 scroll 事件：流式出字时程序每几十 ms 就滚一次，
+  // 用 scroll 事件区分不了是谁滚的（原来 300ms 窗口在出字时一直有效，手指划了也被拉回去）。
+  const off = () => { chatStick.on = false; $("chat-latest").hidden = false; };
+  let touchY = null, touching = false;
+  c.addEventListener("touchstart", (e) => { touching = true; touchY = e.touches[0].clientY; }, { passive: true });
+  c.addEventListener("touchmove", (e) => {
+    const y = e.touches[0].clientY;
+    if (touchY != null && y - touchY > 6) off();  // 手指往下拖 = 内容往上翻
+    touchY = y;
+  }, { passive: true });
+  const settle = () => {  // 松手 / 惯性停了：回到了底部就重新粘上
+    touching = false;
+    setTimeout(() => {
+      if (touching) return;
+      if (c.scrollHeight - c.scrollTop - c.clientHeight < 40) { chatStick.on = true; $("chat-latest").hidden = true; }
+    }, 350);
+  };
+  c.addEventListener("touchend", settle, { passive: true });
+  c.addEventListener("touchcancel", settle, { passive: true });
+  c.addEventListener("wheel", (e) => { if (e.deltaY < 0) off(); else settle(); }, { passive: true });
+  // 拖滚动条、键盘翻页：scroll 事件兜底，只在不粘的时候看要不要重新粘
+  c.addEventListener("scroll", () => {
+    if (!chatStick.on && !touching && c.scrollHeight - c.scrollTop - c.clientHeight < 40) { chatStick.on = true; $("chat-latest").hidden = true; }
+  }, { passive: true });
+  // 内容变高（流式出字、TTS 念到后面、卡片、图片加载完）：粘着就补一下
+  const ro = new ResizeObserver(() => { if (chatStick.on && !touching) chatToBottom(false); });
+  ro.observe($("messages"));
+  $("chat-latest").addEventListener("click", () => { chatStick.on = true; chatToBottom(true); $("chat-latest").hidden = true; });
+})();
 
 // ---------------------------------------------------------------- 发送
 
@@ -435,6 +480,7 @@ async function send(text, via = "text") {
   renderPending();
 
   const row = appendMessage({ role: "assistant", text: "" });
+  scrollDown(true);  // 自己刚发了一句：不管之前翻到哪，回到底部跟着这一轮
   const textEl = row.querySelector(".text");
   const meta = row.querySelector(".meta");
   textEl.classList.add("cursor");
