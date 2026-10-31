@@ -5,6 +5,8 @@
     <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 视频通话（家长打来时 pad 的前摄） -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- 闹钟：前台服务常驻、熄屏保持 CPU、精确闹钟唤醒、亮屏盖住锁屏响铃 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

@@ -87,8 +87,9 @@ public class TalkActivity extends Activity {
         getWindow().setStatusBarColor(0xFF0F1115);
         getWindow().setNavigationBarColor(0xFF0F1115);
         pinnedSha256 = loadPin();
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, 1);
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA}, 1);
         }
         if (TextUtils.isEmpty(key())) {
             TextView hint = new TextView(this);
@@ -118,6 +119,7 @@ public class TalkActivity extends Activity {
         setContentView(web);
         // 免密链接：?k= 让服务端种 cookie 再跳回去，key 不留在地址栏
         web.loadUrl(base() + "?k=" + Uri.encode(key()));
+        openPage(getIntent());
         cues = new Cues(this, base(), key());
         phrases = new Phrases(this, base(), key());
         // 闹钟和倒计时：前台服务，熄屏也在，到点亮屏响铃
@@ -190,7 +192,21 @@ public class TalkActivity extends Activity {
             recreate();
             return;
         }
+        if (openPage(intent)) {
+            return;
+        }
         showRing(intent);
+    }
+
+    /** 调试：adb 传 --es page "calltest?room=x" 打开站内某一页（先登录再跳）。只认站内相对路径。 */
+    private boolean openPage(Intent intent) {
+        String page = intent == null ? null : intent.getStringExtra("page");
+        if (web == null || TextUtils.isEmpty(page) || page.contains("://") || page.startsWith("/") || page.contains("..")) {
+            return false;
+        }
+        intent.removeExtra("page");
+        web.postDelayed(() -> web.loadUrl(base() + page), 1500);  // 等 ?k= 那一跳把 cookie 种上
+        return true;
     }
 
     @Override
@@ -866,12 +882,19 @@ public class TalkActivity extends Activity {
     }
 
     private final class Chrome extends WebChromeClient {
-        /** 网页里的麦克风（按住说话、录声音）：只给自己的页面。 */
+        /** 网页里的麦克风（按住说话、录声音）和摄像头（视频通话）：只给自己的页面。 */
         @Override
         public void onPermissionRequest(PermissionRequest request) {
             runOnUiThread(() -> {
                 if (request.getOrigin().toString().startsWith(base().replaceAll("/xiaoxin/$", ""))) {
-                    request.grant(new String[] {PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                    // 麦克风之外，视频通话还要摄像头：只给页面实际要的、并且是这两样里的
+                    java.util.List<String> ok = new java.util.ArrayList<>();
+                    for (String r : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r) || PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) {
+                            ok.add(r);
+                        }
+                    }
+                    request.grant(ok.toArray(new String[0]));
                 } else {
                     request.deny();
                 }

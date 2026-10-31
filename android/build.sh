@@ -3,6 +3,7 @@
 #   android/build.sh            两个都打
 #   android/build.sh xiaoxin    只打小新          com.xiaoxin.app      源码 android/xiaoxin/src + util
 #   android/build.sh testapp    只打小新测试      com.xiaoxin.testapp  源码 src/com/xiaoxin/testapp + util
+#   android/build.sh parent     只打小新家长      com.xiaoxin.parent   源码 android/parent/src（爸妈手机上的，没有原生音频）
 # 产物在 android/build/<app>.apk。
 # 加测试页：src/com/xiaoxin/testapp/<name>/ 下新建 Activity，登记到 testapp/AndroidManifest.xml，再在 MainActivity 加按钮。
 # 小新的图标原图是 xiaoxin/icon_source.png；测试的图标是脚本画的橙色烧瓶，故意不一样，桌面上分得开。
@@ -41,6 +42,7 @@ build() {
   case "$app" in
     xiaoxin) srcs="$ANDROID/xiaoxin/src $ROOT/util"; min=31 ;;
     testapp) srcs="$ROOT/src/com/xiaoxin/testapp $ROOT/util"; min=26 ;;
+    parent) srcs="$ANDROID/parent/src"; min=29 ;;
     *) echo "unknown app $app" >&2; exit 2 ;;
   esac
   OUT="$ANDROID/build/$app"
@@ -78,6 +80,6 @@ if [ ! -f "$ANDROID/debug.keystore" ]; then
     -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
     -dname "CN=Android Debug,O=Android,C=US"
 fi
-for app in ${1:-xiaoxin testapp}; do
+for app in ${1:-xiaoxin testapp parent}; do
   build "$app"
 done

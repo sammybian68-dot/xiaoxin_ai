@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>视频通话测试</title>
+<style>
+  :root { color-scheme: dark; --bg: #0f1115; --panel: #171a21; --text: #e8eaee; --muted: #8e939c; --ok: #3ddc84; --bad: #ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+  main { position: relative; height: 100vh; overflow: hidden; }
+  #remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+  #local { position: absolute; right: 16px; top: 16px; width: 28vw; max-width: 240px; aspect-ratio: 3/4; object-fit: cover;
+           border-radius: 12px; border: 2px solid rgba(255,255,255,.3); background: #222; transform: scaleX(-1); }
+  #panel { position: absolute; left: 16px; bottom: 16px; right: 16px; max-width: 560px; background: rgba(23,26,33,.86);
+           border-radius: 14px; padding: 12px 14px; font: 13px/1.55 ui-monospace, monospace; }
+  #panel b { color: var(--ok); }
+  #panel .bad { color: var(--bad); }
+  #btns { display: flex; gap: 10px; margin-bottom: 8px; }
+  button { font: inherit; font-size: 15px; padding: 8px 16px; border-radius: 10px; border: 0; background: #2a2f3a; color: var(--text); }
+  button.red { background: #e5484d; color: #fff; }
+</style>
+</head>
+<body>
+<main>
+  <video id="remote" autoplay playsinline></video>
+  <video id="local" autoplay playsinline muted></video>
+  <div id="panel">
+    <div id="btns"><button id="relay">只走中继：关</button><button id="hang" class="red">挂断</button></div>
+    <div id="st">准备中…</div>
+  </div>
+</main>
+<script>
+"use strict";
+// 阶段 0 的 WebRTC 最小 demo：两端打开同一个 ?room=xxx，先到的等，后到的发 offer。
+// ?relay=1 强制只走 TURN（验证 ECS 中继）。码率上限 1.2 Mbps（ECS 只有 5 Mbps）。状态每秒刷新，也写进 window.callStats 给 adb 读。
+const q = new URLSearchParams(location.search);
+const room = q.get("room") || "demo";
+let forceRelay = q.get("relay") === "1";
+const $ = (id) => document.getElementById(id);
+const st = { phase: "init", ice: "-", conn: "-", path: "-", local: "-", remote: "-", rtt: "-", fps: "-", res: "-", kbpsIn: "-", kbpsOut: "-", audioIn: "-", err: "" };
+window.callStats = st;
+let pc, ws, stream, lastIn = 0, lastOut = 0, lastT = 0, lastAE = 0, lastAD = 0, lastAB = 0;
+
+function show() {
+  const e = st.err ? `<div class="bad">错误：${st.err}</div>` : "";
+  $("st").innerHTML = `房间 ${room} · ${st.phase} · ice <b>${st.ice}</b> · conn <b>${st.conn}</b><br>`
+    + `路径 <b>${st.path}</b>（本地 ${st.local} / 对端 ${st.remote}）<br>`
+    + `收到 <b>${st.res}</b> @ ${st.fps} fps · 下行 ${st.kbpsIn} kbps · 上行 ${st.kbpsOut} kbps · RTT ${st.rtt} ms · 对方声音 ${st.audioIn}（${st.audioKbps} kbps）${e}`;
+  $("relay").textContent = "只走中继：" + (forceRelay ? "开" : "关");
+}
+
+async function start() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true },
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24 } } });
+  } catch (e) { st.err = "拿不到摄像头/麦克风：" + e.name + " " + e.message; show(); return; }
+  $("local").srcObject = stream;
+  const ice = await fetch("api/call/ice?who=" + (q.get("who") || "demo"), { credentials: "same-origin" }).then((r) => r.json());
+  pc = new RTCPeerConnection({ iceServers: ice.iceServers, iceTransportPolicy: forceRelay ? "relay" : "all" });
+  for (const t of stream.getTracks()) pc.addTrack(t, stream);
+  pc.ontrack = (e) => {
+    $("remote").srcObject = e.streams[0];
+    $("remote").muted = q.get("mute") === "1";  // 两台放一屋测试时静音，免得啸叫
+    if (e.track.kind === "audio") meter(e.streams[0]);
+  };
+  pc.onicecandidate = (e) => { if (e.candidate) send({ type: "ice", c: e.candidate }); };
+  pc.oniceconnectionstatechange = () => { st.ice = pc.iceConnectionState; show(); };
+  pc.onconnectionstatechange = () => { st.conn = pc.connectionState; show(); };
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(new URL("api/call/" + room, location.href).href.replace(/^https?:/, proto));
+  ws.onmessage = async (m) => {
+    const d = JSON.parse(m.data);
+    if (d.type === "peers") { st.phase = d.count < 2 ? "等对方进来" : "对方在了"; if (d.count === 2 && !d.you_first) await call(); }
+    else if (d.type === "offer") { await pc.setRemoteDescription(d.sdp); await capBitrate(); const a = await pc.createAnswer(); await pc.setLocalDescription(a); send({ type: "answer", sdp: pc.localDescription }); st.phase = "已应答"; }
+    else if (d.type === "answer") { await pc.setRemoteDescription(d.sdp); await capBitrate(); st.phase = "已接通"; }
+    else if (d.type === "ice") { try { await pc.addIceCandidate(d.c); } catch (_) { /* 早到的候选 */ } }
+    else if (d.type === "bye") { st.phase = "对方挂了"; $("remote").srcObject = null; }
+    else if (d.type === "full") { st.err = "房间满了"; }
+    show();
+  };
+  ws.onclose = () => { st.phase += "（信令断开）"; show(); };
+  setInterval(stats, 1000);
+  show();
+}
+
+// 对方声音的电平：直接读远端音轨的样本（MediaStreamTrackProcessor），取最近一秒的峰值。
+// WebAudio 的 AnalyserNode 接远端轨在 Chrome 里读出来恒为 0（不接到 <audio> 播放就不出数据），getStats 的 audioLevel 静音时也是 0
+let peak = 0;
+async function meter(ms) {
+  const tr = ms.getAudioTracks()[0];
+  if (!tr || typeof MediaStreamTrackProcessor === "undefined") return;
+  const rd = new MediaStreamTrackProcessor({ track: tr }).readable.getReader();
+  for (;;) {
+    const { value, done } = await rd.read();
+    if (done) return;
+    const n = value.numberOfFrames, b = new Float32Array(n);
+    try { value.copyTo(b, { planeIndex: 0, format: "f32-planar" }); } catch (_) { value.close(); continue; }
+    value.close();
+    for (const x of b) peak = Math.max(peak, Math.abs(x));
+  }
+}
+function level() { const p = peak; peak = 0; return +p.toFixed(4); }
+
+function send(o) { if (ws?.readyState === 1) ws.send(JSON.stringify(o)); }
+
+async function call() {
+  const o = await pc.createOffer();
+  await pc.setLocalDescription(o);
+  send({ type: "offer", sdp: pc.localDescription });
+  st.phase = "已呼叫";
+}
+
+// 每方向视频码率上限 1.2 Mbps：ECS 5 Mbps，走中继时一路通话约 2.4 Mbps
+async function capBitrate() {
+  for (const s of pc.getSenders()) {
+    if (s.track?.kind !== "video") continue;
+    const p = s.getParameters();
+    p.encodings = p.encodings?.length ? p.encodings : [{}];
+    p.encodings[0].maxBitrate = 1_200_000;
+    try { await s.setParameters(p); } catch (_) { /* 有的内核不支持 */ }
+  }
+}
+
+async function stats() {
+  if (!pc) return;
+  const r = await pc.getStats();
+  let pair, inV, outV, inA, now = performance.now();
+  r.forEach((s) => {
+    if (s.type === "transport" && s.selectedCandidatePairId) pair = r.get(s.selectedCandidatePairId);
+    if (s.type === "inbound-rtp" && s.kind === "video") inV = s;
+    if (s.type === "outbound-rtp" && s.kind === "video") outV = s;
+    if (s.type === "inbound-rtp" && s.kind === "audio") inA = s;
+  });
+  if (!pair) r.forEach((s) => { if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded") pair = s; });
+  if (pair) {
+    const l = r.get(pair.localCandidateId), rc = r.get(pair.remoteCandidateId);
+    st.local = l ? `${l.candidateType}/${l.protocol}` : "-";
+    st.remote = rc ? `${rc.candidateType}/${rc.protocol}` : "-";
+    st.path = (l?.candidateType === "relay" || rc?.candidateType === "relay") ? "经 ECS 中继" : l?.candidateType === "host" && rc?.candidateType === "host" ? "局域网直连" : "P2P 打洞";
+    st.rtt = pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : "-";
+  }
+  const dt = (now - lastT) / 1000;
+  if (inV) { st.fps = inV.framesPerSecond ?? "-"; st.res = inV.frameWidth ? `${inV.frameWidth}x${inV.frameHeight}` : "-"; if (lastT) st.kbpsIn = Math.round((inV.bytesReceived - lastIn) * 8 / 1000 / dt); lastIn = inV.bytesReceived; }
+  if (outV) { if (lastT) st.kbpsOut = Math.round((outV.bytesSent - lastOut) * 8 / 1000 / dt); lastOut = outV.bytesSent; }
+  // 对方声音：电平（WebAudio 测的 RMS）+ 音频码率；电平接近 0 就是对方麦克风没声音或被别的录音占了
+  if (inA) { const e = inA.totalAudioEnergy || 0, d = inA.totalSamplesDuration || 0;
+    st.audioIn = level(); lastAE = e; lastAD = d;
+    st.audioKbps = lastT ? Math.round((inA.bytesReceived - lastAB) * 8 / 1000 / dt) : "-"; lastAB = inA.bytesReceived; }
+  lastT = now;
+  show();
+}
+
+$("hang").addEventListener("click", () => { pc?.close(); ws?.close(); stream?.getTracks().forEach((t) => t.stop()); st.phase = "已挂断"; show(); });
+$("relay").addEventListener("click", () => { const u = new URL(location.href); u.searchParams.set("relay", forceRelay ? "0" : "1"); location.href = u.href; });
+start();
+</script>
+</body>
+</html>

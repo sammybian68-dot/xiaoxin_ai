@@ -167,6 +167,12 @@ def index(request: Request, k: str = "") -> Response:
     return _index_html()
 
 
+@app.get("/calltest")
+def calltest_page() -> FileResponse:
+    """阶段 0 的视频通话测试页（?room= &relay=1 &mute=1）。挂在根下，页面里 api/ 的相对路径才对。"""
+    return FileResponse(STATIC / "calltest.html", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/voice")
 def voice_page() -> RedirectResponse:
     return RedirectResponse("./#settings/voice")
@@ -1251,6 +1257,31 @@ def voice_file(sid: str, ref: int = 0) -> FileResponse:
         if not path.is_file():
             raise HTTPException(404, "还没切参考段")
     return FileResponse(path, media_type="audio/wav")
+
+
+# ---------------------------------------------------------------- 视频通话（阶段 0 最小版：TURN 凭证 + 信令转发）
+
+@app.get("/api/call/ice")
+def call_ice(who: str = "xiaoxin") -> dict:
+    """RTCPeerConnection 的 iceServers：ECS 上 coturn 的 STUN + TURN（临时凭证，10 分钟）。"""
+    from server.family import call
+
+    return call.ice_servers(who)
+
+
+@app.websocket("/api/call/{room}")
+async def call_signal(ws: WebSocket, room: str) -> None:
+    """信令：同一个房间最多两端，消息原样转给另一端。"""
+    from server.family import call
+
+    if not _ws_authed(ws) or not call.ROOM.match(room):
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    try:
+        await call.relay(ws, room)
+    except WebSocketDisconnect:
+        pass
 
 
 @app.delete("/api/voice/{sid}")

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 小新家长：爸爸妈妈手机上的 App。和 pad 上的小新不一样：没有唤醒监听、闹钟服务、开机自启，只是一个连家庭线程的壳。
+     设计见 docs/architecture.md（阶段 3 起加微信分享入口、扫码配对、通知）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.xiaoxin.parent">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 视频通话、语音留言 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <application
+        android:label="小新家长"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:debuggable="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
