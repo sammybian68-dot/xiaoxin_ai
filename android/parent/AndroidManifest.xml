@@ -26,6 +26,19 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 微信等 App 里「分享」→ 小新家长：图片、文件、文字，一张或多张 -->
+            <intent-filter android:label="发给孩子">
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- 微信的「用其他应用打开」（文件、有时是图片）走的是 VIEW -->
+            <intent-filter android:label="发给孩子">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="*/*" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

@@ -272,11 +272,21 @@ public class TalkActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (web != null && web.canGoBack()) {
-            web.goBack();
-        } else {
+        // 先问网页：开着大图、设置就关掉（window.xiaoxinBack 返回 true 表示处理了），和小新家长一样
+        if (web == null) {
             super.onBackPressed();
+            return;
         }
+        web.evaluateJavascript("window.xiaoxinBack ? String(window.xiaoxinBack()) : 'false'", r -> {
+            if ("\"true\"".equals(r)) {
+                return;
+            }
+            if (web.canGoBack()) {
+                web.goBack();
+            } else {
+                moveTaskToBack(true);  // pad 上的小新常驻：返回到桌面但不关掉（待命、闹钟照常）
+            }
+        });
     }
 
     @Override

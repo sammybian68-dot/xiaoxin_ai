@@ -23,7 +23,12 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import java.security.MessageDigest;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -75,6 +80,7 @@ public class MainActivity extends Activity {
         setContentView(web);
         // 有 token 就用它登（服务端种 cookie 再跳回去）；没有就直接打开，网页显示配对码输入框
         web.loadUrl(TextUtils.isEmpty(key()) ? base() : base() + "?k=" + Uri.encode(key()));
+        takeShare(getIntent());
         openPage(getIntent());
     }
 
@@ -85,7 +91,122 @@ public class MainActivity extends Activity {
             recreate();
             return;
         }
+        setIntent(intent);
+        if (takeShare(intent)) {
+            web.evaluateJavascript("window.xiaoxinShareArrived && window.xiaoxinShareArrived()", null);
+            return;
+        }
         openPage(intent);
+    }
+
+    // ---------------------------------------------------------------- 微信等分享进来的（docs/architecture.md 8.1）
+    // 分享来的是 content:// URI，只在这一次 intent 里有读权限：马上拷到私有缓存 share/，再告诉网页「有东西要发」，
+    // 网页通过 bridge 一个个取回来变成 File，走和「相册选图」一样的上传（本地压图、原图可选）。
+    // 发完或取消，网页调 shareDone() 清掉。缓存只留最近一次分享的。
+
+    private static final long SHARE_MAX = 200L * 1024 * 1024;
+    private final JSONArray shared = new JSONArray();
+    private String sharedText = "";
+
+    private boolean takeShare(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+        String act = intent.getAction();
+        List<Uri> uris = new ArrayList<>();
+        if (Intent.ACTION_SEND.equals(act)) {
+            Uri u = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (u != null) {
+                uris.add(u);
+            }
+        } else if (Intent.ACTION_SEND_MULTIPLE.equals(act)) {
+            ArrayList<Uri> list = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (list != null) {
+                uris.addAll(list);
+            }
+        } else if (Intent.ACTION_VIEW.equals(act) && intent.getData() != null && "content".equals(intent.getData().getScheme())) {
+            uris.add(intent.getData());
+        } else {
+            return false;
+        }
+        CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        File dir = new File(getCacheDir(), "share");
+        deleteAll(dir);
+        dir.mkdirs();
+        synchronized (shared) {
+            while (shared.length() > 0) {
+                shared.remove(0);
+            }
+            sharedText = text == null ? "" : text.toString();
+            int i = 0;
+            for (Uri u : uris) {
+                if (i >= 9) {
+                    break;  // 一次最多 9 个，和微信一样
+                }
+                try {
+                    String name = displayName(u);
+                    String mime = getContentResolver().getType(u);
+                    File out = new File(dir, "f" + i);
+                    long n = copy(u, out);
+                    if (n <= 0 || n > SHARE_MAX) {
+                        out.delete();
+                        continue;
+                    }
+                    JSONObject o = new JSONObject();
+                    o.put("id", "f" + i);
+                    o.put("name", name);
+                    o.put("mime", mime == null ? "application/octet-stream" : mime);
+                    o.put("size", n);
+                    shared.put(o);
+                    i++;
+                } catch (Exception ignored) {
+                    // 读不了的跳过（对方没给读权限、文件没了）
+                }
+            }
+        }
+        intent.setAction(Intent.ACTION_MAIN);  // 转屏、回到前台时别再处理一遍
+        return shared.length() > 0 || !sharedText.isEmpty();
+    }
+
+    private String displayName(Uri u) {
+        try (android.database.Cursor c = getContentResolver().query(u, new String[] {android.provider.OpenableColumns.DISPLAY_NAME},
+                null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) {
+                return c.getString(0);
+            }
+        } catch (Exception ignored) {
+            // 有的 provider 不给名字
+        }
+        String last = u.getLastPathSegment();
+        return last == null ? "file" : last;
+    }
+
+    private long copy(Uri u, File out) throws Exception {
+        long n = 0;
+        try (InputStream in = getContentResolver().openInputStream(u); OutputStream o = new FileOutputStream(out)) {
+            if (in == null) {
+                return 0;
+            }
+            byte[] buf = new byte[64 * 1024];
+            int r;
+            while ((r = in.read(buf)) > 0) {
+                n += r;
+                if (n > SHARE_MAX) {
+                    return n;
+                }
+                o.write(buf, 0, r);
+            }
+        }
+        return n;
+    }
+
+    private static void deleteAll(File dir) {
+        File[] fs = dir.listFiles();
+        if (fs != null) {
+            for (File f : fs) {
+                f.delete();
+            }
+        }
     }
 
     /** 返回键先问网页：开着大图就关、在群里就回聊天列表（window.xiaoxinBack 返回 true 表示处理了）；网页不管才退出。 */
@@ -160,6 +281,50 @@ public class MainActivity extends Activity {
             if (token != null && token.startsWith("xd_")) {
                 prefs.edit().putString("key", token).apply();
             }
+        }
+
+        /** 分享进来的东西：{text, files:[{id,name,mime,size}]}，没有返回 null。 */
+        @android.webkit.JavascriptInterface
+        public String sharePending() {
+            synchronized (shared) {
+                if (shared.length() == 0 && sharedText.isEmpty()) {
+                    return null;
+                }
+                try {
+                    return new JSONObject().put("text", sharedText).put("files", shared).toString();
+                } catch (Exception e) {
+                    return null;
+                }
+            }
+        }
+
+        /** 第 off 字节起最多 len 字节，base64（bridge 只能传字符串；网页按 1 MB 一段拼回 File）。 */
+        @android.webkit.JavascriptInterface
+        public String shareChunk(String id, long off, int len) {
+            if (id == null || !id.matches("f[0-8]")) {
+                return "";
+            }
+            File f = new File(new File(getCacheDir(), "share"), id);
+            try (java.io.RandomAccessFile r = new java.io.RandomAccessFile(f, "r")) {
+                r.seek(off);
+                byte[] buf = new byte[(int) Math.max(0, Math.min(len, Math.min(4 * 1024 * 1024, r.length() - off)))];
+                r.readFully(buf);
+                return android.util.Base64.encodeToString(buf, android.util.Base64.NO_WRAP);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        /** 发完或取消：清掉缓存。 */
+        @android.webkit.JavascriptInterface
+        public void shareDone() {
+            synchronized (shared) {
+                while (shared.length() > 0) {
+                    shared.remove(0);
+                }
+                sharedText = "";
+            }
+            deleteAll(new File(getCacheDir(), "share"));
         }
     }
 

@@ -55,6 +55,7 @@ async function boot() {
     $("ask").hidden = false;
     $("input").placeholder = "发给孩子…";
     await showChats();
+    setTimeout(() => window.xiaoxinShareArrived(), 0);  // 被微信「分享」拉起来的：弹「发给孩子」
   } else {
     await openThread();
   }
@@ -1184,6 +1185,10 @@ if (native?.standby) {
   $("standby").hidden = false;
   $("standby").addEventListener("click", () => setStandby(!standby.on));
   if (localGet("standby")) setTimeout(() => setStandby(true), 800);  // 上次开着，打开 app 就接着待命
+  // 切到别的 App（分享、看相册）再回来：原生在后台停了监听，网页这边按记着的状态重新开（原来只在启动时恢复）
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && localGet("standby") && !talk.on) setTimeout(() => setStandby(true), 300);
+  });
 }
 
 // 唤醒后一直没人说话：最后 10 秒在通话条上倒计时，说一句话就清掉
@@ -2341,7 +2346,13 @@ async function postOnly(text, files, via) {
 // 先给 2048 的大图；有原图（勾了「原图」、已传完）才出「查看原图」，点了再下原图（几 MB，ECS 只有 5 Mbps）
 function openViewer(f) {
   const o = f.original;
-  $("viewer-img").src = `api/files/${f.id}?v=screen`;
+  const img = $("viewer-img");
+  // 和微信一样瞬间打开：先放已经在缓存里的缩略图（气泡、侧栏刚显示过），大图下完再无缝换上，不出现黑屏等图
+  img.src = `api/files/${f.id}?v=thumb`;
+  const big = new Image();
+  big.onload = () => { if ($("viewer").open && img.dataset.fid === f.id) img.src = big.src; };
+  big.src = `api/files/${f.id}?v=screen`;
+  img.dataset.fid = f.id;
   $("viewer-orig").hidden = !(o && o.received >= o.size);
   $("viewer-orig").href = `api/files/${f.id}`;
   $("viewer-orig").textContent = o ? `查看原图（${sizeLabel(o.size)}）` : "查看原图";
@@ -2361,7 +2372,7 @@ document.addEventListener("click", (e) => {
   e.preventDefault();
   const f = findFile(a.dataset.fid);
   if (f) openViewer(f);
-});
+}, true);  // 捕获阶段：抢在任何 target=_blank 的默认行为之前
 function findFile(id) {
   for (const m of state.conv?.messages || []) for (const f of m.files || []) if (f.id === id) return f;
   return null;
@@ -2374,3 +2385,78 @@ window.xiaoxinBack = () => {
   if (document.body.classList.contains("parent-mode") && !document.body.classList.contains("in-chats")) { $("back-chats").click(); return true; }
   return false;
 };
+
+
+// ---------------------------------------------------------------- 微信等分享进来（小新家长 APK）
+// 原生把分享的文件拷到缓存，这里经 bridge 按 1 MB 一段取回来拼成 File，再走和「相册选图」一样的上传
+// （图片本地压 480 / 2048 先传，原图勾了才传；别的文件整个传）。
+
+const shareBridge = () => window.XiaoxinParent?.sharePending ? window.XiaoxinParent : null;
+
+async function shareFile(b, f) {
+  const parts = [];
+  for (let off = 0; off < f.size; off += 1 << 20) {
+    const b64 = b.shareChunk(f.id, off, 1 << 20);
+    if (!b64) throw new Error(`读不到 ${f.name}`);
+    const bin = atob(b64), u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    parts.push(u);
+    if (off % (8 << 20) === 0) await new Promise((r) => setTimeout(r));  // 大文件别卡住界面
+  }
+  return new File(parts, f.name, { type: f.mime });
+}
+
+let shareState = null;
+
+async function checkShare() {
+  const b = shareBridge();
+  const raw = b?.sharePending();
+  if (!raw) return;
+  const d = JSON.parse(raw);
+  if (!state.kids?.length) { toast("还没有孩子账号"); b.shareDone(); return; }
+  shareState = { d, kid: state.conv?.kid && !document.body.classList.contains("in-chats") ? state.conv.kid : state.kids[0].id };
+  $("share-files").innerHTML = d.files.map((f) => `<div class="sf">${/^image\//.test(f.mime) ? "🖼" : "📄"}<span>${esc(f.name)}<small>${sizeLabel(f.size)}</small></span></div>`).join("")
+    || `<div class="sf">💬<span>${esc(d.text.slice(0, 80))}</span></div>`;
+  $("share-text").value = d.text || "";  // 纯文字分享：就是要发的那段话；带文件的：一般是标题，可以改
+  const imgs = d.files.filter((f) => /^image\/(jpeg|png|webp|heic|heif|gif)$/i.test(f.mime));
+  $("share-orig-row").hidden = !imgs.length;
+  $("share-orig").checked = localGet("orig") === "1";
+  $("share-orig-size").textContent = imgs.length ? sizeLabel(imgs.reduce((n, f) => n + f.size, 0)) : "";
+  const many = state.kids.length > 1;
+  $("share-kids").hidden = !many;
+  $("share-title").textContent = many ? "发给哪个孩子" : `发给${state.kids[0].name}`;
+  $("share-kids").innerHTML = state.kids.map((k) => `<button type="button" role="radio" data-kid="${esc(k.id)}" aria-checked="${k.id === shareState.kid}">`
+    + `<span>${esc(k.avatar || "🧒")}</span>${esc(k.name)}</button>`).join("");
+  for (const btn of $("share-kids").querySelectorAll("[data-kid]")) btn.addEventListener("click", () => {
+    shareState.kid = btn.dataset.kid;
+    for (const x of $("share-kids").children) x.setAttribute("aria-checked", String(x === btn));
+  });
+  if (!$("share").open) $("share").showModal();
+}
+window.xiaoxinShareArrived = () => { checkShare().catch((e) => toast(e.message)); };
+
+$("share-no").addEventListener("click", () => { $("share").close(); shareBridge()?.shareDone(); shareState = null; });
+$("share-yes").addEventListener("click", async () => {
+  if (!shareState) return;
+  const b = shareBridge(), { d, kid } = shareState;
+  const btn = $("share-yes");
+  btn.disabled = true;
+  try {
+    btn.textContent = "准备中…";
+    // 进到那个孩子的群（列表里的话就点进去），然后像自己选了图一样上传、发送
+    if (document.body.classList.contains("in-chats") || state.conv?.kid !== kid) await enterChat(kid);
+    state.pending = [];
+    for (const f of d.files) {
+      btn.textContent = `上传 ${f.name.slice(0, 12)}…`;
+      await upload(await shareFile(b, f));
+    }
+    if (state.pending.some((p) => !p.meta)) throw new Error("有文件没传上去");
+    state.sendOrig = $("share-orig").checked;
+    $("share").close();
+    if (askOn()) $("ask").click();  // 分享来的是给孩子看的，不问小新
+    await send($("share-text").value.trim() || "");
+    b.shareDone();
+    shareState = null;
+  } catch (e) { toast(e.message, 4000); }
+  finally { btn.disabled = false; btn.textContent = "发送"; }
+});
