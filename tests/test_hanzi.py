@@ -49,3 +49,10 @@ def test_model_shows_stroke_order(client, fakes, data):
     rec = client.get(f"/api/conversations/{cid}").json()["messages"][-1]
     assert rec["actions"][0]["name"] == "show_stroke_order"
     assert json.loads(rec["actions"][0]["arguments"])["chars"] == "心"
+
+
+def test_prompt_says_always_call_tool_and_fixed_reply():
+    from server import prompts
+
+    text = prompts.read("hanzi")
+    assert "一律先调 show_stroke_order" in text and "这 N 个字的写法参考笔顺图。" in text

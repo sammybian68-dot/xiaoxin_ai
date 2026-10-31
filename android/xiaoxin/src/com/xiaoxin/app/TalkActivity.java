@@ -306,6 +306,12 @@ public class TalkActivity extends Activity {
             });
         }
 
+        /** 待命中换了模型 / 换了对话：唤醒后连的地址跟着换（不然唤醒起来还用开待命那会儿的模型）。 */
+        @JavascriptInterface
+        public void setTalkUrl(String pageUrl) {
+            runOnUiThread(() -> talkUrl = pageUrl);
+        }
+
         /** 设置里改了唤醒词 / 退出词 / 超时，马上生效。 */
         @JavascriptInterface
         public void setWords(String wakes, String exits, int idleS, int endMs, String tone) {
@@ -392,6 +398,12 @@ public class TalkActivity extends Activity {
             runOnUiThread(() -> setShowWhenLocked(false));
         }
 
+        /** 自由对话中碰了笔顺卡：小新马上闭嘴、挂断，不说「拜拜」，回到待命（唤醒过的照常回待命）。 */
+        @JavascriptInterface
+        public void quietHangUp() {
+            runOnUiThread(() -> { if (talk != null) hangUp("去写字了，要用再叫我", BY_TOUCH); });
+        }
+
         /** 闹钟页「熄屏睡觉」。 */
         @JavascriptInterface
         public void screenOff() {
@@ -473,6 +485,7 @@ public class TalkActivity extends Activity {
     private static final int BY_USER = 0;     // 说了退出词 / 点了挂断：小新说「拜拜」
     private static final int BY_TIMEOUT = 1;  // 太久没说话：超时提示音
     private static final int BY_ERROR = 2;    // 连接断了、连不上：不出声
+    private static final int BY_TOUCH = 3;    // 点了屏幕上的笔顺卡：安静挂断回待命（孩子要动手写）
 
     private void hangUp(String reason) {
         hangUp(reason, BY_USER);

@@ -41,6 +41,8 @@ function strokeCard(chars) {
     <div class="hz-strip"></div>
   </section>`);
   const st = { ch: chars[0], data: null, writer: null, step: -1, quiz: false, cells: [], ink: [], len: [], gen: 0 };
+  // 手指一碰笔顺卡（自由对话中）：小新闭嘴、挂断回到待命，孩子专心写；不说「拜拜」
+  card.addEventListener("pointerdown", () => { if (talk?.on) endTalkForCard(); }, { capture: true });
   const $c = (s) => card.querySelector(s);
 
   const tabs = $c(".hz-tabs");
@@ -339,4 +341,11 @@ function hzWrongTone() {
     if (f === 330) pos += gap;
   }
   return pcm.buffer;
+}
+
+// 自由对话中碰了笔顺卡：打断小新、挂断（安静地，不说「拜拜」），pad 回到待命
+function endTalkForCard() {
+  if (native?.quietHangUp) { native.quietHangUp(); return; }
+  try { talk.stream?.stop(); } catch (_) { /* 没在放 */ }
+  hangUp(false, true);
 }

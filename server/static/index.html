@@ -56,6 +56,7 @@
         <span class="sr-only">模型</span>
         <select id="model"></select>
       </label>
+      <button id="open-debug" class="debug-btn" type="button" title="看每一步发给主脑的是什么">🔍 调试</button>
       <button id="open-clock" class="icon-btn clock-btn" type="button" title="闹钟和计时" aria-label="闹钟和计时">⏰</button>
       <button id="autoread" class="icon-btn" type="button" aria-pressed="true" title="回答完自动朗读">🔊</button>
       <button id="standby" class="standby" type="button" aria-pressed="false" hidden
@@ -127,6 +128,21 @@
 <div id="night" class="night" hidden>
   <div><div id="night-time" class="clk-num"></div><small>点一下回来</small></div>
 </div>
+
+<aside id="debug" class="debug" aria-label="调试" hidden>
+  <div class="debug-head">
+    <b>调试</b>
+    <div class="seg" role="tablist" aria-label="看什么">
+      <button type="button" data-dv="turns" aria-selected="true">每一步</button>
+      <button type="button" data-dv="ctx">上下文</button>
+      <button type="button" data-dv="prompt">提示词</button>
+      <button type="button" data-dv="tools">工具</button>
+    </div>
+    <button id="debug-refresh" class="icon-btn" type="button" title="刷新" aria-label="刷新">⟳</button>
+    <button id="debug-close" class="icon-btn" type="button" aria-label="关闭">✕</button>
+  </div>
+  <div id="debug-body" class="debug-body"></div>
+</aside>
 
 <dialog id="compact-dialog" class="confirm" aria-labelledby="compact-title">
   <h2 id="compact-title">现在压缩这段对话？</h2>

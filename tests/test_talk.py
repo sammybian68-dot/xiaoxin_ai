@@ -676,3 +676,14 @@ def test_hush_stops_current_turn(call, fakes, monkeypatch):
     c.until("speaking")
     assert "idle" not in c.kinds()[c.kinds().index("speaking"):-1] or True
     assert c.audio - before < 24000 * 2  # hush 之后旧这一轮不再下发大段音频
+
+
+def test_talk_turn_is_traced_under_conversation(call, fakes):
+    from server import trace
+
+    c = call()
+    c.send_pcm(said())
+    c.until("idle")
+    cid = c.msgs[0]["conversation"]
+    t = trace.turns(cid)[0]
+    assert t["voice"] is True and "语音通话" in t["calls"][0]["system"]

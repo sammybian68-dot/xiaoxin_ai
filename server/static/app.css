@@ -81,6 +81,46 @@ button { cursor: pointer; }
 .epoch-divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 4px 0; }
 .epoch-divider::before, .epoch-divider::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
 
+/* 调试面板：右侧抽屉，和聊天并排（不挡住聊天，边说边看） */
+.debug-btn { height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--muted); font-size: 14px; white-space: nowrap; }
+.debug-btn:hover { color: var(--text); }
+body.debug-on .debug-btn { color: #7eb6ff; border-color: #7eb6ff; }
+.debug { position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 40vw); z-index: 25; background: var(--panel); border-left: 1px solid var(--line);
+  display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); }
+.debug[hidden] { display: none; }
+body.debug-on .main { margin-right: min(520px, 40vw); }
+/* 调试开着、顶栏变窄：模型名先缩，按钮只留图标 */
+body.debug-on .top { gap: 6px; }
+body.debug-on .model-pick select { max-width: 120px; }
+body.debug-on .free-talk { padding: 0 12px; }
+body.debug-on .standby { padding: 0 10px; }
+body.debug-on #autoread, body.debug-on #open-clock { display: none; }
+.debug-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.debug-head .seg { margin: 0; flex: 1; }
+.debug-body { flex: 1; overflow-y: auto; padding: 12px; display: grid; gap: 10px; align-content: start; font-size: 13px; }
+.debug-body h4 { margin: 8px 0 4px; font-size: 13px; color: var(--muted); }
+.dt { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.dt header { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; padding: 8px 12px; background: var(--raised); }
+.dt header span { color: var(--muted); }
+.dt-acts { margin: 0; padding: 6px 12px 8px 28px; display: grid; gap: 4px; }
+.dt-acts small { color: var(--muted); }
+.dc summary { display: grid; grid-template-columns: 22px auto auto auto 1fr; gap: 10px; align-items: baseline; padding: 7px 12px; cursor: pointer; list-style: none; border-top: 1px solid var(--line); }
+.dc summary::-webkit-details-marker { display: none; }
+.dc summary span { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dc .dc-what { overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.dc-n { color: #7eb6ff !important; }
+.dc-body { display: grid; gap: 6px; padding: 8px 12px 12px; background: #0b0d10; }
+.dm { display: grid; gap: 2px; }
+.dm pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.6 ui-monospace, Menlo, "PingFang SC", monospace; padding: 6px 8px; border-radius: 8px; background: var(--panel); max-height: 260px; overflow: auto; }
+.dm-role { font-size: 11px; font-weight: 700; color: var(--muted); }
+.dm-user .dm-role { color: #7eb6ff; } .dm-assistant .dm-role { color: #3ddc84; } .dm-tool .dm-role { color: #ffb547; }
+.dm-reply .dm-role { color: #3ddc84; } .dm-system .dm-role { color: #c79bff; }
+.dm-sys .dm-role { color: #c79bff; } .dm-sum .dm-role { color: #ffb547; }
+.bad { color: #ff8b8b; font-style: normal; }
+.dk { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; }
+.dk span { color: var(--muted); }
+@media (max-width: 820px) { .debug { width: 100%; } body.debug-on .main { margin-right: 0; } }
+
 /* 确认弹窗 */
 .confirm { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); color: var(--text); padding: 22px 24px 18px; max-width: min(440px, calc(100vw - 32px)); }
 .confirm::backdrop { background: rgba(0, 0, 0, .55); }
@@ -194,6 +234,9 @@ button { cursor: pointer; }
 .msg.me.live .text::after { content: "▍"; animation: blink 1s steps(1) infinite; margin-left: 2px; }
 .msg.me.rejected .text { background: var(--raised); color: var(--muted); }
 .msg.me.rejected .via { opacity: .6; }
+/* 气泡里有卡片（笔顺、报时）：气泡撑满可用宽度。卡片用 container query 按自己宽度排版，
+   气泡如果按内容收缩，卡片就会把自己算得很窄、挤成竖排 */
+.bubble:has(.hz, .tc-wrap) { width: min(640px, 82%); }
 .action-chip { align-self: flex-start; border: 1px solid rgba(255, 181, 71, .35); background: rgba(255, 181, 71, .1); color: #ffcf85; border-radius: 12px; padding: 6px 12px; font-size: 13px; text-align: left; max-width: 100%; }
 .action-chip.bad { border-color: #5a2a2e; background: #2a1719; color: #ffb4b4; }
 .clock-btn.live { color: #ffb547; }

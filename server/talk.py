@@ -442,7 +442,7 @@ class Talk:
 
         loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
-        worker = loop.run_in_executor(None, self._llm_thread, model, history, q, loop, True)
+        worker = loop.run_in_executor(None, self._llm_thread, model, history, q, loop, True, self.cid)
         tts.start()
         parts, end, speaking = [], None, False
         try:

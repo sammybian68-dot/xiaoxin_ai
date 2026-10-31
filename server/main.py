@@ -14,6 +14,8 @@ import hmac
 import io
 import json
 import logging
+import re
+import time
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -191,6 +193,23 @@ def prompt_view(conversation: str = "") -> dict:
         if conv:
             out["summary"] = {"title": conv.get("title") or "新对话", "text": conv.get("summary") or "",
                               **compact.state(conv)}
+    return out
+
+
+@app.get("/api/debug/{cid}")
+def debug_turns(cid: str) -> dict:
+    """调试面板：这段对话最近 20 轮里每次发给主脑的请求原样（system、messages、tools、回了什么、用量、耗时），
+    加上当前的上下文状态和压缩摘要。只在内存里，服务重启就没了。"""
+    from server import compact, trace
+
+    out = {"turns": trace.turns(cid)}
+    try:
+        conv = store.get(cid)
+        out["ctx"] = compact.state(conv)
+        out["summary"] = conv.get("summary") or ""
+        out["epoch_start"] = conv.get("epoch_start") or 0
+    except KeyError:
+        pass
     return out
 
 
@@ -385,7 +404,7 @@ def _llm_messages(conv: dict) -> list[dict]:
                      "function": {"name": a["name"], "arguments": a.get("arguments") or "{}"}}]})
                 out.append({"role": "tool", "tool_call_id": cid, "content": a["result"]})
             if m.get("text"):
-                out.append({"role": "assistant", "content": m["text"]})
+                out.append({"role": "assistant", "content": strip_role_tag(m["text"])})
             continue
         parts: list[dict] = []
         for meta in m.get("files") or []:
@@ -419,10 +438,44 @@ def _run_tool(name: str, arguments: str) -> web_search.Result:
     return web_search.search(arguments)
 
 
+# 回答开头不该出现的角色标记：对话里有「[system] …」现状消息，27B 偶尔学着在自己回答开头写「[assistant]」
+ROLE_TAG = re.compile(r"^\s*(\[(assistant|system|user)\]|assistant\s*[:：]|小新\s*[:：])\s*", re.I)
+ROLE_TAG_PREFIXES = ("[assistant]", "[system]", "[user]", "assistant:", "assistant：", "小新:", "小新：")
+
+
+def strip_role_tag(text: str) -> str:
+    return ROLE_TAG.sub("", text or "", count=1)
+
+
+class RoleTagFilter:
+    """流式地剥掉回答最开头的角色标记。开头几个字可能是标记的前半截（「[assi」），先压着，
+    确定是标记就剥掉、确定不是就原样放出；过了开头就直通。"""
+
+    def __init__(self):
+        self.buf, self.done, self.trim = "", False, False
+
+    def feed(self, chunk: str) -> str:
+        if self.done:
+            if self.trim:  # 刚剥掉标记：紧跟的空白也不要
+                chunk = chunk.lstrip()
+                self.trim = not chunk
+            return chunk
+        self.buf += chunk
+        head = self.buf.lstrip().lower()
+        if ROLE_TAG.match(self.buf) and not any(p.startswith(head) and p != head for p in ROLE_TAG_PREFIXES):
+            out, self.done = strip_role_tag(self.buf).lstrip(), True
+            self.buf, self.trim = "", not out
+            return out
+        if head and any(p.startswith(head) for p in ROLE_TAG_PREFIXES):
+            return ""  # 还像标记的前半截，再等一块
+        out, self.done, self.buf = self.buf, True, ""
+        return out
+
+
 MAX_CLOCK_CALLS = 8  # 一轮里本地工具（时间、闹钟）最多调几次（「把闹钟全删了再设两个」也够）
 
 
-def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -> None:
+def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False, cid: str | None = None) -> None:
     """在线程里跑同步的流式请求，每个事件丢回事件循环的队列。
 
     工具循环：模型要搜就搜（发 search 事件），把结果接在后面再问一次，一轮最多搜 MAX_SEARCHES 次。
@@ -434,6 +487,9 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
     def put(*item):
         loop.call_soon_threadsafe(q.put_nowait, item)
 
+    from server import trace
+
+    tr = trace.new_turn(cid, model=model, voice=voice)
     tries = [model, model] + ([FALLBACK] if model != FALLBACK else [])
     got, usage, served, last = False, {}, model, ""
     msgs, searches, searched, rounds, clock_calls, actions = list(history), 0, [], 0, 0, []
@@ -445,9 +501,13 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
         served = m
         calls: list[dict] = []
         text = ""
+        head_filter = RoleTagFilter()
         tools = registry.SPECS
+        system = prompts.build(voice=voice)
+        rec = trace.add_call(tr, model=m, system=system, messages=[dict(x) for x in msgs],
+                             tools=[t["function"]["name"] for t in tools])
+        t_req = time.monotonic()
         try:
-            system = prompts.build(voice=voice)  # 每次现拼：闹钟刚被工具改过，下一次请求就看到新状态
             for kind, value in client.iter_stream(m, msgs, system=system, max_tokens=4096, timeout=180,
                                                   tools=tools):
                 if kind == "model":
@@ -460,10 +520,21 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
                 elif kind == "tool_calls":
                     calls = value
                 else:
+                    value = head_filter.feed(value)  # 剥掉回答开头的「[assistant]」之类（见 RoleTagFilter）
+                    if not value:
+                        continue
                     got = True
                     text += value
                     put("delta", value)
+            if head_filter.buf and not head_filter.done:  # 整个回答就几个像标记的字：原样给出去
+                value, head_filter.buf, head_filter.done = head_filter.buf, "", True
+                got = True
+                text += value
+                put("delta", value)
+            rec.update(served=served, reply=text, tool_calls=calls, usage=usage,
+                       seconds=round(time.monotonic() - t_req, 2))
         except client.ProxyError as e:
+            rec.update(error=str(e)[:300], seconds=round(time.monotonic() - t_req, 2))
             last = str(e)[:300]
             log.warning("chat %s attempt=%d failed (got text=%s, searches=%d): %s", m, attempt + 1, got,
                         searches, last)
@@ -511,6 +582,7 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False) -
         if searches:
             break
         attempt += 1
+    trace.finish(tr, served=served, error="" if got else (last or "没收到回答"), actions=actions)
     put("end", {"served": served, "usage": usage, "error": "" if got else (last or "没收到回答"),
                 "searches": searched, "actions": actions})
 
@@ -628,7 +700,7 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
     async def events():
         loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
-        worker = loop.run_in_executor(None, _llm_thread, model, history, q, loop)
+        worker = loop.run_in_executor(None, _llm_thread, model, history, q, loop, False, cid)
         if tts:
             tts.start()
         yield _sse("user", user)

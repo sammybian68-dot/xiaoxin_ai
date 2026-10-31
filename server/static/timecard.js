@@ -52,7 +52,7 @@ function timeCard(serverNow) {
   const q = (s) => card.querySelector(s);
 
   function tick() {
-    if (!card.isConnected && card.dataset.started) return;  // 卡被删了就停
+    if (!card.isConnected && card.dataset.started) return;  // 卡被删了就停（wrap 被删 card 也就不在页面上了）
     card.dataset.started = "1";
     const t = new Date(Date.now() + offset);
     const h = t.getHours(), m = t.getMinutes(), s = t.getSeconds();
@@ -74,7 +74,10 @@ function timeCard(serverNow) {
   }
   q(".tc-pair").addEventListener("click", () => { twelveFirst = !twelveFirst; tick(); });
   requestAnimationFrame(tick);
-  return card;
+  const wrap = document.createElement("div");  // 外面包一层，卡片按自己的宽度排版（container query）
+  wrap.className = "tc-wrap";
+  wrap.appendChild(card);
+  return wrap;
 }
 
 // 工具结果「现在 2026-10-30 13:30:07 星期五（北京时间）」→ Date（按北京时间）

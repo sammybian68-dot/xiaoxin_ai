@@ -481,3 +481,41 @@ def test_cue_say_short_phrases(client, fakes):
     n = len(fakes.calls)
     client.get("/api/cue/say", params={"text": "卧钩"})  # 第二次读缓存，不再合成
     assert len(fakes.calls) == n
+
+
+@pytest.mark.parametrize("chunks, out", [
+    (["[assistant]", " 好的"], "好的"), (["[assi", "stant]\n\n今天", "几件"], "今天几件"), (["[", "我觉得"], "[我觉得"),
+    (["好的", "[assistant]"], "好的[assistant]"), (["小新：", "你好"], "你好"), (["小", "朋友好"], "小朋友好"),
+])
+def test_role_tag_filter(chunks, out):
+    from server.main import RoleTagFilter
+
+    f = RoleTagFilter()
+    assert "".join(f.feed(c) for c in chunks) + f.buf == out
+
+
+def test_leaked_role_tag_stripped_in_reply(client, fakes):
+    fakes.llm_deltas = ["[assistant]", "\n\n今天有两件事。"]
+    cid = client.post("/api/conversations").json()["id"]
+    client.post(f"/api/conversations/{cid}/messages", json={"text": "今天有什么新闻"})
+    assert store.get(cid)["messages"][-1]["text"] == "今天有两件事。"
+
+
+def test_debug_trace_records_each_request(client, fakes):
+    """调试面板：每轮记下每次发给主脑的请求（system、messages、tools、回答、用量），按轮次新的在前。"""
+    fakes.llm_script = [("tool", "query_time", {}), ("text", "现在是上午 8 点")]
+    cid = client.post("/api/conversations").json()["id"]
+    client.post(f"/api/conversations/{cid}/messages", json={"text": "现在几点"})
+    d = client.get(f"/api/debug/{cid}").json()
+    t = d["turns"][0]
+    assert t["voice"] is False and len(t["calls"]) == 2 and t["done"] is True
+    first, second = t["calls"]
+    assert first["system"] and "query_time" in first["tools"] and first["tool_calls"][0]["name"] == "query_time"
+    assert first["messages"][0]["content"].startswith("[system]")  # 现状消息在 messages 里，不在 system
+    assert second["reply"] == "现在是上午 8 点" and second["messages"][-1]["role"] == "tool"
+    assert t["actions"][0]["name"] == "query_time"
+    assert d["ctx"]["epoch"] == 0 and d["summary"] == ""
+
+
+def test_debug_requires_auth(anon):
+    assert anon.get("/api/debug/0123456789abcdef").status_code == 401

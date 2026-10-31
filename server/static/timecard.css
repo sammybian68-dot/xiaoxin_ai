@@ -38,6 +38,11 @@
   background: var(--tc-12); border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .25); }
 .tc-day-lab { display: flex; justify-content: space-between; font-size: 12px; color: var(--tc-soft); font-variant-numeric: tabular-nums; }
 
+.tc-wrap { container-type: inline-size; }
+@container (max-width: 520px) {
+  .tc { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+  .tc-pair { justify-content: center; }
+}
 @media (max-width: 640px) {
   .tc { grid-template-columns: 1fr; justify-items: center; text-align: center; }
   .tc-clock { width: min(220px, 70vw); height: min(220px, 70vw); }

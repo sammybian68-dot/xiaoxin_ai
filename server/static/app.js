@@ -65,6 +65,7 @@ function savePrefs() { localSet("prefs", JSON.stringify(prefs)); }
 $("model").addEventListener("change", () => {
   state.model = $("model").value;
   localSet("model", state.model);
+  syncStandbyUrl();
   if (talk.on) talkSend({ type: "model", model: state.model });  // 自由对话中换模型，下一句起生效
 });
 
@@ -131,6 +132,7 @@ async function openConv(id) {
   scrollDown(true);
   refreshList();
   loadCtx();
+  syncStandbyUrl();
 }
 
 // 压缩分界线：上面的已经压成摘要了（原文还在，只是不再整段发给模型）
@@ -144,6 +146,7 @@ function appendDivider(epoch) {
 function renderEmpty() {
   state.conv = null;
   renderCtx(null);
+  syncStandbyUrl();
   $("conv-title").textContent = "小新";
   $("messages").innerHTML = `<div class="empty"><img src="static/icon.png" alt=""><b>你好，我是小新</b>可以打字、发图片和文件，也可以按住说话</div>`;
 }
@@ -865,6 +868,9 @@ function talkSend(obj) {
 // 唤醒后就是一通普通的自由对话，20 秒没动静自动挂断回待命。
 const standby = { on: false };
 
+// 待命中换模型 / 换对话：告诉原生，唤醒后用新的
+function syncStandbyUrl() { if (native?.setTalkUrl) native.setTalkUrl(standbyUrl()); }
+
 function standbyUrl() {
   const q = new URLSearchParams({ model: state.model });
   if (state.conv) q.set("conversation", state.conv.id);
@@ -924,9 +930,9 @@ function showCountdown(left) {
   el.textContent = left > 0 ? `${left} 秒后回去待命` : "回去待命";
 }
 
-function hangUp(fromNative = false) {
+function hangUp(fromNative = false, quiet = false) {
   showCountdown(-1);
-  if (!fromNative && talk.on && !native) playCue("bye");
+  if (!fromNative && !quiet && talk.on && !native) playCue("bye");
   if (!talk.on) return;
   talk.on = false;
   dropLive();
@@ -1690,3 +1696,87 @@ $("compact-yes").addEventListener("click", async () => {
     toast(r.started ? "开始压缩了，压好后下一句起生效" : (r.error || "现在压不了"));
   } catch (e) { toast(e.message); }
 });
+
+
+// ---------------------------------------------------------------- 调试面板（照 carHer2「调试」）
+// 每一步：最近 20 轮，每轮里每次发给主脑的请求——用的模型、耗时、token、回了什么、调了什么工具；
+// 点开看这次请求的原样：system、messages（[system] 现状消息、压缩摘要、工具结果都在里面）。
+// 上下文：电量、压缩次数、上次摘要。提示词：分模块 / 完整 system / 压缩提示词。工具：注册的工具和参数。
+const dbg = { view: "turns", data: null, prompts: null, timer: null };
+
+async function loadDebug() {
+  const body = $("debug-body");
+  if (!state.conv?.id) { body.innerHTML = '<p class="voice-tip">先打开或开始一段对话。</p>'; return; }
+  try {
+    const [d, p] = await Promise.all([api(`api/debug/${state.conv.id}`).then(json),
+      dbg.prompts ? Promise.resolve(dbg.prompts) : api(`api/prompts?conversation=${state.conv.id}`).then(json)]);
+    dbg.data = d; dbg.prompts = p;
+  } catch (e) { body.textContent = e.message; return; }
+  renderDebug();
+}
+
+function dbgMsg(m) {
+  const role = m.role === "tool" ? "tool" : m.role;
+  let text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c) => c.text || "[图片]").join("\n") : "";
+  let tag = role;
+  if (role === "user" && text.startsWith("[system]")) tag = "system·现状";
+  else if (role === "user" && text.startsWith("前面的对话已经压缩")) tag = "压缩摘要";
+  if (m.tool_calls) text = m.tool_calls.map((c) => `→ ${c.function.name}(${c.function.arguments})`).join("\n") + (text ? "\n" + text : "");
+  const cls = tag === "system·现状" ? "sys" : tag === "压缩摘要" ? "sum" : role;
+  return `<div class="dm dm-${cls}"><span class="dm-role">${esc(tag)}</span><pre>${esc(text)}</pre></div>`;
+}
+
+function renderDebug() {
+  const body = $("debug-body"), d = dbg.data, p = dbg.prompts;
+  for (const b of document.querySelectorAll("[data-dv]")) b.setAttribute("aria-selected", String(b.dataset.dv === dbg.view));
+  if (!d) return;
+  if (dbg.view === "turns") {
+    if (!d.turns.length) { body.innerHTML = '<p class="voice-tip">这段对话还没有记录（服务重启后清空；说一句就有）。</p>'; return; }
+    body.innerHTML = d.turns.map((t) => {
+      const when = new Date(t.at * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+      const calls = t.calls.map((c, i) => {
+        const u = c.usage || {};
+        const tools = (c.tool_calls || []).map((x) => `<code>${esc(x.name)}</code>`).join(" ");
+        return `<details class="dc"><summary><span class="dc-n">${i + 1}</span><b>${esc(c.served || c.model)}</b>`
+          + `<span>${c.seconds ?? "…"}s</span><span>${u.prompt_tokens ? `${(u.prompt_tokens / 1000).toFixed(1)}k 入 / ${u.completion_tokens || 0} 出` : ""}</span>`
+          + `<span class="dc-what">${c.error ? `<i class="bad">失败：${esc(c.error)}</i>` : tools ? `调用 ${tools}` : esc((c.reply || "").slice(0, 40))}</span></summary>`
+          + `<div class="dc-body"><div class="dm dm-system"><span class="dm-role">system</span><pre>${esc(c.system || "")}</pre></div>`
+          + (c.messages || []).map(dbgMsg).join("")
+          + (c.reply ? `<div class="dm dm-reply"><span class="dm-role">回答</span><pre>${esc(c.reply)}</pre></div>` : "")
+          + `</div></details>`;
+      }).join("");
+      const acts = (t.actions || []).map((a) => `<li><code>${esc(a.name)}</code> ${esc(a.arguments || "")}<br><small>${esc(a.result)}</small></li>`).join("");
+      return `<section class="dt"><header><b>${when}</b><span>${t.voice ? "📞 语音" : "⌨ 文字"}</span><span>${esc(t.served || t.model)}</span>`
+        + `<span>${t.calls.length} 次请求</span>${t.error ? `<i class="bad">${esc(t.error)}</i>` : ""}</header>`
+        + calls + (acts ? `<ul class="dt-acts">${acts}</ul>` : "") + `</section>`;
+    }).join("");
+  } else if (dbg.view === "ctx") {
+    const c = d.ctx || {};
+    body.innerHTML = `<div class="dk"><span>已用</span><b>${(c.tokens || 0).toLocaleString()} token</b><span>阈值</span><b>${(c.limit || 0).toLocaleString()}</b>`
+      + `<span>压缩过</span><b>${c.epoch || 0} 次</b><span>状态</span><b>${esc(c.state || "idle")}${c.error ? `（${esc(c.error)}）` : ""}</b>`
+      + `<span>这个 epoch 从第</span><b>${d.epoch_start} 条消息起</b></div>`
+      + `<h4>上次压缩的摘要</h4>` + (d.summary ? `<pre class="sys-prompt">${esc(d.summary)}</pre>` : '<p class="voice-tip">还没压缩过。</p>');
+  } else if (dbg.view === "prompt") {
+    body.innerHTML = `<h4>完整 system prompt（文字对话）</h4><pre class="sys-prompt">${esc(p.system)}</pre>`
+      + `<h4>语音通话多拼的</h4><pre class="sys-prompt">${esc((p.parts.find((x) => x.name === "voice") || {}).text || "")}</pre>`
+      + p.parts.filter((x) => x.name !== "voice").map((x) => `<details class="pm"><summary><b>${esc(x.name)}.md</b><small>${x.text.length} 字</small></summary><pre class="sys-prompt">${esc(x.text)}</pre></details>`).join("")
+      + `<details class="pm"><summary><b>compact.md</b><small>压缩用</small></summary><pre class="sys-prompt">${esc(p.compact || "")}</pre></details>`;
+  } else {
+    body.innerHTML = p.tools.map((t) => `<details class="pm"><summary><b>${esc(t.name)}</b><span class="pm-desc">${esc(t.description.split("\n")[0])}</span></summary>`
+      + `<pre class="sys-prompt">${esc(JSON.stringify(t.parameters, null, 2))}</pre></details>`).join("");
+  }
+}
+
+function openDebug() {
+  $("debug").hidden = false;
+  document.body.classList.add("debug-on");
+  dbg.prompts = null;
+  loadDebug();
+  clearInterval(dbg.timer);
+  dbg.timer = setInterval(() => { if (!$("debug").hidden && dbg.view === "turns") loadDebug(); }, 4000);
+}
+function closeDebug() { $("debug").hidden = true; document.body.classList.remove("debug-on"); clearInterval(dbg.timer); }
+$("open-debug").addEventListener("click", () => ($("debug").hidden ? openDebug() : closeDebug()));
+$("debug-close").addEventListener("click", closeDebug);
+$("debug-refresh").addEventListener("click", () => { dbg.prompts = null; loadDebug(); });
+for (const b of document.querySelectorAll("[data-dv]")) b.addEventListener("click", () => { dbg.view = b.dataset.dv; renderDebug(); });

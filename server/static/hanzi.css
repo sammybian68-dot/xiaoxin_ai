@@ -52,9 +52,14 @@
 
 .hz-cheer { font-size: 20px; color: #3f8a5c; font-weight: 600; min-height: 1.2em; }
 
-@media (max-width: 640px) {
+/* 按卡片自己的宽度排版（不按屏幕）：调试面板打开、聊天区变窄时也不挤成竖排 */
+.hz { container-type: inline-size; }
+@container (max-width: 560px) {
   .hz-main { grid-template-columns: 1fr; justify-items: center; }
-  .hz-board { width: min(260px, 78vw); height: min(260px, 78vw); }
   .hz-info { justify-items: center; text-align: center; }
+  .hz-btns { justify-content: center; }
+}
+@media (max-width: 640px) {
+  .hz-board { width: min(260px, 78vw); height: min(260px, 78vw); }
 }
 @media (prefers-reduced-motion: reduce) { .hz-cell .box { transition: none; } }
