@@ -203,7 +203,7 @@ def me(request: Request) -> dict:
             "kids": [{"id": k["id"], "name": k["name"], "call": k["call"], "avatar": k["avatar"],
                       "thread": k["thread"]} for k in kids],
             # 群聊气泡上要按发送人画头像和名字：全家（启用的）都给，只有名字和头像
-            "people": {m["id"]: {"name": m["name"], "avatar": m["avatar"], "role": m["role"]}
+            "people": {m["id"]: {"name": m["name"], "avatar": m["avatar"], "role": m["role"], "voice": m.get("voice", "")}
                        for m in members.all_members() if m["status"] == "active"}}
 
 
@@ -534,6 +534,8 @@ def member_edit(request: Request, mid: str, body: dict = Body(...)) -> dict:
     try:
         if "active" in body:
             members.set_status(mid, bool(body.pop("active")))
+        if "voice" in body:
+            members.set_voice(mid, str(body.pop("voice") or ""))
         m = members.update(mid, **body)
     except KeyError:
         raise HTTPException(404, "没有这个成员")
@@ -1564,11 +1566,23 @@ def cue(request: Request, name: str, voice: str = "", text: str = "", kid: str =
 
 @app.post("/api/tts")
 def tts(body: dict = Body(...)) -> Response:
-    """读一段话，用当前选中的音色；body 里给 voice 就临时换一个。"""
+    """读一段话，用当前选中的音色；body 里给 voice 就临时换一个；给 member（家长 id）就用这位家长设的音色
+    （孩子 pad 读爸爸妈妈发的消息）。家长音色用不了（没设、CosyVoice 没起来）退回小新的音色，X-Voice-Note 里说。"""
     text = str(body.get("text") or "").strip()[:600]
     if not text:
         raise HTTPException(400, "没有要读的字")
-    return _speak(text, body.get("voice"))
+    voice = body.get("voice")
+    if not voice and body.get("member"):
+        try:
+            voice = members.get(str(body["member"])).get("voice") or None
+        except KeyError:
+            voice = None
+    try:
+        return _speak(text, voice)
+    except HTTPException:
+        if voice and not body.get("voice"):
+            return _speak(text, None)  # 家长那个音色坏了：用小新的读，别不出声
+        raise
 
 
 # ---------------------------------------------------------------- 音色
@@ -1585,7 +1599,8 @@ def engine_settings() -> dict:
 
 
 @app.put("/api/engines")
-def engine_select(body: dict = Body(...)) -> dict:
+def engine_select(request: Request, body: dict = Body(...)) -> dict:
+    need(request, "admin")  # 全家共用的设置：只有管理员能改
     try:
         voices.set_engines(asr=body.get("asr"), tts=body.get("tts"), vad_end_ms=body.get("vad_end_ms"),
                            wake_word=body.get("wake_word"), wake_idle_s=body.get("wake_idle_s"),
@@ -1597,7 +1612,8 @@ def engine_select(body: dict = Body(...)) -> dict:
 
 
 @app.put("/api/voices/current")
-def voice_select(body: dict = Body(...)) -> dict:
+def voice_select(request: Request, body: dict = Body(...)) -> dict:
+    need(request, "admin")  # 全家共用的设置：只有管理员能改
     try:
         return voices.select(str(body.get("voice") or ""))
     except voices.VoiceError as e:
@@ -1610,7 +1626,8 @@ def voice_preview(body: dict = Body(...)) -> Response:
 
 
 @app.post("/api/voices/custom")
-def voice_add(body: dict = Body(...)) -> dict:
+def voice_add(request: Request, body: dict = Body(...)) -> dict:
+    need(request, "admin")  # 全家共用的设置：只有管理员能改
     try:
         return voices.add_custom(str(body.get("speaker") or ""), str(body.get("name") or ""))
     except voices.VoiceError as e:
@@ -1618,7 +1635,8 @@ def voice_add(body: dict = Body(...)) -> dict:
 
 
 @app.delete("/api/voices/custom/{speaker}")
-def voice_remove(speaker: str) -> dict:
+def voice_remove(request: Request, speaker: str) -> dict:
+    need(request, "admin")  # 全家共用的设置：只有管理员能改
     return voices.remove_custom(speaker)
 
 
@@ -1631,6 +1649,7 @@ def voice_samples() -> dict:
 
 @app.post("/api/voice")
 async def voice_upload(request: Request) -> dict:
+    need(request, "admin")  # 全家共用的设置：只有管理员能改
     from urllib.parse import unquote
 
     data = await request.body()
@@ -1643,7 +1662,8 @@ async def voice_upload(request: Request) -> dict:
 
 
 @app.patch("/api/voice/{sid}")
-def voice_rename(sid: str, body: dict = Body(...)) -> dict:
+def voice_rename(request: Request, sid: str, body: dict = Body(...)) -> dict:
+    need(request, "admin")  # 全家共用的设置：只有管理员能改
     name = str(body.get("name") or "").strip()[:20]
     if not name:
         raise HTTPException(400, "名字不能空")
@@ -1692,7 +1712,8 @@ async def call_signal(ws: WebSocket, room: str) -> None:
 
 
 @app.delete("/api/voice/{sid}")
-def voice_delete(sid: str) -> dict:
+def voice_delete(request: Request, sid: str) -> dict:
+    need(request, "admin")  # 全家共用的设置：只有管理员能改
     try:
         store.delete_sample(sid)
     except KeyError:

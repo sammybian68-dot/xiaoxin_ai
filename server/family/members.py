@@ -181,6 +181,27 @@ def update(mid: str, **fields) -> dict:
     return m
 
 
+def set_voice(mid: str, voice_id: str) -> dict:
+    """家长的消息在孩子 pad 上用哪个音色读（音色目录里的 id，空 = 用小新的声音）。只有家长能设。"""
+    from server import voices
+
+    with _lock:
+        ms = ensure()
+        m = next((x for x in ms if x["id"] == mid), None)
+        if m is None:
+            raise KeyError(mid)
+        if m["role"] != "parent":
+            raise MemberError("只有家长能设音色")
+        if voice_id:
+            try:
+                voices.find(voice_id)
+            except Exception:
+                raise MemberError("没有这个音色")
+        m["voice"] = voice_id or ""
+        store._write_json(_members_path(), ms)
+    return m
+
+
 def set_status(mid: str, active: bool) -> dict:
     """停用 = 默认的「删除」：吊销他所有设备，历史和线程都留着，可以恢复。"""
     with _lock:

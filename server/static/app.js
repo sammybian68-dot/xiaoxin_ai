@@ -40,7 +40,10 @@ async function boot() {
   state.kids = me.kids;
   state.people = me.people || {};
   state.sendOrig = localGet("orig") === "1";
-  document.querySelector('.settings-nav [data-pane="members"]').hidden = me.who.kind !== "admin";
+  // 设置页签按角色：小新本身的（语音引擎、唤醒词、音色、提示词、成员）只给管理员；家长、孩子只看「对话」和「登录与设备」
+  for (const pane of ["talk", "wake", "voice", "prompt", "members"]) {
+    document.querySelector(`.settings-nav [data-pane="${pane}"]`).hidden = me.who.kind !== "admin";
+  }
   state.models = me.models;
   state.system = me.system_prompt;
   state.vision = me.vision_model;
@@ -199,10 +202,31 @@ function hubMessage(m, kind) {
   if (m.role === "assistant" && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
   if (m.role === "user" && m.via === "talk" && talk.on) return;      // 自己这台在自由对话：那句由 heard 画（带原声小喇叭）
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
-  appendMessage(m);
+  const row = appendMessage(m);
   scrollDown();
   markRead(state.conv);
   if (m.files?.length) renderSide();
+  // 孩子的 pad：爸爸妈妈发来的话，用他们设的声音读一遍（docs/architecture.md 6.2 的 speak）
+  if (m.role === "user" && m.text && m.speak !== false && state.me?.role !== "parent"
+      && state.people?.[m.from]?.role === "parent" && prefs.autoread) sayLater(m, row);
+}
+
+// 读家长消息：小新正在说、在自由对话里、正在发消息，就等它说完再读，不打断
+const sayQueue = [];
+function sayLater(m, row) {
+  sayQueue.push({ m, row });
+  if (sayQueue.length === 1) sayNext();
+}
+function sayNext() {
+  const job = sayQueue[0];
+  if (!job) return;
+  if (talk.on || state.sending || player.audio || player.stream) { setTimeout(sayNext, 1500); return; }
+  const btn = job.row.querySelector('[data-act="say"]');
+  const p = person(job.m.from);
+  speakAs(`${p.name}说：${job.m.text}`, btn, { member: job.m.from }).finally(() => {
+    const wait = () => { if (player.audio) { setTimeout(wait, 500); return; } sayQueue.shift(); sayNext(); };
+    wait();
+  });
 }
 
 async function hubCatchUp() {
@@ -296,7 +320,9 @@ function appendMessage(m) {
     row.classList.add(p.role === "parent" ? "from-parent" : "from-kid");
     row.innerHTML = `<span class="avatar sm emoji" aria-hidden="true">${esc(p.avatar)}</span><div class="bubble">`
       + `<div class="who">${esc(p.name)}</div>${attachmentsHtml(m.files)}${m.text ? `<div class="text">${esc(m.text)}</div>` : ""}`
-      + `${m.to === "xiaoxin" ? '<div class="via">问小新</div>' : ""}</div>`;
+      + `${m.to === "xiaoxin" ? '<div class="via">问小新</div>' : ""}`
+      + `${m.text && p.role === "parent" ? '<div class="actions"><button type="button" data-act="say">朗读</button></div>' : ""}</div>`;
+    row.querySelector('[data-act="say"]')?.addEventListener("click", (e) => speakAs(m.text, e.currentTarget, { member: m.from }));
   } else if (m.role === "user") {
     // 自由对话的句子：气泡上方一个小喇叭，点了回放服务端收到的原声，并摊开端侧（pad 本机）认出的字，对照云端识别查输入问题
     const replay = m.via === "talk" && (m.audio || m.local != null)
@@ -490,7 +516,10 @@ class PcmStream {
   }
 }
 
-async function speak(text, btn) {
+function speak(text, btn) { return speakAs(text, btn, {}); }
+
+// opts.voice：指定音色（试听）；opts.member：用这位家长设的音色（孩子 pad 读爸爸妈妈的消息）
+async function speakAs(text, btn, opts) {
   if (player.btn === btn) { stopSpeaking(); return; }
   stopSpeaking();
   if (!text.trim()) { toast("这条没有可读的字"); return; }
@@ -499,7 +528,7 @@ async function speak(text, btn) {
   btn.textContent = "生成中…";
   try {
     const r = await api("api/tts", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text.slice(0, 600) }) });
+      body: JSON.stringify({ text: text.slice(0, 600), ...opts }) });
     const note = decodeURIComponent(r.headers.get("x-voice-note") || "");
     const blob = await r.blob();
     if (seq !== player.seq) return;  // 等的时候被停了或换了一条
@@ -1609,7 +1638,41 @@ function renderVoices(cat) {
 }
 
 async function loadVoices() {
-  try { renderVoices(await api("api/voices").then(json)); } catch (err) { toast(err.message); }
+  try {
+    const cat = await api("api/voices").then(json);
+    renderVoices(cat);
+    renderParentVoices(cat);
+  } catch (err) { toast(err.message); }
+}
+
+// 爸爸妈妈的声音：每位注册的家长一个下拉，选音色目录里的任意一个（豆包、CosyVoice 男声、录过的声音）；存在成员档案里
+async function renderParentVoices(cat) {
+  const box = $("parent-voices");
+  if (state.me?.kind !== "admin") { box.innerHTML = '<p class="voice-tip">管理员才能改。</p>'; return; }
+  let ms;
+  try { ms = await api("api/members").then(json); } catch (e) { box.textContent = e.message; return; }
+  const parents = ms.parents.filter((m) => m.status === "active");
+  if (!parents.length) { box.innerHTML = '<p class="voice-tip">还没有注册家长。在「成员」里添加。</p>'; return; }
+  const opts = (sel) => `<option value="">小新的声音</option>` + cat.voices.map((v) =>
+    `<option value="${esc(v.id)}" ${v.id === sel ? "selected" : ""} ${v.ready ? "" : "disabled"}>${esc(v.name)} · ${v.engine === "doubao" ? "豆包" : "本机"}${v.ready ? "" : "（现在用不了）"}</option>`).join("");
+  box.innerHTML = parents.map((m) => `<div class="row pv" data-id="${esc(m.id)}"><label><b>${esc(m.avatar || "🧑")} ${esc(m.name)}</b></label>`
+    + `<span class="pv-ctl"><select aria-label="${esc(m.name)}的声音">${opts(m.voice || "")}</select>`
+    + `<button type="button" class="pv-try" title="试听">▶</button></span></div>`).join("");
+  for (const row of box.querySelectorAll(".pv")) {
+    const sel = row.querySelector("select");
+    sel.addEventListener("change", async () => {
+      try {
+        await api(`api/members/${row.dataset.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ voice: sel.value }) });
+        if (state.people?.[row.dataset.id]) state.people[row.dataset.id].voice = sel.value;
+        toast("改好了");
+      } catch (e) { toast(e.message); }
+    });
+    row.querySelector(".pv-try").addEventListener("click", (e) => {
+      const name = row.querySelector("b").textContent.trim().split(" ").pop();
+      speakAs(`${state.kids?.[0]?.call || "宝贝"}，我是${name}，作业做完了吗？`, e.currentTarget, { voice: sel.value || undefined });
+    });
+  }
 }
 
 // ---------------------------------------------------------------- 唤醒词 / 退出词：一行一个，＋ 添加，命中任意一个就算

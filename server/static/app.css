@@ -545,3 +545,5 @@ a[data-fid] .orig { position: absolute; right: 6px; bottom: 6px; background: rgb
 .share textarea { width: 100%; box-sizing: border-box; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--text); padding: 10px; font: inherit; resize: none; }
 .share-orig { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; font-size: 14px; }
 .share-orig small { color: var(--muted); }
+.parent-voices .pv-ctl { display: flex; gap: 8px; align-items: center; }
+.parent-voices select { max-width: 240px; }

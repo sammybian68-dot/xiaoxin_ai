@@ -211,3 +211,45 @@ def test_parent_ask_xiaoxin_and_model_sees_speaker(family, fakes):
     last = [m["content"] for m in fakes.llm_requests[-1]["messages"] if m["role"] == "user"][-1]
     assert last == "我做完了"  # 孩子自己说的不加前缀
     assert store.get(dau_t)["messages"][-2]["from"] == family["ids"]["女儿"]
+
+
+# ---------------------------------------------------------------- 家长的声音（孩子 pad 读爸爸妈妈的消息）
+
+def test_parent_voice_used_for_their_messages(family, fakes):
+    from server import voices
+
+    dad = family["ids"]["爸爸"]
+    other = next(v["id"] for v in voices.catalog()["voices"] if v["engine"] == "doubao" and v["id"] != voices.DEFAULT)
+    assert family["admin"].patch(f"/api/members/{dad}", json={"voice": other}).json()["voice"] == other
+    assert family["女儿"].get("/api/me").json()["people"][dad]["voice"] == other
+    r = family["女儿"].post("/api/tts", json={"text": "作业做完了吗", "member": dad})
+    assert r.status_code == 200 and r.headers["x-voice"] == other
+    assert family["女儿"].post("/api/tts", json={"text": "你好"}).headers["x-voice"] != other  # 不带 member 还是小新的
+
+
+def test_parent_voice_rules(family):
+    dad, son = family["ids"]["爸爸"], family["ids"]["儿子"]
+    assert family["admin"].patch(f"/api/members/{dad}", json={"voice": "doubao:nope"}).status_code == 400
+    assert family["admin"].patch(f"/api/members/{son}", json={"voice": "doubao:x"}).status_code == 400  # 孩子没有
+    assert family["爸爸"].patch(f"/api/members/{dad}", json={"voice": ""}).status_code == 403  # 管理员才能改
+    assert family["admin"].patch(f"/api/members/{dad}", json={"voice": ""}).json()["voice"] == ""
+
+
+def test_broken_parent_voice_falls_back(family, fakes, monkeypatch):
+    """家长选了本机复刻的声音，CosyVoice 合成失败：用小新的声音读，不让孩子那边没声。"""
+    dad = family["ids"]["爸爸"]
+    ms = json.loads((store.DATA / "members.json").read_text())
+    for m in ms:
+        if m["id"] == dad:
+            m["voice"] = "clone:deadbeefdeadbeef"  # 录音被删了
+    (store.DATA / "members.json").write_text(json.dumps(ms))
+    r = family["女儿"].post("/api/tts", json={"text": "早点睡", "member": dad})
+    assert r.status_code == 200 and r.headers["x-voice"] != "clone:deadbeefdeadbeef"
+
+
+def test_family_settings_admin_only(family):
+    for c in (family["女儿"], family["爸爸"]):
+        assert c.put("/api/engines", json={"tts": "doubao"}).status_code == 403
+        assert c.put("/api/voices/current", json={"voice": "doubao:x"}).status_code == 403
+        assert c.delete("/api/voice/0123456789abcdef").status_code == 403
+    assert family["女儿"].get("/api/voices").status_code == 200  # 看可以
