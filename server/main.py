@@ -354,7 +354,29 @@ def stopwatch_act(action: str) -> dict:
     return _clock_call(clock.control_stopwatch, action)
 
 
-# ---------------------------------------------------------------- 对话
+# ---------------------------------------------------------------- 家庭线程（全家只有这一条）
+
+@app.get("/api/thread")
+def family_thread() -> dict:
+    """全家唯一的那条对话。第一次调时把老的多段对话按时间并进来（先备份），见 store.migrate_to_thread。"""
+    return store.thread()
+
+
+@app.post("/api/thread/new_chapter")
+def family_new_chapter(body: dict = Body(default={})) -> dict:
+    """设置里「开始新篇章」：小新的记忆窗口重新开始，聊天记录不动。keep_summary=true 带上到现在为止的摘要。"""
+    from server import compact
+
+    tid = store.thread_id()
+    if (store.get(tid).get("compact") or {}).get("state") == "running":
+        raise HTTPException(409, "正在后台压缩，等十几秒再试")
+    try:
+        return compact.new_chapter(tid, bool(body.get("keep_summary")))
+    except Exception as e:  # 摘要没写成：不换，原样告诉界面
+        raise HTTPException(502, f"摘要没写成，这次没换：{e}")
+
+
+# ---------------------------------------------------------------- 对话（老接口：线程也是一段对话，按 id 访问照旧）
 
 @app.get("/api/conversations")
 def conversations() -> dict:

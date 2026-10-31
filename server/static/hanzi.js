@@ -67,7 +67,13 @@ function strokeCard(chars) {
     $c(".hz-now").innerHTML = i < 0 ? `共 <b>${n}</b> 画` : `第 <b>${i + 1}</b> 笔${name(i) ? `：<b>${esc(name(i))}</b>` : ""}`;
     $c(".hz-step").textContent = i < 0 ? "" : `${i + 1} / ${n}`;
     st.cells.forEach((c, k) => c.setAttribute("aria-current", String(k === i)));
-    st.cells[i]?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+    // 只横着滚下面那一排笔画格，不用 scrollIntoView（它会连聊天区一起往上拽，打开页面就停在老卡上）
+    const cell = st.cells[i], strip = cell?.parentElement;
+    if (cell && strip) {
+      const l = cell.offsetLeft - strip.offsetLeft, r = l + cell.offsetWidth;
+      if (l < strip.scrollLeft) strip.scrollTo({ left: l - 8, behavior: "smooth" });
+      else if (r > strip.scrollLeft + strip.clientWidth) strip.scrollTo({ left: r - strip.clientWidth + 8, behavior: "smooth" });
+    }
   }
 
   // 演示：自己画（不用 Hanzi Writer 的动画），这样每一笔的颜色能单独控制——正在写的红色，写过的墨色，没写的淡灰。

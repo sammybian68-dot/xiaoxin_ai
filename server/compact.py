@@ -184,8 +184,27 @@ def maybe_swap(cid: str) -> bool:
     if c.get("state") != "ready" or not c.get("pending"):
         return False
     p = c["pending"]
-    epoch = (conv.get("epoch") or 0) + 1
-    store.update_conv(cid, epoch=epoch, summary=p["summary"], epoch_start=p["cut"], compacted_at=time.time(),
-                      compact={"state": "idle", "last_seconds": c.get("seconds")}, ctx_tokens=0)
-    log.info("compact swap %s → epoch %d (keep from #%d)", cid, epoch, p["cut"])
+    if p["cut"] < (conv.get("epoch_start") or 0):  # 压的时候用户点了「开始新篇章」：这份摘要过时了，扔掉
+        store.update_conv(cid, compact={"state": "idle"})
+        return False
+    conv = store.new_epoch(cid, "compact", start=p["cut"], summary=p["summary"], compacted_at=time.time(),
+                           compact={"state": "idle", "last_seconds": c.get("seconds")})
+    log.info("compact swap %s → epoch %d (keep from #%d)", cid, conv["epoch"], p["cut"])
     return True
+
+
+def new_chapter(cid: str, keep_summary: bool) -> dict:
+    """设置里「开始新篇章」：小新的记忆窗口从这里重新开始，聊天记录一条不动。
+    keep_summary=True 时把到现在为止的对话写成摘要带过去（同步压一次，十几秒），否则完全空白。"""
+    conv = store.get(cid)
+    summary = ""
+    if keep_summary:
+        start = conv.get("epoch_start") or 0
+        msgs = conv["messages"][start:]
+        if any(m.get("role") == "user" for m in msgs):
+            summary = _summarize(conv.get("summary") or "", msgs)
+        else:
+            summary = conv.get("summary") or ""
+    conv = store.new_epoch(cid, "new", summary=summary, compact={"state": "idle"})
+    log.info("new chapter %s → epoch %d keep_summary=%s", cid, conv["epoch"], keep_summary)
+    return state(conv)

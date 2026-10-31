@@ -41,9 +41,11 @@ def time_line(now: dt.datetime) -> str:
 
 def note_for(conv: dict, now: dt.datetime | None = None) -> dict | None:
     """这一轮要不要插一条 `[system]`：要的话返回 {text, clock}（存成 role=note 的消息），不要返回 None。
-    只看这段对话（这个 epoch 往前也算）上一条 note 说了什么。"""
+    只看这个 epoch 里上一条 note 说了什么。"""
     now = now or clock.now()
-    last = next((m for m in reversed(conv.get("messages", [])) if m.get("role") == "note"), None)
+    # 只在当前 epoch 里找：换了窗口（压缩、开始新篇章）后前面的 note 模型已经看不到了，要重新说一遍完整现状
+    msgs = conv.get("messages", [])[conv.get("epoch_start") or 0:]
+    last = next((m for m in reversed(msgs) if m.get("role") == "note"), None)
     clock_state = clock.summary()
     parts = []
     stale_time = True

@@ -53,6 +53,8 @@ button { cursor: pointer; }
 .conv:hover, .conv.active { background: var(--raised); }
 .conv .del { visibility: hidden; color: var(--muted); padding: 0 4px; border: 0; background: none; }
 .conv:hover .del, .conv.active .del { visibility: visible; }
+.side-tip { flex: 1; color: var(--muted); font-size: 13px; line-height: 1.6; padding: 4px 6px; margin: 0; }
+.chapter-keep { display: flex; align-items: center; gap: 10px; margin: 4px 0 8px; font-size: 14px; }
 .side-foot { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 6px; }
 
 /* 上下文电量：像手机电池。绿 → 琥珀 → 红；压缩中是流动的琥珀条 */

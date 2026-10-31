@@ -128,6 +128,125 @@ def append(cid: str, msg: dict) -> dict:
     return msg
 
 
+def new_epoch(cid: str, kind: str, *, start: int | None = None, summary: str = "", **fields) -> dict:
+    """小新的上下文窗口换一页：epoch +1、epoch_start 指到 start（默认指到末尾 = 一个干净的窗口）、summary 换掉。
+    消息一条不动，界面照样能往上翻；epochs 里记一笔，界面按它画分界线。kind: compact（压缩换窗）| new（开始新篇章）。"""
+    with _lock:
+        conv = get(cid)
+        start = len(conv["messages"]) if start is None else start
+        epochs = conv.get("epochs") or [{"start": 0, "kind": "start", "at": conv.get("created", 0)}]
+        epochs.append({"start": start, "kind": kind, "at": time.time()})
+        conv.update(epoch=(conv.get("epoch") or 0) + 1, epoch_start=start, summary=summary, epochs=epochs,
+                    ctx_tokens=0, **fields)
+        _write_json(CONV / f"{cid}.json", conv)
+    return conv
+
+
+# ---------------------------------------------------------------- 家庭线程
+# 小新是家里一个成员，全家只有一条线程（像微信里只有一个家庭群）。线程 id 记在 settings.json 的 thread。
+# 老版本是多段对话：第一次用到时 migrate_to_thread() 按时间并成一条（先整体备份），之后只有这一条。
+
+ARCHIVE = DATA / "conversations_archive"
+BACKUP = DATA / "backup"
+
+
+def thread_id() -> str:
+    """家庭线程的 id，没有就建（有老对话就先合并）。"""
+    tid = settings().get("thread")
+    if tid and (CONV / f"{tid}.json").is_file():
+        return tid
+    return migrate_to_thread()
+
+
+def thread() -> dict:
+    return get(thread_id())
+
+
+def migrate_to_thread() -> str:
+    """老的多段对话按最后活动时间首尾相接并成一条线程，可以重复跑（已经并过就直接返回）。
+
+    - 先把 conversations/ 整个拷到 backup/thread-migrate-<时间>/；并完后老文件挪到 conversations_archive/，不删。
+    - 线程沿用最近那段对话的 id（pad 记着的 id、调试记录、原声都还对得上），别的对话的原声挪进它的目录。
+    - 每段老对话的开头记成一个 epoch（kind=legacy，界面上画一条「新的一页」）；它自己压缩过的也照原位记上。
+    - 小新的上下文 = 最近那段对话原来的上下文（它的 epoch_start 和摘要），合并前后模型看到的一样。"""
+    import shutil
+
+    with _lock:
+        tid = settings().get("thread")
+        if tid and (CONV / f"{tid}.json").is_file():
+            return tid
+        olds = []
+        for p in CONV.glob("*.json"):
+            try:
+                olds.append(json.loads(p.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                continue
+        now = time.time()
+        if not olds:
+            conv = {"id": _new_id(), "title": "小新", "created": now, "updated": now, "messages": [],
+                    "epochs": [{"start": 0, "kind": "start", "at": now}]}
+            _write_json(CONV / f"{conv['id']}.json", conv)
+            _set_thread(conv["id"])
+            return conv["id"]
+        # 按最后活动时间排：最近在用的那段排在最后，小新的上下文就是它原来的上下文，不夹别的对话
+        olds.sort(key=lambda c: (c.get("updated", 0), c["id"]))
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        shutil.copytree(CONV, BACKUP / f"thread-migrate-{stamp}" / "conversations", dirs_exist_ok=True)
+        last = olds[-1]
+        tid = last["id"]
+        msgs, epochs, seen, last_start = [], [], set(), 0
+        for c in olds:
+            start = len(msgs)
+            epochs.append({"start": start, "kind": "legacy" if start else "start", "at": c.get("created", 0),
+                           "title": c.get("title") or ""})
+            if c.get("epoch_start"):
+                epochs.append({"start": start + c["epoch_start"], "kind": "compact", "at": c.get("compacted_at") or 0})
+            for m in c.get("messages", []):
+                if m.get("id") in seen:
+                    continue
+                seen.add(m.get("id"))
+                msgs.append(m)
+            if c is last:
+                last_start = start
+            if c["id"] != tid:
+                _move_audio(c["id"], tid)
+        conv = {"id": tid, "title": "小新", "created": olds[0].get("created", now), "updated": last.get("updated", now),
+                "messages": msgs, "epochs": epochs, "epoch": len(epochs) - 1,
+                "epoch_start": last_start + (last.get("epoch_start") or 0), "summary": last.get("summary") or "",
+                "ctx_tokens": last.get("ctx_tokens") or 0, "compact": {"state": "idle"}}
+        _write_json(CONV / f"{tid}.json", conv)
+        ARCHIVE.mkdir(parents=True, exist_ok=True)
+        for c in olds:
+            if c["id"] != tid:
+                (CONV / f"{c['id']}.json").replace(ARCHIVE / f"{c['id']}.json")
+        _set_thread(tid)
+        return tid
+
+
+def archived(cid: str) -> bool:
+    """这个 id 是不是并进线程之前的老对话（文件挪到了 conversations_archive/）。"""
+    return _ID.match(cid or "") is not None and (ARCHIVE / f"{cid}.json").is_file()
+
+
+def _set_thread(tid: str) -> None:
+    s = settings()
+    s["thread"] = tid
+    _write_json(SETTINGS, s)
+
+
+def _move_audio(src: str, dst: str) -> None:
+    d = TALK_AUDIO / src
+    if not d.is_dir():
+        return
+    (TALK_AUDIO / dst).mkdir(parents=True, exist_ok=True)
+    for p in d.glob("*.wav"):
+        p.replace(TALK_AUDIO / dst / p.name)
+    try:
+        d.rmdir()
+    except OSError:
+        pass
+
+
 def update_conv(cid: str, **fields) -> dict:
     """改对话顶层字段（ctx_tokens、epoch、summary、compact…），不动 messages、不刷新 updated。"""
     with _lock:

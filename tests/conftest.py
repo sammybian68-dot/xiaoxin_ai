@@ -43,6 +43,8 @@ def isolate_env(request, tmp_path, monkeypatch):
     monkeypatch.setattr(store, "VOICE", data / "voice")
     monkeypatch.setattr(store, "TALK_AUDIO", data / "talk_audio")
     monkeypatch.setattr(store, "SETTINGS", data / "settings.json")
+    monkeypatch.setattr(store, "ARCHIVE", data / "conversations_archive")
+    monkeypatch.setattr(store, "BACKUP", data / "backup")
     monkeypatch.setattr(doubao, "ROOT", tmp_path)  # .env 从这里读，这里没有
     for name in ("DOUBAO_TTS_API_KEY", "DOUBAO_API_KEY", "XIAOXIN_ORIGINS"):
         monkeypatch.delenv(name, raising=False)

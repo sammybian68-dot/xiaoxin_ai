@@ -177,9 +177,14 @@ class Talk:
     # ---------------------------------------------------------------- 主循环
     async def run(self) -> None:
         if not self.cid:
-            self.cid = store.create()["id"]
+            self.cid = store.thread_id()  # 没指定就进家庭线程
         else:
-            store.get(self.cid)  # 不存在就 KeyError，调用方处理
+            try:
+                store.get(self.cid)
+            except KeyError:
+                if not store.archived(self.cid):
+                    raise  # 不存在就 KeyError，调用方处理
+                self.cid = store.thread_id()  # pad 还记着并进线程之前的老对话 id：接到线程上
         cat = voices.catalog()
         await self.send("ready", conversation=self.cid, asr=self.asr_engine, tts=cat["engines"]["tts"],
                         voice=cat["current"])

@@ -44,11 +44,7 @@ async function boot() {
   state.model = me.models.some((m) => m.id === saved) ? saved : me.default_model;
   $("model").innerHTML = me.models.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
   $("model").value = state.model;
-  await refreshList();
-  const last = localGet("conv");
-  const list = state.list || [];
-  if (last && list.some((c) => c.id === last)) await openConv(last);
-  else renderEmpty();
+  await openThread();
   if (location.hash.startsWith("#settings")) openSettings(location.hash.split("/")[1]);
   if (native) api("api/voices").then(json).then((c) => syncVoiceToNative(c.current)).catch(() => {});
   pollClock();  // clock.js：长轮询闹钟状态，模型或别的设备改了马上同步
@@ -75,83 +71,48 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function dayLabel(ts) {
-  const d = new Date(ts * 1000), now = new Date();
-  const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const days = Math.round((start(now) - start(d)) / 86400000);
-  if (days === 0) return "今天";
-  if (days === 1) return "昨天";
-  if (days < 7) return "7 天内";
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
-async function refreshList() {
-  const { conversations } = await api("api/conversations").then(json);
-  state.list = conversations;
-  const box = $("conv-list");
-  box.innerHTML = "";
-  let group = "";
-  for (const c of conversations) {
-    const g = dayLabel(c.updated);
-    if (g !== group) {
-      group = g;
-      box.insertAdjacentHTML("beforeend", `<div class="conv-group">${g}</div>`);
-    }
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "conv" + (state.conv && state.conv.id === c.id ? " active" : "");
-    const ep = c.epoch ? `<span class="conv-epoch" title="压缩过 ${c.epoch} 次">${c.epoch}</span>` : "";
-    b.innerHTML = `<span>${esc(c.title)}</span>${ep}<span class="del" role="button" aria-label="删除" title="删除">✕</span>`;
-    b.addEventListener("click", (e) => {
-      if (e.target.classList.contains("del")) { removeConv(c.id); return; }
-      openConv(c.id);
-      closeSide();
-    });
-    box.appendChild(b);
-  }
-}
-
-async function removeConv(id) {
-  if (!confirm("删掉这段对话？")) return;
-  await api(`api/conversations/${id}`, { method: "DELETE" });
-  if (state.conv && state.conv.id === id) { state.conv = null; renderEmpty(); }
-  refreshList();
-}
-
-async function openConv(id) {
-  state.conv = await api(`api/conversations/${id}`).then(json);
-  localSet("conv", id);
-  $("conv-title").textContent = state.conv.title || "新对话";
-  $("messages").innerHTML = "";
-  let shownEpoch = 0;
-  state.conv.messages.forEach((m, i) => {
-    if (state.conv.epoch_start && i === state.conv.epoch_start) appendDivider(state.conv.epoch);
-    if (m.role === "note") return;  // [system] 现状消息只给模型看
-    appendMessage(m);
-  });
-  scrollDown(true);
-  refreshList();
+// 小新是家里一个成员：全家只有一条线程（像微信里只有一个家庭群），没有「新对话」。
+// 上下文太长或乱了，在设置里「开始新篇章」换一个干净的记忆窗口，聊天记录一条不动，只多一条分界线。
+async function openThread() {
+  state.conv = await api("api/thread").then(json);
+  localSet("conv", state.conv.id);
+  renderThread();
   loadCtx();
   syncStandbyUrl();
 }
 
-// 压缩分界线：上面的已经压成摘要了（原文还在，只是不再整段发给模型）
-function appendDivider(epoch) {
+function renderThread() {
+  const conv = state.conv;
+  $("conv-title").textContent = "小新";
+  $("messages").innerHTML = "";
+  state.replaying = true;
+  const marks = new Map((conv.epochs || []).filter((e) => e.start > 0).map((e) => [e.start, e]));
+  conv.messages.forEach((m, i) => {
+    if (marks.has(i)) appendDivider(marks.get(i));
+    if (m.role === "note") return;  // [system] 现状消息只给模型看
+    appendMessage(m);
+  });
+  if (marks.has(conv.messages.length)) appendDivider(marks.get(conv.messages.length));  // 刚翻页、还没说话
+  if (!conv.messages.some((m) => m.role !== "note")) renderEmpty();
+  scrollDown(true);
+  requestAnimationFrame(() => { state.replaying = false; scrollDown(true); });
+}
+
+// 分界线：上面的小新已经不整段记着了（原文都在，压缩是写成摘要带过来，新篇章是重新开始）
+function appendDivider(e) {
   const d = document.createElement("div");
   d.className = "epoch-divider";
-  d.innerHTML = `<span>以上已压缩成摘要 · 第 ${epoch} 次</span>`;
+  const label = e.kind === "new" ? "小新翻开了新的一页" : e.kind === "compact" ? "以上小新记成了摘要" : "新的一页";
+  const when = e.at ? new Date(e.at * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "";
+  d.innerHTML = `<span>${label}${when ? ` · ${esc(when)}` : ""}</span>`;
   $("messages").appendChild(d);
 }
 
 function renderEmpty() {
-  state.conv = null;
-  renderCtx(null);
-  syncStandbyUrl();
-  $("conv-title").textContent = "小新";
-  $("messages").innerHTML = `<div class="empty"><img src="static/icon.png" alt=""><b>你好，我是小新</b>可以打字、发图片和文件，也可以按住说话</div>`;
+  if ($("messages").querySelector(".msg")) return;
+  $("messages").insertAdjacentHTML("beforeend", `<div class="empty"><img src="static/icon.png" alt=""><b>你好，我是小新</b>可以打字、发图片和文件，也可以按住说话</div>`);
 }
 
-$("new-chat").addEventListener("click", () => { localSet("conv", ""); renderEmpty(); closeSide(); $("input").focus(); });
 
 function openSide() { $("side").classList.add("open"); $("scrim").hidden = false; }
 function closeSide() { $("side").classList.remove("open"); $("scrim").hidden = true; }
@@ -412,7 +373,7 @@ function scrollDown(force) {
 // 卡片插进来：卡比屏高（笔顺卡）就从卡的开头看起，并且这一轮不再粘底（不然会把卡顶出去）；放得下就照常粘底
 function revealRow(row) {
   const c = $("chat");
-  if (!row || !c.contains(row)) return;
+  if (!row || !c.contains(row) || state.replaying) return;  // 打开时回放历史：不追着老卡跑，停在最新
   const cr = c.getBoundingClientRect(), rr = row.getBoundingClientRect();
   if (rr.height <= c.clientHeight - 16) { scrollDown(); return; }
   if (!chatStick.on) return;
@@ -457,9 +418,7 @@ function revealRow(row) {
 // ---------------------------------------------------------------- 发送
 
 async function ensureConv() {
-  if (state.conv) return state.conv;
-  state.conv = await api("api/conversations", { method: "POST" }).then(json);
-  localSet("conv", state.conv.id);
+  if (!state.conv) await openThread();
   return state.conv;
 }
 
@@ -559,10 +518,7 @@ async function send(text, via = "text") {
           reply = data.text;
           textEl.innerHTML = renderText(reply);
           if (data.searches) renderSources(row, data.searches);
-          if (data.ctx) {  // 这一轮实际用了多少上下文；压缩刚换上（epoch 变了）就刷新左侧的次数
-            renderCtx(data.ctx);
-            if (data.ctx.epoch !== (state.conv?.epoch || 0)) { if (state.conv) state.conv.epoch = data.ctx.epoch; refreshList(); }
-          }
+          if (data.ctx) renderCtx(data.ctx);  // 这一轮实际用了多少上下文
           finishText();  // 文字完了就能发下一条；音频还在这条流里接着下来
         } else if (ev === "error") {
           throw new Error(data);
@@ -597,10 +553,6 @@ async function send(text, via = "text") {
     state.sending = false;
     updateSend();
     scrollDown();
-    refreshList().then(() => {
-      const c = state.list.find((x) => x.id === conv.id);
-      if (c) $("conv-title").textContent = c.title;
-    });
   }
 }
 
@@ -1011,7 +963,6 @@ function hangUp(fromNative = false, quiet = false) {
   talk.stream?.stop();
   talk.ws = talk.rec = talk.stream = null;
   finishTalkRow();
-  refreshList();
 }
 
 function drawTalkLevel(peak) {
@@ -1127,7 +1078,7 @@ function onTalkEvent(ev) {
       scrollDown();
       break;
     case "reply":
-      if (ev.ctx) { renderCtx(ev.ctx); refreshList(); }
+      if (ev.ctx) renderCtx(ev.ctx);
       if (talk.row) { talk.row.querySelector(".meta").dataset.model = ev.message.model || ""; showTiming(); }
       break;
     case "model": toast(`下一句用 ${state.models.find((m) => m.id === ev.model)?.label || ev.model}`); break;
@@ -1680,7 +1631,7 @@ function renderPrompts() {
     const s = d.summary;
     if (!s) { box.innerHTML = '<p class="voice-tip">先打开一段对话，这里显示它上一次压缩出来的摘要。</p>'; return; }
     const when = s.compacted_at ? new Date(s.compacted_at * 1000).toLocaleString("zh-CN", { hour12: false }) : "";
-    box.innerHTML = `<p class="voice-tip">「${esc(s.title)}」压缩过 <b>${s.epoch}</b> 次${when ? `，最近一次 ${esc(when)}` : ""}。`
+    box.innerHTML = `<p class="voice-tip">小新的记忆翻到了第 <b>${s.epoch + 1}</b> 页${when ? `，最近一次 ${esc(when)}` : ""}。`
       + `下一轮发给主脑的是：system prompt + 这份摘要 + 摘要之后的原文。</p>`
       + (s.text ? `<pre class="sys-prompt">${esc(s.text)}</pre>` : '<p class="voice-tip">还没压缩过。左侧栏「压缩」按钮可以马上压一次。</p>');
   } else if (promptView.view === "compact") {
@@ -1739,20 +1690,38 @@ function renderCtx(c) {
   $("ctx-batt").setAttribute("aria-valuenow", String(pct));
   $("ctx-compact").disabled = busy || !c.tokens;
   const k = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
-  const ep = c.epoch ? ` · 压缩过 ${c.epoch} 次` : "";
+  const ep = c.epoch ? ` · 第 ${c.epoch + 1} 页` : "";
   $("ctx-note").textContent = busy ? `正在后台写摘要，照常聊${ep}`
     : c.error && !/太短/.test(c.error) ? `上次压缩没成功：${c.error}`
     : fresh ? `下一句后更新用量${ep}` : `${k(c.tokens)} / ${k(c.limit)} token${ep}`;
   clearTimeout(ctxPoll);
   if (busy) ctxPoll = setTimeout(loadCtx, 2000);  // 压缩中：每 2 秒看一眼，压好就更新
-  if (state.conv && (state.conv.epoch || 0) !== c.epoch) {  // 刚压完：左边次数 +1，聊天里补一条分界线
+  if (state.conv && (state.conv.epoch || 0) < c.epoch && !busy) {  // 刚压完：聊天里补一条分界线
     state.conv.epoch = c.epoch;
-    refreshList();
-    if (!busy && c.epoch) { appendDivider(c.epoch); toast(`压缩好了（第 ${c.epoch} 次），设置里能看摘要`); }
+    appendDivider({ kind: "compact", at: Date.now() / 1000 });
+    toast("小新把前面的聊天记成了摘要，设置里能看");
   }
 }
 
 $("ctx-compact").addEventListener("click", () => $("compact-dialog").showModal());
+
+// 设置里「开始新篇章」：换一个干净的记忆窗口（可以带上摘要），聊天记录不动，只多一条分界线
+$("new-chapter").addEventListener("click", () => $("chapter-dialog").showModal());
+$("chapter-no").addEventListener("click", () => $("chapter-dialog").close());
+$("chapter-yes").addEventListener("click", async () => {
+  const yes = $("chapter-yes");
+  yes.disabled = true;
+  yes.textContent = $("chapter-keep").checked ? "在写摘要…" : "翻页中…";
+  try {
+    await api("api/thread/new_chapter", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep_summary: $("chapter-keep").checked }) }).then(json);
+    $("chapter-dialog").close();
+    $("settings").close?.();
+    await openThread();
+    toast("翻开了新的一页，小新从这里重新记");
+  } catch (e) { toast(e.message, 4000); }
+  finally { yes.disabled = false; yes.textContent = "翻开新的一页"; }
+});
 $("compact-no").addEventListener("click", () => $("compact-dialog").close());
 $("compact-yes").addEventListener("click", async () => {
   $("compact-dialog").close();

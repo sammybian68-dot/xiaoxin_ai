@@ -28,8 +28,7 @@
       <img src="static/icon.png" alt="" class="avatar">
       <span class="side-name">小新</span>
     </div>
-    <button id="new-chat" class="new-chat" type="button">＋ 新对话</button>
-    <nav id="conv-list" class="conv-list"></nav>
+    <p class="side-tip">全家和小新的聊天都在这一个窗口里。<br>小新记不清了，可以在「设置 → 对话」里翻开新的一页。</p>
     <div class="side-foot">
       <div id="ctx" class="ctx" hidden>
         <div class="ctx-row">
@@ -153,6 +152,13 @@
   <div class="confirm-btns"><button type="button" id="compact-no">先不了</button><button type="button" id="compact-yes" class="primary">压缩</button></div>
 </dialog>
 
+<dialog id="chapter-dialog" class="confirm" aria-labelledby="chapter-title">
+  <h2 id="chapter-title">翻开新的一页？</h2>
+  <p>小新的记忆从这里重新开始。聊天记录一条不删，往上翻都还在，只是小新不再记着前面聊过什么。</p>
+  <label class="chapter-keep"><input id="chapter-keep" type="checkbox" class="switch" checked><span>带上前面的摘要（记得作业进度、说话要求这些，要十几秒）</span></label>
+  <div class="confirm-btns"><button type="button" id="chapter-no">先不了</button><button type="button" id="chapter-yes" class="primary">翻开新的一页</button></div>
+</dialog>
+
 <div id="rec-overlay" class="rec-overlay" hidden>
   <div class="rec-card">
     <p id="rec-live" class="rec-live" aria-live="polite">正在听…</p>
@@ -179,7 +185,11 @@
     <section class="pane" role="tabpanel" data-pane="general" hidden>
       <h3>对话</h3>
       <div class="row">
-        <label for="set-model"><b>默认模型</b><small>新对话用这个。顶栏也可以临时切换</small></label>
+        <label><b>开始新篇章</b><small>小新的记忆从这里重新开始，聊天记录一条不删。小新记乱了、说话跑偏时用</small></label>
+        <button id="new-chapter" type="button">翻开新的一页</button>
+      </div>
+      <div class="row">
+        <label for="set-model"><b>默认模型</b><small>小新默认用这个。顶栏也可以临时切换</small></label>
         <select id="set-model"></select>
       </div>
       <div class="row">
