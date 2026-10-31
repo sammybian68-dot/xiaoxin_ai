@@ -39,6 +39,7 @@ async function boot() {
   state.me = me.who;
   state.kids = me.kids;
   state.people = me.people || {};
+  state.sendOrig = localGet("orig") === "1";
   document.querySelector('.settings-nav [data-pane="members"]').hidden = me.who.kind !== "admin";
   state.models = me.models;
   state.system = me.system_prompt;
@@ -276,7 +277,8 @@ function sizeLabel(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : 
 function attachmentsHtml(files) {
   return (files || []).map((f) => f.kind === "image"
     // 气泡里只拉 480 的缩略图（~30 KB，ECS 只有 5 Mbps）；点开才拿大图（没原图就是 2048 的 screen）
-    ? `<a href="${fileUrl(f)}" data-fid="${f.id}"><img class="att-img" src="api/files/${f.id}?v=thumb" alt="${esc(f.name)}" loading="lazy"></a>`
+    ? `<a href="${fileUrl(f)}" data-fid="${f.id}"><img class="att-img" src="api/files/${f.id}?v=thumb" alt="${esc(f.name)}" loading="lazy">`
+      + `${origQueue.has(f.id) ? '<span class="orig">原图 0%</span>' : ""}</a>`
     : `<a class="att-file" href="${fileUrl(f, true)}"><b>📄</b><span>${esc(f.name)}<small>${sizeLabel(f.size)}</small></span></a>`).join("");
 }
 
@@ -598,6 +600,7 @@ async function send(text, via = "text") {
   const conv = await ensureConv();
   $("input").value = "";
   autoGrow();
+  startOriginals(state.pending);
   state.pending = [];
   renderPending();
 
@@ -759,18 +762,80 @@ document.addEventListener("drop", (e) => {
 
 async function upload(file) {
   if (!file) return;
-  if (file.size > 50 * 1024 * 1024) { toast(`${file.name} 超过 50 MB`); return; }
-  const p = { file, meta: null, preview: file.type.startsWith("image/") ? URL.createObjectURL(file) : "" };
+  if (file.size > 200 * 1024 * 1024) { toast(`${file.name} 超过 200 MB`); return; }
+  const isImg = /^image\/(jpeg|png|webp|heic|heif|gif)$/i.test(file.type);
+  const p = { file, meta: null, preview: isImg ? URL.createObjectURL(file) : "", isImg };
   state.pending.push(p);
   renderPending();
   try {
-    p.meta = await api("api/files", { method: "POST", body: file,
+    p.meta = isImg ? await uploadImage(file) : await api("api/files", { method: "POST", body: file,
       headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name || "file") } }).then(json);
   } catch (err) {
     state.pending = state.pending.filter((x) => x !== p);
     toast(`${file.name} 上传失败：${err.message}`);
   }
   renderPending();
+}
+
+// ---------------------------------------------------------------- 图片分档上传（docs/architecture.md 6.5）
+// 本地先压出 480 的缩略图和 2048 的大图（~0.4 MB）传上去，消息马上能发；原图只有勾了「原图」才传，
+// 发出去之后在后台 512 KB 一片续传（断网、App 被杀，下次从断点接着传）。ECS 只有 5 Mbps，这样一张 12MP 照片多半只占 0.4 MB。
+
+async function scaleJpeg(file, edge, q) {
+  const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const k = Math.min(1, edge / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k));
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const g = c.getContext("2d");
+  g.fillStyle = "#fff";  // 透明 PNG 转 JPEG：底色白
+  g.fillRect(0, 0, w, h);
+  g.drawImage(bmp, 0, 0, w, h);
+  const out = { blob: await new Promise((r) => c.toBlob(r, "image/jpeg", q)), w: bmp.width, h: bmp.height };
+  bmp.close?.();
+  return out;
+}
+
+async function uploadImage(file) {
+  let thumb, screen;
+  try {
+    [thumb, screen] = await Promise.all([scaleJpeg(file, 480, 0.7), scaleJpeg(file, 2048, 0.82)]);
+  } catch (_) {  // 这台浏览器解不开（老系统的 HEIC）：整张传，服务端去做缩略图
+    return api("api/files", { method: "POST", body: file,
+      headers: { "Content-Type": file.type || "image/jpeg", "X-Filename": encodeURIComponent(file.name || "image.jpg") } }).then(json);
+  }
+  const meta = await api("api/files/image", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: file.name || "image.jpg", size: file.size, mime: file.type, w: thumb.w, h: thumb.h }) }).then(json);
+  await api(`api/files/${meta.id}/thumb`, { method: "PUT", body: thumb.blob });
+  await api(`api/files/${meta.id}/screen`, { method: "PUT", body: screen.blob });
+  return { ...meta, variants: { thumb: thumb.blob.size, screen: screen.blob.size } };
+}
+
+const origQueue = new Map();  // fid → File：勾了原图、还没传完的（发出去以后后台传）
+const ORIG_CHUNK = 512 * 1024;
+
+async function sendOriginal(fid, file) {
+  origQueue.set(fid, file);
+  try {
+    let o = await api(`api/files/${fid}/original`, { method: "POST" }).then(json);
+    while (o.received < o.size) {
+      if (talk.on) { await new Promise((r) => setTimeout(r, 3000)); continue; }  // 通话中先不传，让带宽
+      const part = file.slice(o.received, Math.min(o.size, o.received + ORIG_CHUNK));
+      o = await api(`api/files/${fid}/original?offset=${o.received}`, { method: "PUT", body: part }).then(json);
+      origProgress(fid, o);
+      await new Promise((r) => setTimeout(r, 1500));  // ≈ 2.7 Mbps 上限，不挤占聊天和语音
+    }
+    origQueue.delete(fid);
+  } catch (e) {
+    origProgress(fid, null, e.message);
+    setTimeout(() => origQueue.has(fid) && sendOriginal(fid, file), 10000);  // 断网了：10 秒后从断点接着传
+  }
+}
+
+function origProgress(fid, o, err) {
+  for (const el of document.querySelectorAll(`[data-fid="${CSS.escape(fid)}"] .orig`)) {
+    el.textContent = err ? "原图暂停，联网后继续" : o.received >= o.size ? "原图 ✓" : `原图 ${Math.floor(o.received / o.size * 100)}%`;
+  }
 }
 
 function renderPending() {
@@ -784,7 +849,24 @@ function renderPending() {
     el.querySelector(".x").addEventListener("click", () => { state.pending = state.pending.filter((x) => x !== p); renderPending(); });
     box.appendChild(el);
   }
+  // 「原图」：和微信一样，默认不勾；勾了发出去以后后台传原图，对方才有「查看原图」。设置里可以改成默认勾
+  const imgs = state.pending.filter((p) => p.isImg && p.meta?.variants);
+  if (imgs.length) {
+    const total = imgs.reduce((n, p) => n + p.file.size, 0);
+    const lab = document.createElement("label");
+    lab.className = "orig-pick";
+    lab.innerHTML = `<input type="checkbox" ${state.sendOrig ? "checked" : ""}> 原图 <small>${sizeLabel(total)}</small>`;
+    lab.querySelector("input").addEventListener("change", (e) => { state.sendOrig = e.target.checked; });
+    box.appendChild(lab);
+  }
   updateSend();
+}
+
+// 发出去以后：勾了原图的那几张开始后台传
+function startOriginals(pending) {
+  if (!state.sendOrig) return;
+  for (const p of pending) if (p.isImg && p.meta?.variants) sendOriginal(p.meta.id, p.file);
+  state.sendOrig = localGet("orig") === "1";
 }
 
 // ---------------------------------------------------------------- 录音（按住说话 / 录声音共用）
@@ -2235,6 +2317,7 @@ async function postOnly(text, files, via) {
   updateSend();
   $("input").value = "";
   autoGrow();
+  const sent = state.pending;
   state.pending = [];
   renderPending();
   try {
@@ -2247,6 +2330,7 @@ async function postOnly(text, files, via) {
       appendMessage(user);
       markRead(state.conv);
     }
+    startOriginals(sent);
     scrollDown(true);
   } catch (e) { toast(e.message); }
   finally { state.sending = false; updateSend(); }
