@@ -65,10 +65,19 @@ def _offer(c: _Conn, data: str) -> None:
         c.queue.put_nowait('{"type":"bye","reason":"slow"}') if not c.queue.full() else None
 
 
-def online() -> list[dict]:
-    """谁在线（管理台、以后的 presence 事件用）。"""
+def online() -> list[str]:
+    """哪些成员有设备在线（侧栏群成员的绿点）。管理员不算。"""
     with _lock:
-        return [{"who": c.who.id, "device": (c.who.device or {}).get("id", "")} for c in _conns if not c.dead]
+        return sorted({c.who.id for c in _conns if not c.dead and c.who.kind == "member"})
+
+
+def _presence() -> None:
+    """有人上线 / 下线：告诉每条线程里的人（只说成员 id，前端自己对名单）。"""
+    from server.family import members
+
+    ids = online()
+    for k in members.kids():
+        publish(k["thread"], {"type": "presence", "online": ids})
 
 
 async def serve(ws, who) -> None:
@@ -77,6 +86,7 @@ async def serve(ws, who) -> None:
     c = _Conn(who, asyncio.get_running_loop())
     with _lock:
         _conns.add(c)
+    _presence()
     threads = [k["thread"] for k in members.kids() if members.can_thread(who, k["thread"])]
     try:
         await ws.send_text(json.dumps({"type": "hello", "who": {"id": who.id, "role": who.role},
@@ -106,3 +116,4 @@ async def serve(ws, who) -> None:
     finally:
         with _lock:
             _conns.discard(c)
+        _presence()

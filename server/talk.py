@@ -134,8 +134,9 @@ class Talk:
 
     def __init__(self, ws, *, asr_engine: str, model: str, conversation: str | None,
                  llm_thread, make_speech, transcribe, reply_record, history, models=(), stream_asr=None,
-                 before_turn=None, after_turn=None):
+                 before_turn=None, after_turn=None, speaker: str = ""):
         self.ws = ws
+        self.speaker = speaker           # 这台设备的主人（成员 id），存进每句话的 from
         self.asr_engine = asr_engine
         self.model = model
         self._models = set(models) or {model}
@@ -435,6 +436,7 @@ class Talk:
         if self._before_turn:
             self._before_turn(self.cid)
         user = store.append(self.cid, {"role": "user", "text": text, "files": [], "via": "talk",
+                                       **({"from": self.speaker} if self.speaker else {}),
                                        "local": local, "audio": bool(utt)})
         if utt:
             await asyncio.to_thread(store.save_utterance, self.cid, user["id"], utt)

@@ -201,7 +201,10 @@ def me(request: Request) -> dict:
                     "name": "管理员" if w.kind == "admin" else w.member["name"],
                     "device": w.device["name"] if w.device else ""},
             "kids": [{"id": k["id"], "name": k["name"], "call": k["call"], "avatar": k["avatar"],
-                      "thread": k["thread"]} for k in kids]}
+                      "thread": k["thread"]} for k in kids],
+            # 群聊气泡上要按发送人画头像和名字：全家（启用的）都给，只有名字和头像
+            "people": {m["id"]: {"name": m["name"], "avatar": m["avatar"], "role": m["role"]}
+                       for m in members.all_members() if m["status"] == "active"}}
 
 
 def _index_html() -> Response:
@@ -449,8 +452,10 @@ def kid_thread(request: Request, kid: str = "", since: str = "") -> dict:
     """某个孩子的线程。孩子的 pad 拿到的永远是自己的；家长、管理员带 ?kid= 选（不带就第一个孩子）。
     第一次调时把阶段 1 那条线程认作第一个孩子的（members.ensure）。
     ?since=<消息 id>：只要这条之后的（hub 断线重连补齐用）；找不到这条（被删、太老）就给全部。"""
+    from server.family import hub
+
     k = kid_for(request, kid)
-    conv = {**store.get(k["thread"]), "kid": k["id"]}
+    conv = {**store.get(k["thread"]), "kid": k["id"], "online": hub.online()}
     if since:
         ids = [m["id"] for m in conv["messages"]]
         if since in ids:
@@ -654,6 +659,27 @@ def _attachments(request: Request, file_ids: list) -> list[dict]:
     return out
 
 
+def _sender(w: "members.Who", cid: str) -> dict:
+    """这条消息算谁发的：设备的主人。管理员在网页上打字是在调小新，算这条线程的孩子说的（和以前一样）。"""
+    if w.kind == "member":
+        return {"id": w.member["id"], "role": w.member["role"], "name": w.member["name"]}
+    kid = members.kid_of_thread(cid)
+    return {"id": kid["id"], "role": "kid", "name": kid["name"]} if kid else {"id": "admin", "role": "parent", "name": "管理员"}
+
+
+def _speaker(m: dict, owner: dict | None) -> str:
+    """群聊里给模型看的发言人前缀：孩子自己说的不加（和以前一样），家长说的加「[爸爸]」。"""
+    f = m.get("from")
+    if not f or (owner and f == owner["id"]):
+        return ""
+    if f == "admin":
+        return "[管理员] "
+    try:
+        return f"[{members.get(f)['name']}] "
+    except KeyError:
+        return "[家长] "
+
+
 def _llm_messages(conv: dict) -> list[dict]:
     """对话转成 OpenAI 格式：压缩摘要（有的话）+ 这个 epoch 的原文（含 `[system]` 现状消息，按原位置回放）。
 
@@ -663,6 +689,7 @@ def _llm_messages(conv: dict) -> list[dict]:
     from server import compact
 
     msgs = conv["messages"][conv.get("epoch_start") or 0:]
+    owner = members.kid_of_thread(conv["id"])
     last_user = max((i for i, m in enumerate(msgs) if m["role"] == "user"), default=-1)
     out = []
     if conv.get("summary"):
@@ -699,7 +726,9 @@ def _llm_messages(conv: dict) -> list[dict]:
                 parts.append({"type": "text", "text": f"[文件 {meta['name']}，{meta['size']} 字节，{meta['mime']}，"
                                                       "这里读不了内容]"})
         if m.get("text"):
-            parts.append({"type": "text", "text": m["text"]})
+            parts.append({"type": "text", "text": _speaker(m, owner) + m["text"]})
+        elif parts and _speaker(m, owner):
+            parts.append({"type": "text", "text": _speaker(m, owner) + "（发了上面的附件）"})
         if parts:
             only_text = all(p["type"] == "text" for p in parts)
             out.append({"role": "user", "content": "\n\n".join(p["text"] for p in parts) if only_text else parts})
@@ -985,8 +1014,18 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
         raise HTTPException(400, f"不支持的模型 {model}")
     if model in NO_VISION and any(f["kind"] == "image" for f in files):
         model = VISION
+    sender = _sender(w, cid)
+    # 群聊：孩子说话小新照常答；家长发给孩子的（默认）只存不答，点亮「问小新」（ask=true）才答（docs/architecture.md 6.3）。
+    # 管理员在网页上打字是在调小新，默认答（要模拟家长发消息就传 ask=false）
+    ask = body.get("ask", sender["role"] == "kid") is not False
+    if not ask:
+        user = store.append(cid, {"role": "user", "text": text, "files": files, "via": body.get("via") or "text",
+                                  "from": sender["id"], "to": "kid", "speak": bool(body.get("speak_on_pad", True))})
+        return StreamingResponse(iter([_sse("user", user), _sse("posted", {"id": user["id"]})]),
+                                 media_type="text/event-stream")
     _turn_begin(cid)
-    user = store.append(cid, {"role": "user", "text": text, "files": files, "via": body.get("via") or "text"})
+    user = store.append(cid, {"role": "user", "text": text, "files": files, "via": body.get("via") or "text",
+                              "from": sender["id"], **({"to": "xiaoxin"} if sender["role"] != "kid" else {})})
     history = _llm_messages(store.get(cid))
 
     voice_note = ""
@@ -1419,7 +1458,9 @@ async def talk(ws: WebSocket) -> None:
     session = Talk(ws, asr_engine=asr_engine, model=model, conversation=conv,
                    llm_thread=_llm_thread, make_speech=_turn_speech, transcribe=_transcribe,
                    reply_record=_reply_record, history=_llm_messages, models=[m["id"] for m in MODELS],
-                   stream_asr=_stream_asr, before_turn=_turn_begin, after_turn=_turn_end)
+                   stream_asr=_stream_asr, before_turn=_turn_begin, after_turn=_turn_end,
+                   # 自由对话的是这条线程的孩子（pad 上说的）；管理员在网页上开自由对话也算孩子说的（调试用）
+                   speaker=w.member["id"] if w.kind == "member" else (members.kid_of_thread(conv) or {}).get("id", ""))
     log.info("talk open asr=%s model=%s conversation=%s", asr_engine, model, session.cid)
     try:
         await session.run()

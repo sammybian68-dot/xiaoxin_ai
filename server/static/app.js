@@ -38,6 +38,7 @@ async function boot() {
   $("app").hidden = false;
   state.me = me.who;
   state.kids = me.kids;
+  state.people = me.people || {};
   document.querySelector('.settings-nav [data-pane="members"]').hidden = me.who.kind !== "admin";
   state.models = me.models;
   state.system = me.system_prompt;
@@ -100,12 +101,79 @@ function hubConnect() {
     const ev = JSON.parse(e.data);
     if (ev.type === "ping") { ws.send('{"type":"pong"}'); return; }
     if ((ev.type === "msg" || ev.type === "msg.update") && ev.thread === state.conv?.id) hubMessage(ev.message, ev.type);
+    if (ev.type === "presence") { state.online = new Set(ev.online); renderSide(); }
+    if (ev.type === "file" && ev.thread === state.conv?.id) hubFile(ev.file);
   };
   ws.onclose = () => {
     if (hub.ws !== ws) return;
     hub.timer = setTimeout(hubConnect, hub.wait);
     hub.wait = Math.min(hub.wait * 2, 30000);
   };
+}
+
+// ---------------------------------------------------------------- 侧栏：群信息（成员、下一个闹钟、爸妈发的文件）
+
+function renderSide() {
+  const conv = state.conv;
+  if (!conv) return;
+  // 群成员：这条线程的孩子 + 家长 + 小新（自己排第一个，小新排最后）
+  const people = Object.entries(state.people || {})
+    .filter(([id, p]) => p.role === "parent" || id === conv.kid)
+    .map(([id, p]) => ({ id, ...p }))
+    .sort((a, b) => (a.id === state.me?.id ? -1 : b.id === state.me?.id ? 1 : a.role === b.role ? 0 : a.role === "kid" ? -1 : 1));
+  const dot = (id) => state.online?.has(id) ? '<i class="on" title="在线"></i>' : "";
+  $("side-people").innerHTML = people.map((p) => `<li><button type="button" data-to="${esc(p.id)}" ${p.id === state.me?.id ? "disabled" : ""}>`
+    + `<span class="pa">${esc(p.avatar || (p.role === "kid" ? "🧒" : "🧑"))}${dot(p.id)}</span><span class="pn">${esc(p.name)}`
+    + `${p.id === state.me?.id ? "<small>（我）</small>" : ""}</span><small class="pr">${p.role === "kid" ? "" : "家长"}</small></button></li>`).join("")
+    + `<li><button type="button" disabled><span class="pa"><img src="static/icon.png" alt=""></span><span class="pn">小新</span><small class="pr">AI</small></button></li>`;
+  for (const b of $("side-people").querySelectorAll("[data-to]:not([disabled])")) b.addEventListener("click", () => {
+    const p = state.people[b.dataset.to];
+    if (!p) return;
+    closeSide();
+    // 孩子点爸爸：输入框里填好「告诉爸爸：」，说完小新会留言给他（leave_message 工具，阶段 5）；家长点孩子就是普通发消息
+    if (state.me?.role === "kid" || state.me?.kind === "admin") $("input").value = `告诉${p.name}：`;
+    $("input").focus();
+    updateSend();
+  });
+  // 爸妈发的文件（像微信「群文件」）：最近 5 个，新的在上
+  const files = [];
+  for (const m of [...conv.messages].reverse()) {
+    if (m.role !== "user" || !m.files?.length || (state.people?.[m.from]?.role !== "parent")) continue;
+    for (const f of m.files) files.push({ ...f, from: m.from, at: m.created });
+    if (files.length >= 5) break;
+  }
+  $("side-files-sec").hidden = !files.length;
+  $("side-files-h").textContent = state.me?.role === "parent" ? "发给孩子的" : "爸妈发的";
+  $("side-files").innerHTML = files.slice(0, 5).map((f) => `<li><a href="${fileUrl(f)}" target="_blank" rel="noopener">`
+    + (f.kind === "image" ? `<img src="api/files/${f.id}?v=thumb" alt="" loading="lazy">` : '<span class="fi">📄</span>')
+    + `<span>${esc(f.name)}<small>${esc(person(f.from).name)} · ${esc(dayLabel2(f.at))}</small></span></a></li>`).join("");
+  renderSideAlarm();
+}
+
+function dayLabel2(ts) {
+  const d = new Date(ts * 1000), now = new Date();
+  const days = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400000);
+  const hm = d.toTimeString().slice(0, 5);
+  return days === 0 ? hm : days === 1 ? `昨天 ${hm}` : `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+// 下一个闹钟：小朋友最常问「明天几点起」，侧栏一眼看到，点了打开闹钟面板
+function renderSideAlarm() {
+  const snap = typeof clk !== "undefined" ? clk.snap : null;
+  const next = (snap?.alarms || []).filter((a) => a.enabled && a.next).sort((a, b) => a.next - b.next)[0];
+  $("side-alarm-sec").hidden = !next;
+  if (!next) return;
+  const d = new Date(next.next * 1000), now = new Date();
+  const days = Math.round((new Date(d.toDateString()) - new Date(now.toDateString())) / 86400000);
+  const when = days === 0 ? "今天" : days === 1 ? "明天" : days === 2 ? "后天" : `${d.getMonth() + 1}月${d.getDate()}日`;
+  $("side-alarm").innerHTML = `<b>${esc(when)} ${esc(next.time)}</b><span>${esc(next.label || next.repeat_label || "")}</span>`;
+}
+$("side-alarm").addEventListener("click", () => { closeSide(); openClock(); });
+
+function hubFile(f) {
+  // 原图传完 / 大图到了：本地记一下，气泡上「原图上传中」换成「查看原图」（图片分档前端接上后用）
+  for (const m of state.conv?.messages || []) for (const x of m.files || []) if (x.id === f.id) Object.assign(x, f);
+  renderSide();
 }
 
 function hubMessage(m, kind) {
@@ -120,6 +188,7 @@ function hubMessage(m, kind) {
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
   appendMessage(m);
   scrollDown();
+  if (m.files?.length) renderSide();
 }
 
 async function hubCatchUp() {
@@ -135,7 +204,10 @@ async function hubCatchUp() {
 
 function renderThread() {
   const conv = state.conv;
-  $("conv-title").textContent = "小新";
+  const kid = (state.kids || []).find((k) => k.id === conv.kid);
+  $("conv-title").textContent = kid && state.me?.role !== "kid" ? `${kid.name} 的群` : "我们家";
+  state.online = new Set(conv.online || []);
+  renderSide();
   $("messages").innerHTML = "";
   state.replaying = true;
   const marks = new Map((conv.epochs || []).filter((e) => e.start > 0).map((e) => [e.start, e]));
@@ -191,7 +263,8 @@ function sizeLabel(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : 
 
 function attachmentsHtml(files) {
   return (files || []).map((f) => f.kind === "image"
-    ? `<a href="${fileUrl(f)}" target="_blank" rel="noopener"><img class="att-img" src="${fileUrl(f)}" alt="${esc(f.name)}" loading="lazy"></a>`
+    // 气泡里只拉 480 的缩略图（~30 KB，ECS 只有 5 Mbps）；点开才拿大图（没原图就是 2048 的 screen）
+    ? `<a href="${fileUrl(f)}" target="_blank" rel="noopener"><img class="att-img" src="api/files/${f.id}?v=thumb" alt="${esc(f.name)}" loading="lazy"></a>`
     : `<a class="att-file" href="${fileUrl(f, true)}"><b>📄</b><span>${esc(f.name)}<small>${sizeLabel(f.size)}</small></span></a>`).join("");
 }
 
@@ -199,9 +272,17 @@ function appendMessage(m) {
   const box = $("messages");
   box.querySelector(".empty")?.remove();
   const row = document.createElement("div");
-  row.className = "msg " + (m.role === "user" ? "me" : "ai");
+  // 群聊：自己（这台设备的主人）发的在右边；别人（爸爸、妈妈、孩子）发的在左边，带头像和名字，像微信群
+  const mine = m.role === "user" && isMine(m);
+  row.className = "msg " + (m.role !== "user" ? "ai" : mine ? "me" : "peer");
   if (m.id) row.dataset.mid = m.id;  // hub 推来的同一条就不再画一遍
-  if (m.role === "user") {
+  if (m.role === "user" && !mine) {
+    const p = person(m.from);
+    row.classList.add(p.role === "parent" ? "from-parent" : "from-kid");
+    row.innerHTML = `<span class="avatar sm emoji" aria-hidden="true">${esc(p.avatar)}</span><div class="bubble">`
+      + `<div class="who">${esc(p.name)}</div>${attachmentsHtml(m.files)}${m.text ? `<div class="text">${esc(m.text)}</div>` : ""}`
+      + `${m.to === "xiaoxin" ? '<div class="via">问小新</div>' : ""}</div>`;
+  } else if (m.role === "user") {
     // 自由对话的句子：气泡上方一个小喇叭，点了回放服务端收到的原声，并摊开端侧（pad 本机）认出的字，对照云端识别查输入问题
     const replay = m.via === "talk" && (m.audio || m.local != null)
       ? `<button type="button" class="replay" title="回放原声、看端侧识别">🔊</button>` : "";
@@ -225,6 +306,21 @@ function appendMessage(m) {
   }
   box.appendChild(row);
   return row;
+}
+
+// 这条是不是「我」发的：家长、孩子按 from 和自己的 id 比；管理员看的是孩子的视角（孩子的话在右边）。
+// 老消息没有 from：当作这条线程的孩子说的。
+function isMine(m) {
+  const me = state.me;
+  const from = m.from || state.conv?.kid;
+  if (!me || me.kind === "admin") return !from || from === state.conv?.kid;
+  return from === me.id;
+}
+
+function person(id) {
+  const p = (state.people || {})[id];
+  if (p) return { name: p.name, avatar: p.avatar || (p.role === "kid" ? "🧒" : "🧑"), role: p.role };
+  return { name: id === "admin" ? "管理员" : "家人", avatar: "🧑", role: "parent" };
 }
 
 function replayUtterance(m, row, btn) {

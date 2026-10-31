@@ -188,3 +188,26 @@ def test_device_token_link_and_cookie(client, anon):
     me = anon.get("/api/me").json()["who"]
     assert me["role"] == "kid" and me["id"] == kid
     assert anon.get("/?k=xd_wrong", follow_redirects=False).headers.get("x-xiaoxin-link") == "bad"
+
+
+# ---------------------------------------------------------------- 群聊（孩子、小新、爸爸妈妈在一个群里）
+
+def test_parent_message_is_posted_not_answered(family, fakes):
+    dau_t = family["女儿"].get("/api/thread").json()["id"]
+    n = len(fakes.llm_requests)
+    body = family["爸爸"].post(f"/api/conversations/{dau_t}/messages", json={"text": "晚上七点前把口算做完"}).text
+    assert "event: posted" in body and len(fakes.llm_requests) == n  # 小新没被叫
+    m = store.get(dau_t)["messages"][-1]
+    assert m["from"] == family["ids"]["爸爸"] and m["to"] == "kid" and m["role"] == "user"
+
+
+def test_parent_ask_xiaoxin_and_model_sees_speaker(family, fakes):
+    dau_t = family["女儿"].get("/api/thread").json()["id"]
+    family["爸爸"].post(f"/api/conversations/{dau_t}/messages", json={"text": "今天的口算"})
+    family["爸爸"].post(f"/api/conversations/{dau_t}/messages", json={"text": "她最近口算怎么样", "ask": True})
+    users = [m["content"] for m in fakes.llm_requests[-1]["messages"] if m["role"] == "user" and not str(m["content"]).startswith("[system]")]
+    assert users[-2:] == ["[爸爸] 今天的口算", "[爸爸] 她最近口算怎么样"]
+    family["女儿"].post(f"/api/conversations/{dau_t}/messages", json={"text": "我做完了"})
+    last = [m["content"] for m in fakes.llm_requests[-1]["messages"] if m["role"] == "user"][-1]
+    assert last == "我做完了"  # 孩子自己说的不加前缀
+    assert store.get(dau_t)["messages"][-2]["from"] == family["ids"]["女儿"]

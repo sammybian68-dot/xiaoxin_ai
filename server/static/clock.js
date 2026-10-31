@@ -32,6 +32,7 @@ function dayWord(ts) {
 // ---------------------------------------------------------------- 数据
 
 function applySnap(s) {
+  if (typeof renderSideAlarm === "function") setTimeout(renderSideAlarm, 0);  // 侧栏「下一个闹钟」跟着变
   clk.snap = s;
   clk.offset = s.now - Date.now() / 1000;
   clk.since = s.version;

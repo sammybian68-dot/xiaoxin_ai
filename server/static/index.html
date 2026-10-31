@@ -34,7 +34,21 @@
       <img src="static/icon.png" alt="" class="avatar">
       <span class="side-name">小新</span>
     </div>
-    <p class="side-tip">全家和小新的聊天都在这一个窗口里。<br>小新记不清了，可以在「设置 → 对话」里翻开新的一页。</p>
+    <!-- 群信息（像微信点进群后的「聊天信息」）：这个群里有谁、下一个闹钟、爸妈发来的文件 -->
+    <div class="side-scroll">
+      <section class="side-sec">
+        <h4 class="side-h">群成员</h4>
+        <ul id="side-people" class="side-people"></ul>
+      </section>
+      <section class="side-sec" id="side-alarm-sec" hidden>
+        <h4 class="side-h">下一个闹钟</h4>
+        <button type="button" id="side-alarm" class="side-alarm"></button>
+      </section>
+      <section class="side-sec" id="side-files-sec" hidden>
+        <h4 class="side-h" id="side-files-h">爸妈发的</h4>
+        <ul id="side-files" class="side-files"></ul>
+      </section>
+    </div>
     <div class="side-foot">
       <div id="ctx" class="ctx" hidden>
         <div class="ctx-row">
