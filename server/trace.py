@@ -52,3 +52,31 @@ def turns(cid: str) -> list[dict]:
     """最近几轮，新的在前。"""
     with _lock:
         return list(reversed(list(_data.get(cid or "-", []))))
+
+
+def _is_note(m: dict) -> bool:
+    return m.get("role") == "user" and isinstance(m.get("content"), str) and m["content"].startswith(("[system]", "前面的对话"))
+
+
+def turn_tail(messages: list[dict]) -> tuple[int, list[dict]]:
+    """这一轮自己的那段：从这一轮的用户消息（连同紧挨在它前面的 [system] 现状消息）起到最后。
+    返回 (起点下标, 那段消息)。前面的历史每次都一样，调试面板只看这一段。"""
+    k = next((i for i in range(len(messages) - 1, -1, -1)
+              if messages[i].get("role") == "user" and not _is_note(messages[i])), 0)
+    while k > 0 and _is_note(messages[k - 1]) and not messages[k - 1]["content"].startswith("前面的对话"):
+        k -= 1
+    return k, messages[k:]
+
+
+def compact_turn(t: dict) -> dict:
+    """给调试面板的一轮：每次请求只带这一轮的那段 messages（tail）和总条数，system 只在第一次请求上带一份。"""
+    calls = []
+    for i, c in enumerate(t["calls"]):
+        start, tail = turn_tail(c.get("messages") or [])
+        calls.append({**{k: v for k, v in c.items() if k not in ("messages", "system")},
+                      "n_messages": len(c.get("messages") or []), "tail_start": start, "tail": tail,
+                      "system_chars": len(c.get("system") or "")})
+    out = {k: v for k, v in t.items() if k != "calls"}
+    out["calls"] = calls
+    out["system"] = t["calls"][0].get("system", "") if t["calls"] else ""
+    return out

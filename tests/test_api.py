@@ -502,18 +502,22 @@ def test_leaked_role_tag_stripped_in_reply(client, fakes):
 
 
 def test_debug_trace_records_each_request(client, fakes):
-    """调试面板：每轮记下每次发给主脑的请求（system、messages、tools、回答、用量），按轮次新的在前。"""
+    """调试面板：每轮按迭代（iter）记：发了什么（这一轮那段）、模型回了什么 / 调了哪个工具、工具结果在下一次的入参里。"""
     fakes.llm_script = [("tool", "query_time", {}), ("text", "现在是上午 8 点")]
     cid = client.post("/api/conversations").json()["id"]
     client.post(f"/api/conversations/{cid}/messages", json={"text": "现在几点"})
     d = client.get(f"/api/debug/{cid}").json()
     t = d["turns"][0]
-    assert t["voice"] is False and len(t["calls"]) == 2 and t["done"] is True
-    first, second = t["calls"]
-    assert first["system"] and "query_time" in first["tools"] and first["tool_calls"][0]["name"] == "query_time"
-    assert first["messages"][0]["content"].startswith("[system]")  # 现状消息在 messages 里，不在 system
-    assert second["reply"] == "现在是上午 8 点" and second["messages"][-1]["role"] == "tool"
-    assert t["actions"][0]["name"] == "query_time"
+    assert t["voice"] is False and len(t["calls"]) == 2 and t["done"] is True and t["system"]
+    it1, it2 = t["calls"]
+    assert [m["role"] for m in it1["tail"]] == ["user", "user"]  # [system] 现状 + 这句问话
+    assert it1["tail"][0]["content"].startswith("[system]") and it1["tail"][1]["content"] == "现在几点"
+    assert it1["tool_calls"][0]["name"] == "query_time" and it1["thinking"] and it1["provider"]
+    assert [m["role"] for m in it2["tail"]][-2:] == ["assistant", "tool"]  # iter2 入参多了「调用 + 结果」
+    assert it2["tail"][-1]["content"].startswith("现在 ") and it2["reply"] == "现在是上午 8 点"
+    full = client.get(f"/api/debug/{cid}/{t['id']}/1").json()
+    assert full["system"] == t["system"] and len(full["messages"]) == it2["n_messages"]
+    assert client.get(f"/api/debug/{cid}/{t['id']}/9").status_code == 404
     assert d["ctx"]["epoch"] == 0 and d["summary"] == ""
 
 

@@ -1726,30 +1726,85 @@ function dbgMsg(m) {
   return `<div class="dm dm-${cls}"><span class="dm-role">${esc(tag)}</span><pre>${esc(text)}</pre></div>`;
 }
 
+// 一轮 = 时间线：参数行 → system / 工具（折叠）→ 这一轮的入参（[system] 现状、user）→ iter 1 模型输出 → tool 结果 → iter 2 …
+// 每次 iter 的入参 = 上一次的入参 + 上一次的输出 + 工具结果，所以只画「新增」的部分，和 carHer2 调试器一样一步一步往下读
+function dbgPre(text, max = 600) {
+  const t = String(text ?? "");
+  if (t.length <= max) return `<pre>${esc(t)}</pre>`;
+  return `<details class="dl"><summary><pre>${esc(t.slice(0, max))}…</pre><span>展开（${t.length} 字）</span></summary><pre>${esc(t)}</pre></details>`;
+}
+function dbgContent(m) {
+  if (typeof m.content === "string") return m.content;
+  if (Array.isArray(m.content)) return m.content.map((c) => c.text || "[图片]").join("\n");
+  return "";
+}
+function dbgLine(icon, label, cls, inner) {
+  return `<div class="dl-row ${cls}"><span class="dl-lab">${icon} ${label}</span><div class="dl-box">${inner}</div></div>`;
+}
+function dbgInput(m) {
+  const text = dbgContent(m);
+  if (m.role === "user" && text.startsWith("[system]")) return dbgLine("🛈", "system·现状", "is-sys", dbgPre(text));
+  if (m.role === "user" && text.startsWith("前面的对话")) return dbgLine("📦", "压缩摘要", "is-sum", dbgPre(text, 200));
+  if (m.role === "user") return dbgLine("👤", "user", "is-user", dbgPre(text));
+  return "";
+}
+function dbgTurn(t) {
+  const when = new Date(t.at * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+  const c0 = t.calls[0] || {};
+  const tokIn = t.calls.reduce((n, c) => Math.max(n, c.usage?.prompt_tokens || 0), 0);
+  let rows = "";
+  // 这一轮的入参：第一次请求里「这一轮」那段（[system] 现状 + 用户这句）
+  for (const m of c0.tail || []) rows += dbgInput(m);
+  t.calls.forEach((c, i) => {
+    const u = c.usage || {};
+    const meta = `<span class="dl-meta">${esc(c.served || c.model)} · ${c.seconds ?? "…"}s · ${u.prompt_tokens ? `${u.prompt_tokens.toLocaleString()} 入 / ${u.completion_tokens || 0} 出` : ""}`
+      + `${c.reasoning_chars ? ` · 思考 ${c.reasoning_chars} 字` : ""} · 入参 ${c.n_messages} 条`
+      + ` <button type="button" class="dl-full" data-full="${t.id}/${i}">完整入参</button></span>`;
+    let out = "";
+    if (c.error) out += `<div class="dl-err">失败：${esc(c.error)}</div>`;
+    for (const tc of c.tool_calls || []) out += `<div class="dl-call">→ <b>${esc(tc.name)}</b> <code>${esc(tc.arguments)}</code></div>`;
+    if (c.reply) out += dbgPre(c.reply, 800);
+    if (!out) out = '<i class="dl-none">（没有输出）</i>';
+    rows += dbgLine("🧠", `iter ${i + 1}`, "is-iter", meta + out);
+    // 工具结果：在下一次请求的入参末尾（tool 消息）
+    const next = t.calls[i + 1];
+    if (c.tool_calls?.length) {
+      const results = next ? (next.tail || []).filter((m) => m.role === "tool").slice(-c.tool_calls.length) : [];
+      c.tool_calls.forEach((tc, k) => {
+        const r = results[k];
+        const text = r ? dbgContent(r) : ((t.actions || []).find((a) => a.name === tc.name)?.result || "（结果没记下）");
+        rows += dbgLine("📥", "tool", "is-tool", `<div class="dl-tname">${esc(tc.name)} · ${String(text).length} 字</div>${dbgPre(text, 500)}`);
+      });
+    }
+  });
+  const head = `<header><b>${when}</b><span>${t.voice ? "📞 语音" : "⌨ 文字"}</span><span>${esc(t.served || t.model)}</span>`
+    + `<span>⟳ ${t.calls.length} iter</span>${tokIn ? `<span>${(tokIn / 1000).toFixed(1)}k token</span>` : ""}`
+    + `${t.error ? `<i class="bad">${esc(t.error)}</i>` : ""}</header>`;
+  const params = `<div class="dl-params">${esc(c0.model || "")} · thinking=${esc(c0.thinking || "")} · max_tokens=${c0.max_tokens || ""} · ${esc(c0.provider || "")}</div>`
+    + `<details class="pm"><summary><b>system_prompt</b><small>${(t.system || "").length} 字（完整原文）</small></summary><pre class="sys-prompt">${esc(t.system || "")}</pre></details>`
+    + `<details class="pm"><summary><b>tools</b><small>${(c0.tools || []).length} 个</small></summary><div class="dl-tools">${(c0.tools || []).map((x) => `<code>${esc(x)}</code>`).join(" ")}</div></details>`;
+  return `<section class="dt">${head}<div class="dt-body">${params}${rows}</div></section>`;
+}
+async function dbgFull(btn) {
+  const [tid, k] = btn.dataset.full.split("/");
+  try {
+    const f = await api(`api/debug/${state.conv.id}/${tid}/${k}`).then(json);
+    const box = document.createElement("div");
+    box.className = "dl-fullbox";
+    box.innerHTML = `<div class="dm dm-system"><span class="dm-role">system</span><pre>${esc(f.system)}</pre></div>` + f.messages.map(dbgMsg).join("");
+    btn.closest(".dl-box").appendChild(box);
+    btn.remove();
+  } catch (e) { toast(e.message); }
+}
+
 function renderDebug() {
   const body = $("debug-body"), d = dbg.data, p = dbg.prompts;
   for (const b of document.querySelectorAll("[data-dv]")) b.setAttribute("aria-selected", String(b.dataset.dv === dbg.view));
   if (!d) return;
   if (dbg.view === "turns") {
     if (!d.turns.length) { body.innerHTML = '<p class="voice-tip">这段对话还没有记录（服务重启后清空；说一句就有）。</p>'; return; }
-    body.innerHTML = d.turns.map((t) => {
-      const when = new Date(t.at * 1000).toLocaleTimeString("zh-CN", { hour12: false });
-      const calls = t.calls.map((c, i) => {
-        const u = c.usage || {};
-        const tools = (c.tool_calls || []).map((x) => `<code>${esc(x.name)}</code>`).join(" ");
-        return `<details class="dc"><summary><span class="dc-n">${i + 1}</span><b>${esc(c.served || c.model)}</b>`
-          + `<span>${c.seconds ?? "…"}s</span><span>${u.prompt_tokens ? `${(u.prompt_tokens / 1000).toFixed(1)}k 入 / ${u.completion_tokens || 0} 出` : ""}</span>`
-          + `<span class="dc-what">${c.error ? `<i class="bad">失败：${esc(c.error)}</i>` : tools ? `调用 ${tools}` : esc((c.reply || "").slice(0, 40))}</span></summary>`
-          + `<div class="dc-body"><div class="dm dm-system"><span class="dm-role">system</span><pre>${esc(c.system || "")}</pre></div>`
-          + (c.messages || []).map(dbgMsg).join("")
-          + (c.reply ? `<div class="dm dm-reply"><span class="dm-role">回答</span><pre>${esc(c.reply)}</pre></div>` : "")
-          + `</div></details>`;
-      }).join("");
-      const acts = (t.actions || []).map((a) => `<li><code>${esc(a.name)}</code> ${esc(a.arguments || "")}<br><small>${esc(a.result)}</small></li>`).join("");
-      return `<section class="dt"><header><b>${when}</b><span>${t.voice ? "📞 语音" : "⌨ 文字"}</span><span>${esc(t.served || t.model)}</span>`
-        + `<span>${t.calls.length} 次请求</span>${t.error ? `<i class="bad">${esc(t.error)}</i>` : ""}</header>`
-        + calls + (acts ? `<ul class="dt-acts">${acts}</ul>` : "") + `</section>`;
-    }).join("");
+    body.innerHTML = d.turns.map(dbgTurn).join("");
+    for (const b of body.querySelectorAll("[data-full]")) b.addEventListener("click", () => dbgFull(b));
   } else if (dbg.view === "ctx") {
     const c = d.ctx || {};
     body.innerHTML = `<div class="dk"><span>已用</span><b>${(c.tokens || 0).toLocaleString()} token</b><span>阈值</span><b>${(c.limit || 0).toLocaleString()}</b>`
@@ -1773,7 +1828,10 @@ function openDebug() {
   dbg.prompts = null;
   loadDebug();
   clearInterval(dbg.timer);
-  dbg.timer = setInterval(() => { if (!$("debug").hidden && dbg.view === "turns") loadDebug(); }, 4000);
+  // 自动刷新（4 秒）：只在没有展开任何东西时刷，免得正在看的被冲掉
+  dbg.timer = setInterval(() => {
+    if (!$("debug").hidden && dbg.view === "turns" && !$("debug-body").querySelector("details[open], .dl-fullbox")) loadDebug();
+  }, 4000);
 }
 function closeDebug() { $("debug").hidden = true; document.body.classList.remove("debug-on"); clearInterval(dbg.timer); }
 $("open-debug").addEventListener("click", () => ($("debug").hidden ? openDebug() : closeDebug()));

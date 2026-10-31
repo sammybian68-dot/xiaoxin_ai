@@ -202,7 +202,7 @@ def debug_turns(cid: str) -> dict:
     加上当前的上下文状态和压缩摘要。只在内存里，服务重启就没了。"""
     from server import compact, trace
 
-    out = {"turns": trace.turns(cid)}
+    out = {"turns": [trace.compact_turn(t) for t in trace.turns(cid)]}
     try:
         conv = store.get(cid)
         out["ctx"] = compact.state(conv)
@@ -211,6 +211,18 @@ def debug_turns(cid: str) -> dict:
     except KeyError:
         pass
     return out
+
+
+@app.get("/api/debug/{cid}/{turn_id}/{k}")
+def debug_call(cid: str, turn_id: int, k: int) -> dict:
+    """某一轮第 k 次请求的完整入参（system + 全部 messages），调试面板点「完整入参」时拉。"""
+    from server import trace
+
+    for t in trace.turns(cid):
+        if t["id"] == turn_id and 0 <= k < len(t["calls"]):
+            c = t["calls"][k]
+            return {"system": c.get("system", ""), "messages": c.get("messages", [])}
+    raise HTTPException(404, "这一步的记录不在了（只留最近 20 轮，服务重启会清空）")
 
 
 @app.get("/api/conversations/{cid}/ctx")
@@ -504,8 +516,13 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False, c
         head_filter = RoleTagFilter()
         tools = registry.SPECS
         system = prompts.build(voice=voice)
+        extra = client.SELF_HOSTED.get(m, (None, None, None, {}))[3]
+        thinking = extra.get("chat_template_kwargs", {}).get("enable_thinking")
         rec = trace.add_call(tr, model=m, system=system, messages=[dict(x) for x in msgs],
-                             tools=[t["function"]["name"] for t in tools])
+                             tools=[t["function"]["name"] for t in tools], max_tokens=4096,
+                             thinking="默认" if thinking is None else str(thinking).lower(),
+                             provider="自部署 vLLM" if m in client.SELF_HOSTED else "公司代理")
+        reasoning_chars = 0
         t_req = time.monotonic()
         try:
             for kind, value in client.iter_stream(m, msgs, system=system, max_tokens=4096, timeout=180,
@@ -516,6 +533,7 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False, c
                 elif kind == "usage":
                     usage = value
                 elif kind == "reasoning":
+                    reasoning_chars += len(value)
                     put("reasoning", value)
                 elif kind == "tool_calls":
                     calls = value
@@ -531,7 +549,7 @@ def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False, c
                 got = True
                 text += value
                 put("delta", value)
-            rec.update(served=served, reply=text, tool_calls=calls, usage=usage,
+            rec.update(served=served, reply=text, tool_calls=calls, usage=usage, reasoning_chars=reasoning_chars,
                        seconds=round(time.monotonic() - t_req, 2))
         except client.ProxyError as e:
             rec.update(error=str(e)[:300], seconds=round(time.monotonic() - t_req, 2))
