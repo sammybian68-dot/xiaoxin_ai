@@ -18,7 +18,13 @@
   <div class="login-card">
     <img src="static/icon.png" alt="" class="login-avatar">
     <h1>小新</h1>
-    <p class="login-tip">用免密链接打开一次就行，之后这个浏览器会记住。<br>链接找家里管电脑的人要。</p>
+    <p class="login-tip">输入管理台给的 6 位配对码，这台设备就记住是谁了。</p>
+    <form id="pair-form" class="pair-form" autocomplete="off">
+      <input id="pair-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="6 位配对码" aria-label="配对码">
+      <button type="submit" class="primary">配对</button>
+    </form>
+    <p id="pair-msg" class="pair-msg" aria-live="polite"></p>
+    <p class="login-tip sub">管理员用免密链接打开一次就行。</p>
   </div>
 </div>
 
@@ -179,6 +185,7 @@
       <button type="button" role="tab" data-pane="wake">唤醒</button>
       <button type="button" role="tab" data-pane="voice">音色</button>
       <button type="button" role="tab" data-pane="prompt">提示词与工具</button>
+      <button type="button" role="tab" data-pane="members" hidden>成员</button>
       <button type="button" role="tab" data-pane="account">登录与设备</button>
     </nav>
 
@@ -316,6 +323,20 @@
         </div>
       </div>
       <p id="voice-msg" class="voice-msg" role="status"></p>
+    </section>
+
+    <section class="pane" role="tabpanel" data-pane="members" hidden>
+      <h3>家里的人</h3>
+      <p class="voice-tip">孩子各有自己的线程（聊天记录、小新的记忆、闹钟），兄妹互相看不到；家长能进每个孩子的。删除默认是停用，历史都留着。</p>
+      <div id="mem-list"></div>
+      <h3>添加</h3>
+      <form id="mem-add" class="mem-add">
+        <select id="mem-role" aria-label="角色"><option value="kid">孩子</option><option value="parent">家长</option></select>
+        <input id="mem-name" placeholder="名字（如 儿子）" maxlength="12" aria-label="名字" required>
+        <input id="mem-call" placeholder="小新怎么叫他" maxlength="12" aria-label="称呼">
+        <input id="mem-grade" placeholder="年级（孩子）" maxlength="12" aria-label="年级">
+        <button type="submit" class="primary">添加</button>
+      </form>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="account" hidden>

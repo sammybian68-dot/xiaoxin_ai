@@ -36,6 +36,9 @@ async function boot() {
   try { me = await api("api/me").then(json); } catch (_) { return; }
   $("login").hidden = true;
   $("app").hidden = false;
+  state.me = me.who;
+  state.kids = me.kids;
+  document.querySelector('.settings-nav [data-pane="members"]').hidden = me.who.kind !== "admin";
   state.models = me.models;
   state.system = me.system_prompt;
   state.vision = me.vision_model;
@@ -1126,7 +1129,7 @@ const vrec = { rec: null, blob: null, levels: [], timer: null };
 
 // ---------------------------------------------------------------- 设置
 
-const PANES = ["general", "talk", "wake", "voice", "prompt", "account"];
+const PANES = ["general", "talk", "wake", "voice", "prompt", "members", "account"];
 
 function openSettings(pane = "general") {
   closeSide();
@@ -1148,6 +1151,7 @@ function showPane(name) {
   if (name !== "wake" && typeof asrDebug !== "undefined" && asrDebug.on) $("asr-debug").click();
   if (name === "talk" || name === "wake") loadEngines();
   if (name === "prompt") loadPrompts();
+  if (name === "members") loadMembers();
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
     loadEngines();
@@ -1928,3 +1932,88 @@ $("open-debug").addEventListener("click", () => ($("debug").hidden ? openDebug()
 $("debug-close").addEventListener("click", closeDebug);
 $("debug-refresh").addEventListener("click", () => { dbg.prompts = null; loadDebug(); });
 for (const b of document.querySelectorAll("[data-dv]")) b.addEventListener("click", () => { dbg.view = b.dataset.dv; renderDebug(); });
+
+
+// ---------------------------------------------------------------- 配对（登录页）和成员管理（设置 → 成员，管理员才有）
+
+$("pair-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const code = $("pair-code").value.trim();
+  $("pair-msg").textContent = "配对中…";
+  try {
+    const r = await fetch("api/pair", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+    // APK 里：token 交给原生存着（pad 的自由对话、闹钟也用它；家长端下次打开直接登）
+    (window.XiaoxinNative || window.XiaoxinParent)?.setDeviceToken?.(d.token);
+    $("pair-msg").textContent = `好了，这是${d.member.name}的设备`;
+    setTimeout(() => location.reload(), 600);
+  } catch (err) { $("pair-msg").textContent = err.message; }
+});
+
+const ROLE = { kid: "孩子", parent: "家长" };
+const KIND = { pad: "平板", phone: "手机", web: "浏览器" };
+const ago = (t) => { const s = Date.now() / 1000 - t; return s < 120 ? "刚刚" : s < 3600 ? `${Math.round(s / 60)} 分钟前` : s < 86400 ? `${Math.round(s / 3600)} 小时前` : `${Math.round(s / 86400)} 天前`; };
+
+async function loadMembers() {
+  const box = $("mem-list");
+  let d;
+  try { d = await api("api/members").then(json); } catch (e) { box.textContent = e.message; return; }
+  const row = (m) => {
+    const off = m.status !== "active";
+    const devs = m.devices.map((x) => `<li><span>${esc(KIND[x.kind] || x.kind)} · ${esc(x.name)}</span><small>${esc(ago(x.last_seen))}</small>`
+      + `<button type="button" data-revoke="${x.id}">踢下线</button></li>`).join("") || '<li class="none">还没有设备</li>';
+    return `<div class="mem${off ? " off" : ""}" data-id="${m.id}"><div class="mem-head"><span class="mem-av">${esc(m.avatar || (m.role === "kid" ? "🧒" : "🧑"))}</span>`
+      + `<b>${esc(m.name)}</b><span class="mem-role">${ROLE[m.role]}${m.grade ? " · " + esc(m.grade) : ""}${off ? " · 已停用" : ""}</span>`
+      + `<span class="mem-btns">${off ? `<button type="button" data-act="on">恢复</button>`
+        : `<button type="button" data-act="pair">加设备</button><button type="button" data-act="edit">改</button><button type="button" data-act="off">停用</button>`}</span></div>`
+      + `<div class="mem-code" hidden></div><ul class="mem-devs">${devs}</ul></div>`;
+  };
+  box.innerHTML = `<h4>孩子</h4>${d.kids.map(row).join("") || '<p class="voice-tip">还没有</p>'}<h4>家长</h4>${d.parents.map(row).join("") || '<p class="voice-tip">还没有，下面添加</p>'}`;
+  for (const el of box.querySelectorAll(".mem")) {
+    const id = el.dataset.id;
+    el.querySelector(".mem-btns").addEventListener("click", async (e) => {
+      const act = e.target.dataset.act;
+      try {
+        if (act === "pair") {
+          const kind = (state.members_kind = prompt("什么设备？输入 pad / phone / web", el.querySelector(".mem-role").textContent.startsWith("孩子") ? "pad" : "phone") || "").trim();
+          if (!kind) return;
+          const p = await api(`api/members/${id}/pair`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind }) }).then(json);
+          const c = el.querySelector(".mem-code");
+          c.hidden = false;
+          c.innerHTML = `配对码 <b>${p.code}</b>，5 分钟内在那台设备的小新登录页输入`;
+        } else if (act === "edit") {
+          const name = prompt("名字", el.querySelector("b").textContent);
+          if (name == null) return;
+          const call = prompt("小新怎么叫他", "") ?? "";
+          await api(`api/members/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(call ? { name, call } : { name }) });
+          loadMembers();
+        } else if (act === "off") {
+          if (!confirm("停用后他的设备都会退出，聊天记录和闹钟都留着，可以恢复。停用？")) return;
+          await api(`api/members/${id}`, { method: "DELETE" });
+          loadMembers();
+        } else if (act === "on") {
+          await api(`api/members/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: true }) });
+          loadMembers();
+        }
+      } catch (err) { toast(err.message); }
+    });
+    for (const b of el.querySelectorAll("[data-revoke]")) b.addEventListener("click", async () => {
+      if (!confirm("让这台设备退出？要重新配对才能用。")) return;
+      try { await api(`api/devices/${b.dataset.revoke}`, { method: "DELETE" }); loadMembers(); } catch (err) { toast(err.message); }
+    });
+  }
+}
+
+$("mem-role").addEventListener("change", () => { $("mem-grade").hidden = $("mem-role").value !== "kid"; });
+$("mem-add").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api("api/members", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: $("mem-role").value, name: $("mem-name").value, call: $("mem-call").value, grade: $("mem-grade").value }) });
+    $("mem-name").value = $("mem-call").value = $("mem-grade").value = "";
+    loadMembers();
+  } catch (err) { toast(err.message); }
+});

@@ -298,6 +298,15 @@ public class TalkActivity extends Activity {
     // ---------------------------------------------------------------- 给网页用的原生接口
 
     private final class Bridge {
+        /** 登录页配对成功：设备 token 存成 key，原生连接（自由对话、闹钟、提示音）从此都用这台设备的身份。 */
+        @JavascriptInterface
+        public void setDeviceToken(String token) {
+            if (token != null && token.startsWith("xd_")) {
+                prefs.edit().putString("key", token).apply();
+                runOnUiThread(() -> recreate());
+            }
+        }
+
         /** 网页点「自由对话」：wsUrl 是 https://…/api/talk?… 的页面地址，这里换成 wss 自己连。 */
         @JavascriptInterface
         public void start(String pageUrl) {

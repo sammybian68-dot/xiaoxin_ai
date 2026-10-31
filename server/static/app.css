@@ -450,3 +450,25 @@ details.dl[open] > summary { display: none; }
   .att-img { max-width: 200px; max-height: 200px; }
 }
 @media (prefers-reduced-motion: reduce) { .side, .switch, .switch::after { transition: none; } .cursor::after { animation: none; } }
+
+/* 配对（登录页） */
+.pair-form { display: flex; gap: 8px; margin: 14px auto 6px; max-width: 280px; }
+.pair-form input { flex: 1; min-width: 0; font-size: 20px; letter-spacing: 4px; text-align: center; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--text); }
+.pair-msg { min-height: 1.4em; color: var(--muted); font-size: 14px; }
+.login-tip.sub { font-size: 12px; opacity: .7; }
+/* 设置 → 成员 */
+.mem { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 8px 0; }
+.mem.off { opacity: .55; }
+.mem-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mem-av { font-size: 20px; }
+.mem-role { color: var(--muted); font-size: 13px; }
+.mem-btns { margin-left: auto; display: flex; gap: 6px; }
+.mem-btns button, .mem-devs button { font-size: 13px; padding: 4px 10px; }
+.mem-code { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: rgba(61, 220, 132, .12); font-size: 14px; }
+.mem-code b { font-size: 20px; letter-spacing: 3px; }
+.mem-devs { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.mem-devs li { display: flex; align-items: center; gap: 8px; }
+.mem-devs li small { color: var(--muted); margin-left: auto; }
+.mem-devs li.none { color: var(--muted); }
+.mem-add { display: flex; gap: 8px; flex-wrap: wrap; }
+.mem-add input, .mem-add select { flex: 1 1 120px; min-width: 0; }

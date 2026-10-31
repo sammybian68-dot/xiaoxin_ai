@@ -138,6 +138,16 @@ def kid_for(request: Request, wanted: str = "") -> dict:
     return k
 
 
+def _secure(request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+
+
+def _cookie_path(request) -> str:
+    # 挂在 8183/xiaoxin/ 下时，cookie 只给 /xiaoxin/ 用，不带给同域的训练平台
+    prefix = (request.headers.get("x-forwarded-prefix") or "").rstrip("/")
+    return prefix + "/" if prefix.startswith("/") else "/"
+
+
 def _remember(request: Request, resp: Response, key: str) -> Response:
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     # 挂在 8183/xiaoxin/ 下时，cookie 只给 /xiaoxin/ 用，不带给同域的训练平台
@@ -209,13 +219,20 @@ def index(request: Request, k: str = "") -> Response:
     """带 ?k= 是免密链接：对了就种 cookie，再跳回不带 k 的地址，免得 key 留在地址栏和历史记录里。"""
     if k:
         key = _key()
-        if not _same(k, key):
-            resp = _index_html()
-            resp.headers["X-Xiaoxin-Link"] = "bad"
+        if _same(k, key):
+            resp = RedirectResponse("./", status_code=303)
+            resp.headers["Referrer-Policy"] = "no-referrer"
+            return _remember(request, resp, key)
+        if members.authenticate(k):  # APK 存的是设备 token：种设备 cookie，WebView 里的页面就是这台设备的身份
+            resp = RedirectResponse("./", status_code=303)
+            resp.headers["Referrer-Policy"] = "no-referrer"
+            resp.delete_cookie(COOKIE, path=_cookie_path(request))  # 之前用管理员链接登过：退掉，免得一直是管理员
+            resp.set_cookie(DEVICE_COOKIE, k, max_age=5 * 365 * 86400, httponly=True, samesite="lax",
+                            secure=_secure(request), path=_cookie_path(request))
             return resp
-        resp = RedirectResponse("./", status_code=303)
-        resp.headers["Referrer-Policy"] = "no-referrer"
-        return _remember(request, resp, key)
+        resp = _index_html()
+        resp.headers["X-Xiaoxin-Link"] = "bad"
+        return resp
     return _index_html()
 
 
@@ -549,10 +566,9 @@ def pair(request: Request, body: dict = Body(...)) -> Response:
     resp = Response(json.dumps({"token": token, "device": d, "member": {"id": m["id"], "name": m["name"],
                                                                         "role": m["role"]}}, ensure_ascii=False),
                     media_type="application/json")
-    secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
-    prefix = (request.headers.get("x-forwarded-prefix") or "").rstrip("/")
-    resp.set_cookie(DEVICE_COOKIE, token, max_age=5 * 365 * 86400, httponly=True, samesite="lax", secure=secure,
-                    path=prefix + "/" if prefix.startswith("/") else "/")
+    resp.delete_cookie(COOKIE, path=_cookie_path(request))  # 配对了就是这台设备的身份，不再是管理员
+    resp.set_cookie(DEVICE_COOKIE, token, max_age=5 * 365 * 86400, httponly=True, samesite="lax",
+                    secure=_secure(request), path=_cookie_path(request))
     return resp
 
 

@@ -57,16 +57,6 @@ public class MainActivity extends Activity {
         pinnedSha256 = loadPin();
         // 摄像头、麦克风不在启动时要：网页真要用（视频、语音留言）时在 onPermissionRequest 里按需要。
         // 启动时先弹一个，网页紧接着再要会把前一个顶掉，网页拿到的是 denied（2026-10-31 实测）
-        if (TextUtils.isEmpty(key())) {
-            TextView hint = new TextView(this);
-            hint.setText("还没登录。\n找家里管小新的人配一下。");
-            hint.setTextColor(0xFFE8EAEE);
-            hint.setTextSize(22);
-            hint.setGravity(Gravity.CENTER);
-            hint.setBackgroundColor(0xFF0F1115);
-            setContentView(hint);
-            return;
-        }
         WebView.setWebContentsDebuggingEnabled(
                 (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0);
         web = new WebView(this);
@@ -81,8 +71,10 @@ public class MainActivity extends Activity {
         s.setUserAgentString(s.getUserAgentString() + " XiaoxinParent/0.1");
         web.setWebViewClient(new Client());
         web.setWebChromeClient(new Chrome());
+        web.addJavascriptInterface(new Bridge(), "XiaoxinParent");  // 不叫 XiaoxinNative：网页看到那个就当成 pad，走原生自由对话
         setContentView(web);
-        web.loadUrl(base() + "?k=" + Uri.encode(key()));  // 免密链接：服务端种 cookie 再跳回去
+        // 有 token 就用它登（服务端种 cookie 再跳回去）；没有就直接打开，网页显示配对码输入框
+        web.loadUrl(TextUtils.isEmpty(key()) ? base() : base() + "?k=" + Uri.encode(key()));
         openPage(getIntent());
     }
 
@@ -149,6 +141,16 @@ public class MainActivity extends Activity {
 
     private boolean ours(Uri u) {
         return u.toString().startsWith(base());
+    }
+
+    /** 网页登录页配对成功后把设备 token 交过来存着；以后打开直接用它登。 */
+    private final class Bridge {
+        @android.webkit.JavascriptInterface
+        public void setDeviceToken(String token) {
+            if (token != null && token.startsWith("xd_")) {
+                prefs.edit().putString("key", token).apply();
+            }
+        }
     }
 
     // ---------------------------------------------------------------- WebView

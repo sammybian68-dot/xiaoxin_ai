@@ -173,3 +173,18 @@ def test_model_tools_and_prompt_follow_thread_owner(family, fakes):
     assert family["女儿"].get("/api/clock").json()["alarms"] == []
     system = fakes.llm_requests[-1]["system"]
     assert "这是儿子的小新" in system and "「小宝」" in system and "一年级" in system
+
+
+def test_device_token_link_and_cookie(client, anon):
+    """APK 存的是设备 token：?k=<token> 种设备 cookie 再跳回去，之后不带 header 也是这台设备；管理员 cookie 被退掉。"""
+    client.get("/api/thread")
+    kid = members.kids()[0]["id"]
+    code = client.post(f"/api/members/{kid}/pair", json={"kind": "pad"}).json()["code"]
+    token = anon.post("/api/pair", json={"code": code}).json()["token"]
+    anon.cookies.clear()
+    r = anon.get(f"/?k={token}", follow_redirects=False)
+    assert r.status_code == 303 and "xiaoxin_device=" in r.headers["set-cookie"]
+    anon.cookies.set("xiaoxin_device", token)
+    me = anon.get("/api/me").json()["who"]
+    assert me["role"] == "kid" and me["id"] == kid
+    assert anon.get("/?k=xd_wrong", follow_redirects=False).headers.get("x-xiaoxin-link") == "bad"
