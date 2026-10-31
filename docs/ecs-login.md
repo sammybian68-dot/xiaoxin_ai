@@ -50,8 +50,8 @@ ECS 上不存家庭数据、不跑小新业务代码。改 coturn 只改模板�
 | 7000/tcp | frps | 通 |
 | 6001、8183 等 /tcp | frp 映射的 gpu2 端口 | 通 |
 | 3478/tcp | TURN | 通 |
-| 3478/udp | TURN | 用户在开 |
-| 49160-49200/udp | TURN 中继端口段 | 用户在开 |
+| 3478/udp | TURN | 通（外网 Allocate 实测成功） |
+| 49160-49200/udp | TURN 中继端口段 | 通（两端端口抓包实测） |
 
 ECS 自己的 ufw 是关着的，挡端口的只有安全组。端口不通先抓包：`ssh ecs 'timeout 8 tcpdump -ni any udp port 3478'`，抓不到包就是安全组没放行。
 
