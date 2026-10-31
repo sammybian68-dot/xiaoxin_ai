@@ -238,20 +238,20 @@ function showAction(row, a) {
   if (a.name === "alarm_list") {  // 闹钟清单：插一张能改能删的卡（alarmcard.js），不出文字条
     if (typeof alarmCard === "function" && clk.snap) {
       row.querySelector(".bubble").insertBefore(alarmCard(), row.querySelector(".bubble .text"));
-      scrollDown();
+      requestAnimationFrame(() => revealRow(row));
     }
     return;
   }
   if (a.name === "query_time") {  // 报时：插一个会走的钟（timecard.js），不出文字条
     if (typeof timeCardFor === "function") {
       row.querySelector(".bubble").insertBefore(timeCardFor(a), row.querySelector(".bubble .text"));
-      scrollDown();
+      requestAnimationFrame(() => revealRow(row));
     }
     return;
   }
   if (a.name === "show_stroke_order") {  // 笔顺：直接插一张能动的卡（hanzi.js）
     const card = typeof strokeCardFor === "function" ? strokeCardFor(a) : null;
-    if (card) { row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text")); scrollDown(); return; }
+    if (card) { row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text")); requestAnimationFrame(() => revealRow(row)); return; }
   }
   const ok = !a.result.startsWith("失败");
   const chip = document.createElement("button");
@@ -397,6 +397,18 @@ function scrollDown(force) {
   if (force || c.scrollHeight - c.scrollTop - c.clientHeight < 160) c.scrollTop = c.scrollHeight;
 }
 
+// 回答里插了卡片（闹钟清单、笔顺、报时）或答完：把这条回答整个带进视野。
+// scrollDown 只在离底不到 160px 时才跟，一张 200 多 px 的卡插进来就超了，后面的字也不跟了，得手指往下滑。
+// 放得下就贴底（卡和下面那句话都看得到）；放不下（卡比屏高）就让回答顶到上面，从卡的开头看起
+function revealRow(row) {
+  const c = $("chat");
+  if (!row || !c.contains(row)) return;
+  const cr = c.getBoundingClientRect(), rr = row.getBoundingClientRect();
+  const fits = rr.height <= c.clientHeight - 16;
+  const target = fits ? c.scrollHeight - c.clientHeight : c.scrollTop + (rr.top - cr.top) - 8;
+  c.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+}
+
 // ---------------------------------------------------------------- 发送
 
 async function ensureConv() {
@@ -531,6 +543,7 @@ async function send(text, via = "text") {
 
   // 文字收尾只做一次：存 reply、解锁输入框、刷新侧栏
   function finishText() {
+    if (row.querySelector(".ac, .hz, .tc-wrap")) requestAnimationFrame(() => revealRow(row));  // 卡 + 那句话都露出来
     if (row.dataset.finished) return;
     row.dataset.finished = "1";
     textEl.classList.remove("cursor");
@@ -984,6 +997,7 @@ function dropLive() {
 function finishTalkRow() {
   const row = talk.row;
   if (!row) return;
+  if (row.querySelector(".ac, .hz, .tc-wrap")) requestAnimationFrame(() => revealRow(row));
   row.querySelector(".text").classList.remove("cursor");
   row.dataset.reply = talk.text;
   if (!talk.text) row.remove();
