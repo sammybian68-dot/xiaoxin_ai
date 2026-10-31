@@ -82,6 +82,55 @@ async function openThread() {
   renderThread();
   loadCtx();
   syncStandbyUrl();
+  hubConnect();
+}
+
+// ---------------------------------------------------------------- 实时总线：别的设备说的话马上出现（server/family/hub.py）
+// 自己这台发的、小新流式答的，本地已经画了（行上有 data-mid），hub 再推来按 id 跳过。
+// 断了 2→4→…→30 秒重连，连上先按最后一条 id 补齐（GET api/thread?since=）。
+const hub = { ws: null, wait: 2000, timer: null };
+
+function hubConnect() {
+  if (hub.ws && hub.ws.readyState <= 1) return;
+  clearTimeout(hub.timer);
+  const url = new URL("api/hub", location.href).href.replace(/^http/, "ws");
+  const ws = hub.ws = new WebSocket(url);
+  ws.onopen = () => { hub.wait = 2000; hubCatchUp(); };
+  ws.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    if (ev.type === "ping") { ws.send('{"type":"pong"}'); return; }
+    if ((ev.type === "msg" || ev.type === "msg.update") && ev.thread === state.conv?.id) hubMessage(ev.message, ev.type);
+  };
+  ws.onclose = () => {
+    if (hub.ws !== ws) return;
+    hub.timer = setTimeout(hubConnect, hub.wait);
+    hub.wait = Math.min(hub.wait * 2, 30000);
+  };
+}
+
+function hubMessage(m, kind) {
+  if (!state.conv) return;
+  const known = state.conv.messages.findIndex((x) => x.id === m.id);
+  if (known >= 0) state.conv.messages[known] = { ...state.conv.messages[known], ...m };
+  else if (kind === "msg") state.conv.messages.push(m);
+  if (kind !== "msg" || m.role === "note") return;
+  if ($("messages").querySelector(`[data-mid="${CSS.escape(m.id)}"]`)) return;  // 本地已经画了
+  if (m.role === "assistant" && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
+  if (m.role === "user" && m.via === "talk" && talk.on) return;      // 自己这台在自由对话：那句由 heard 画（带原声小喇叭）
+  if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
+  appendMessage(m);
+  scrollDown();
+}
+
+async function hubCatchUp() {
+  const last = [...(state.conv?.messages || [])].reverse().find((m) => m.id)?.id;
+  if (!state.conv || !last) return;
+  try {
+    const d = await api(`api/thread?since=${encodeURIComponent(last)}${state.conv.kid ? "&kid=" + state.conv.kid : ""}`).then(json);
+    if (d.id !== state.conv.id) return;
+    if (!d.partial) { state.conv = d; renderThread(); return; }  // 太久没连，直接整条重画
+    for (const m of d.messages) hubMessage(m, "msg");
+  } catch (_) { /* 下次重连再补 */ }
 }
 
 function renderThread() {
@@ -151,6 +200,7 @@ function appendMessage(m) {
   box.querySelector(".empty")?.remove();
   const row = document.createElement("div");
   row.className = "msg " + (m.role === "user" ? "me" : "ai");
+  if (m.id) row.dataset.mid = m.id;  // hub 推来的同一条就不再画一遍
   if (m.role === "user") {
     // 自由对话的句子：气泡上方一个小喇叭，点了回放服务端收到的原声，并摊开端侧（pad 本机）认出的字，对照云端识别查输入问题
     const replay = m.via === "talk" && (m.audio || m.local != null)
@@ -518,6 +568,7 @@ async function send(text, via = "text") {
         } else if (ev === "note") {
           toast(data);
         } else if (ev === "done") {
+          if (data.id) row.dataset.mid = data.id;
           reply = data.text;
           textEl.innerHTML = renderText(reply);
           if (data.searches) renderSources(row, data.searches);
@@ -1082,7 +1133,7 @@ function onTalkEvent(ev) {
       break;
     case "reply":
       if (ev.ctx) renderCtx(ev.ctx);
-      if (talk.row) { talk.row.querySelector(".meta").dataset.model = ev.message.model || ""; showTiming(); }
+      if (talk.row) { talk.row.dataset.mid = ev.message.id || ""; talk.row.querySelector(".meta").dataset.model = ev.message.model || ""; showTiming(); }
       break;
     case "model": toast(`下一句用 ${state.models.find((m) => m.id === ev.model)?.label || ev.model}`); break;
     case "speaking":

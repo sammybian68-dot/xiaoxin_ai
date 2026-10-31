@@ -20,7 +20,7 @@ from pathlib import Path
 
 DATA = Path(os.environ.get("XIAOXIN_DATA") or "/Data/cmbian/private_data/xiaoxin")
 CONV, FILES, VOICE = DATA / "conversations", DATA / "files", DATA / "voice"
-MAX_FILE = 50 * 1024 * 1024
+MAX_FILE = 200 * 1024 * 1024  # 原图（勾了「原图」才传，分片续传）
 MAX_TEXT_FILE = 200 * 1024
 TEXT_EXT = {".txt", ".md", ".csv", ".json", ".py", ".js", ".java", ".kt", ".c", ".h", ".cpp", ".go", ".rs",
             ".ts", ".html", ".css", ".xml", ".yaml", ".yml", ".log", ".sh", ".sql"}
@@ -125,7 +125,20 @@ def append(cid: str, msg: dict) -> dict:
             conv["title"] = title or "图片 / 文件"
         conv["updated"] = msg["created"]
         _write_json(CONV / f"{cid}.json", conv)
+    _notify(cid, "msg", msg)
     return msg
+
+
+def _notify(cid: str, kind: str, msg: dict) -> None:
+    """推给在线的设备（实时总线，server/family/hub.py）。note 是给模型看的现状，不推。"""
+    if msg.get("role") == "note":
+        return
+    try:
+        from server.family import hub
+
+        hub.publish(cid, {"type": kind, "message": msg})
+    except Exception:  # 推送失败不影响落盘
+        pass
 
 
 def new_epoch(cid: str, kind: str, *, start: int | None = None, summary: str = "", **fields) -> dict:
@@ -274,8 +287,11 @@ def update_message(cid: str, mid: str, **fields) -> dict | None:
             if m["id"] == mid:
                 m.update(fields)
                 _write_json(CONV / f"{cid}.json", conv)
-                return m
-    return None
+                break
+        else:
+            return None
+    _notify(cid, "msg.update", m)
+    return m
 
 
 # ---------------------------------------------------------------- 附件
@@ -303,11 +319,142 @@ def commit(fid: str, name: str, mime: str, size: int, owner: str = "") -> dict:
     return meta
 
 
+def update_file(fid: str, **fields) -> dict:
+    """给文件 meta 补字段（宽高、原图状态）；值是 None 的字段删掉。"""
+    d = FILES / _check(fid)
+    with _lock:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        for k, v in fields.items():
+            if v is None:
+                meta.pop(k, None)
+            else:
+                meta[k] = v
+        _write_json(d / "meta.json", meta)
+    return meta
+
+
 def abort(fid: str) -> None:
     d = FILES / _check(fid)
     for p in d.glob("*"):
         p.unlink(missing_ok=True)
     d.rmdir()
+
+
+# ---- 图片分档（docs/architecture.md 6.5）：ECS 只有 5 Mbps，所以发送端先在本地压出小图先发，原图后台慢慢传。
+#   thumb   长边 480、q70，~30 KB，气泡里
+#   screen  长边 2048、q82，~400 KB，点开看大图、喂给视觉模型、打印兜底
+#   原图    勾了「原图」才有，分片续传；没传完 meta.original.received < size
+# 同一个 fid 下：thumb.jpg、screen.jpg、blob（原图）。老文件只有 blob：按需从 blob 生成 thumb / screen。
+THUMB, SCREEN = (480, 70), (2048, 82)
+CHUNK_MAX = 1024 * 1024  # 一片最大 1 MB（客户端用 512 KB）
+
+
+def make_variant(src: Path, dst: Path, size: tuple[int, int]) -> bool:
+    """从 src 生成长边 size[0]、质量 size[1] 的 JPEG（转正方向、去透明）。不是图片或打不开返回 False。"""
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(src) as im:
+            im = ImageOps.exif_transpose(im)
+            if im.mode not in ("RGB", "L"):
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[-1])
+                im = bg
+            im.thumbnail((size[0], size[0]))
+            tmp = dst.with_suffix(".tmp")
+            im.save(tmp, "JPEG", quality=size[1], optimize=True)
+            tmp.replace(dst)
+        return True
+    except Exception:
+        return False
+
+
+def variant_path(fid: str, which: str) -> Path | None:
+    """thumb / screen / original 的文件。缺 thumb / screen 时从现有最大的那档现做一份（老文件、只传了原图的）。"""
+    info = file_info(fid)
+    if info is None:
+        return None
+    blob, meta = info
+    d = blob.parent
+    if which == "original":
+        o = meta.get("original")
+        if not blob.is_file() or not blob.stat().st_size:  # 分档上传没勾原图：blob 是空的
+            return None
+        return blob if not o or o.get("received", 0) >= o.get("size", 0) else None
+    if meta["kind"] != "image":
+        return None
+    p = d / f"{which}.jpg"
+    if p.is_file():
+        return p
+    src = next((x for x in (d / "screen.jpg", blob) if x.is_file() and x.stat().st_size), None)
+    if src is None or not make_variant(src, p, THUMB if which == "thumb" else SCREEN):
+        return None
+    return p
+
+
+def best_image(fid: str) -> Path | None:
+    """喂模型、预览用：screen（够清楚、不太大），没有就原图。"""
+    return variant_path(fid, "screen") or variant_path(fid, "original")
+
+
+def save_variant(fid: str, which: str, data: bytes) -> dict:
+    """客户端本地压好的 thumb / screen 直接存（只认 JPEG）。"""
+    if which not in ("thumb", "screen"):
+        raise StoreError("只能传 thumb / screen")
+    if not data.startswith(b"\xff\xd8"):
+        raise StoreError("要 JPEG")
+    info = file_info(fid)
+    if info is None:
+        raise KeyError(fid)
+    d = info[0].parent
+    tmp = d / f"{which}.tmp"
+    tmp.write_bytes(data)
+    tmp.replace(d / f"{which}.jpg")
+    with _lock:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        meta.setdefault("variants", {})[which] = len(data)
+        _write_json(d / "meta.json", meta)
+    return meta
+
+
+def begin_original(fid: str, size: int) -> dict:
+    """勾了「原图」：登记原图总大小，之后分片 PUT。已经登记过（续传）就返回现在收到多少。"""
+    info = file_info(fid)
+    if info is None:
+        raise KeyError(fid)
+    d = info[0].parent
+    with _lock:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        o = meta.get("original")
+        if not o or o.get("size") != size:
+            o = meta["original"] = {"size": int(size), "received": 0}
+            (d / "blob").write_bytes(b"")
+            _write_json(d / "meta.json", meta)
+    return o
+
+
+def put_chunk(fid: str, offset: int, data: bytes) -> dict:
+    """原图的一片：只接受正好接在已收到末尾的那片（断点续传：客户端先 GET 拿 received，从那里接着传）。"""
+    if len(data) > CHUNK_MAX:
+        raise StoreError("一片太大")
+    info = file_info(fid)
+    if info is None:
+        raise KeyError(fid)
+    d = info[0].parent
+    with _lock:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        o = meta.get("original")
+        if not o:
+            raise StoreError("先登记原图")
+        if offset != o["received"]:
+            return o  # 不是接着的（重发、乱序）：不收，告诉它从哪接
+        if o["received"] + len(data) > o["size"]:
+            raise StoreError("超过原图大小")
+        with (d / "blob").open("ab") as f:
+            f.write(data)
+        o["received"] += len(data)
+        _write_json(d / "meta.json", meta)
+    return o
 
 
 def file_info(fid: str) -> tuple[Path, dict] | None:
@@ -321,6 +468,8 @@ def file_info(fid: str) -> tuple[Path, dict] | None:
 
 
 def data_url(path: Path, mime: str) -> str:
+    if path.suffix == ".jpg" and path.name in ("thumb.jpg", "screen.jpg"):
+        mime = "image/jpeg"
     return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"
 
 

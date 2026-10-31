@@ -445,11 +445,34 @@ def stopwatch_act(request: Request, action: str) -> dict:
 # ---------------------------------------------------------------- 孩子线程（每个孩子一条）
 
 @app.get("/api/thread")
-def kid_thread(request: Request, kid: str = "") -> dict:
+def kid_thread(request: Request, kid: str = "", since: str = "") -> dict:
     """某个孩子的线程。孩子的 pad 拿到的永远是自己的；家长、管理员带 ?kid= 选（不带就第一个孩子）。
-    第一次调时把阶段 1 那条线程认作第一个孩子的（members.ensure）。"""
+    第一次调时把阶段 1 那条线程认作第一个孩子的（members.ensure）。
+    ?since=<消息 id>：只要这条之后的（hub 断线重连补齐用）；找不到这条（被删、太老）就给全部。"""
     k = kid_for(request, kid)
-    return {**store.get(k["thread"]), "kid": k["id"]}
+    conv = {**store.get(k["thread"]), "kid": k["id"]}
+    if since:
+        ids = [m["id"] for m in conv["messages"]]
+        if since in ids:
+            conv["messages"] = conv["messages"][ids.index(since) + 1:]
+            conv["partial"] = True
+    return conv
+
+
+@app.websocket("/api/hub")
+async def hub_ws(ws: WebSocket) -> None:
+    """实时总线：协议见 server/family/hub.py。"""
+    from server.family import hub
+
+    w = _ws_who(ws)
+    if w is None:
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    try:
+        await hub.serve(ws, w)
+    except WebSocketDisconnect:
+        pass
 
 
 @app.post("/api/thread/new_chapter")
@@ -666,7 +689,8 @@ def _llm_messages(conv: dict) -> list[dict]:
             if info is None:
                 parts.append({"type": "text", "text": f"[附件 {meta['name']} 已经不在了]"})
             elif meta["kind"] == "image" and i == last_user:
-                parts.append({"type": "image_url", "image_url": {"url": store.data_url(info[0], meta["mime"])}})
+                img = store.best_image(meta["id"]) or info[0]  # 2048 的 screen 够模型看，原图太大
+                parts.append({"type": "image_url", "image_url": {"url": store.data_url(img, meta["mime"])}})
             elif meta["kind"] == "image":
                 parts.append({"type": "text", "text": f"[之前发过一张图片：{meta['name']}]"})
             elif meta["kind"] == "text":
@@ -1047,11 +1071,15 @@ async def upload(request: Request) -> dict:
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > store.MAX_FILE:
-                    raise HTTPException(413, "文件超过 50 MB")
+                    raise HTTPException(413, "文件超过 200 MB")
                 out.write(chunk)
         if size == 0:
             raise HTTPException(400, "空文件")
-        return store.commit(fid, name, mime, size, owner=who(request).id)
+        meta = store.commit(fid, name, mime, size, owner=who(request).id)
+        if meta["kind"] == "image":  # 老客户端（没在本地压）整张传上来的：服务端顺手做 thumb / screen
+            await asyncio.to_thread(store.variant_path, fid, "screen")
+            await asyncio.to_thread(store.variant_path, fid, "thumb")
+        return meta
     except BaseException:
         store.abort(fid)
         raise
@@ -1075,11 +1103,103 @@ def _can_file(w: "members.Who", meta: dict) -> bool:
     return any(f.get("id") == meta["id"] for m in msgs for f in (m.get("files") or []))
 
 
+@app.post("/api/files/image")
+async def upload_image(request: Request, body: dict = Body(...)) -> dict:
+    """图片分档上传第一步：登记一张图（名字、原图大小、宽高），不传原图本体。返回 fid，
+    接着 PUT /api/files/{fid}/thumb、/screen（客户端本地压好的 JPEG），勾了原图再 POST /original + 分片。"""
+    name = str(body.get("name") or "image.jpg")
+    size = int(body.get("size") or 0)
+    if size <= 0 or size > store.MAX_FILE:
+        raise HTTPException(400, "图片大小不对（最大 200 MB）")
+    fid, path = store.allocate()
+    path.write_bytes(b"")
+    meta = store.commit(fid, name, str(body.get("mime") or "image/jpeg"), size, owner=who(request).id)
+    if meta["kind"] != "image":
+        store.abort(fid)
+        raise HTTPException(400, "不是图片")
+    store.update_file(fid, w=int(body.get("w") or 0), h=int(body.get("h") or 0), original=None)
+    return store.file_info(fid)[1]
+
+
+def _own_file(request: Request, fid: str) -> dict:
+    info = store.file_info(fid)
+    if info is None or info[1].get("owner") != who(request).id:
+        raise HTTPException(404, "没有这个文件")
+    return info[1]
+
+
+@app.put("/api/files/{fid}/{which}")
+async def upload_variant(request: Request, fid: str, which: str) -> dict:
+    """thumb / screen：发送端本地压好的 JPEG。只有上传者自己能传。
+    PUT .../original 也会先匹配到这里（路由按声明顺序），转给分片接口。"""
+    if which == "original":
+        return await original_chunk(request, fid, int(request.query_params.get("offset") or 0))
+    _own_file(request, fid)
+    data = await request.body()
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(413, "这一档太大了")
+    try:
+        meta = store.save_variant(fid, which, data)
+    except store.StoreError as e:
+        raise HTTPException(400, str(e))
+    _file_changed(fid)
+    return meta
+
+
+@app.post("/api/files/{fid}/original")
+def original_begin(request: Request, fid: str) -> dict:
+    """勾了「原图」：登记（续传时返回已收到多少，客户端从那里接着传）。"""
+    meta = _own_file(request, fid)
+    return store.begin_original(fid, meta["size"])
+
+
+@app.get("/api/files/{fid}/original/status")
+def original_status(request: Request, fid: str) -> dict:
+    meta = _own_file(request, fid)
+    return meta.get("original") or {"size": meta["size"], "received": meta["size"]}
+
+
+@app.put("/api/files/{fid}/original")
+async def original_chunk(request: Request, fid: str, offset: int = 0) -> dict:
+    """原图的一片（≤1 MB），offset 必须正好是已收到的长度；不是就原样返回现在的进度，客户端从那里接。"""
+    _own_file(request, fid)
+    data = await request.body()
+    try:
+        o = await asyncio.to_thread(store.put_chunk, fid, offset, data)
+    except store.StoreError as e:
+        raise HTTPException(400, str(e))
+    if o["received"] >= o["size"]:
+        _file_changed(fid)  # 原图齐了：接收方「对方原图上传中」换成「查看原图」
+    return o
+
+
+def _file_changed(fid: str) -> None:
+    """文件补了一档（screen 到了、原图齐了）：推给能看到它的设备，界面换成更清楚的那档。"""
+    from server.family import hub
+
+    info = store.file_info(fid)
+    if info is None:
+        return
+    for k in members.kids(active_only=False):
+        try:
+            msgs = store.get(k["thread"])["messages"]
+        except KeyError:
+            continue
+        if any(f.get("id") == fid for m in msgs for f in (m.get("files") or [])):
+            hub.publish(k["thread"], {"type": "file", "file": info[1]})
+
+
 @app.get("/api/files/{fid}")
-def download(request: Request, fid: str, download: int = 0) -> FileResponse:
+def download(request: Request, fid: str, download: int = 0, v: str = "") -> FileResponse:
+    """?v=thumb / screen 拿那一档（图片），不带 v 是原图（没有原图就给 screen）。"""
     info = store.file_info(fid)
     if info is None or not _can_file(who(request), info[1]):
         raise HTTPException(404, "没有这个文件")
+    if info[1]["kind"] == "image" and (v in ("thumb", "screen") or store.variant_path(fid, "original") is None):
+        p = store.variant_path(fid, v if v in ("thumb", "screen") else "screen")
+        if p is None:
+            raise HTTPException(404, "这张图还没传上来")
+        return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
     path, meta = info
     inline = meta["kind"] == "image" and not download
     return FileResponse(path, media_type=meta["mime"], filename=meta["name"],
