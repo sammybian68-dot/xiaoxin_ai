@@ -439,7 +439,7 @@ async function worksheetCard(row, wid) {
 }
 
 function showAction(row, a) {
-  if (a.name === "make_worksheet") {
+  if (a.name === "make_exercise" || a.name === "make_worksheet") {
     const wid = /w_([0-9a-f]{16})/.exec(a.result || "")?.[1];
     if (wid) { worksheetCard(row, wid); return; }
   }
