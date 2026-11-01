@@ -547,3 +547,17 @@ a[data-fid] .orig { position: absolute; right: 6px; bottom: 6px; background: rgb
 .share-orig small { color: var(--muted); }
 .parent-voices .pv-ctl { display: flex; gap: 8px; align-items: center; }
 .parent-voices select { max-width: 240px; }
+
+/* 练习纸卡片、打印进度 */
+.ws-card { display: flex; gap: 14px; align-items: center; padding: 12px; border-radius: 14px; background: var(--raised); max-width: 460px; }
+.ws-card img { width: 120px; height: 170px; object-fit: cover; border-radius: 6px; background: #fff; display: block; }
+.ws-info { display: flex; flex-direction: column; gap: 6px; }
+.ws-info b { font-size: 17px; }
+.ws-info small { color: var(--muted); }
+.ws-btns { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.ws-btns .primary { padding: 8px 16px; border-radius: 18px; }
+.ws-ans { color: var(--muted); font-size: 13px; }
+.print-job { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 12px; background: var(--raised); font-size: 14px; max-width: 460px; }
+.print-job small { color: var(--muted); font-size: 12px; }
+.print-job.done span { color: #3ddc84; }
+.print-job.error span { color: #ff8a80; }

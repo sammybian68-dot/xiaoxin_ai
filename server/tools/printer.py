@@ -1,0 +1,181 @@
+"""出练习纸、打印。说明（怎么选黑白彩色、页码、份数）在 server/prompts/print.md。
+
+工具在 _llm_thread 里跑（线程池），要知道「这条线程是谁的、现在的对话里有哪些文件」：用 context() 设进来。
+打印任务排好后推给孩子的 pad（hub 的 print 事件），pad 发给家里打印机，结果回来再推给大家。
+"""
+
+from __future__ import annotations
+
+import contextvars
+import json
+import re
+
+from server import printing, store, worksheet
+
+ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("print_ctx", default={})
+
+_KIND = {"type": "string", "enum": list(worksheet.KINDS),
+         "description": "math 口算；pinyin 看拼音写词语；dictation 听写（只有格子）；essay 作文稿纸"}
+SPECS = [
+    {"type": "function", "function": {
+        "name": "make_worksheet",
+        "description": "出一份练习纸（A4），在屏幕上显示预览。数学题由程序算，答案一定对；语文的词语由你按年级和课文挑好传进来。",
+        "parameters": {"type": "object", "properties": {
+            "kind": _KIND,
+            "title": {"type": "string", "description": "标题，可空，如「二年级上册 第三单元 生字」"},
+            "count": {"type": "integer", "description": "math：题数 10–100，默认 50"},
+            "ops": {"type": "string", "description": "math：运算，「+-」「×」「÷」「+-×÷」，默认「+-」"},
+            "max": {"type": "integer", "description": "math：加减是结果上限（20、100、1000），乘除是乘数上限（9 = 表内）"},
+            "carry": {"type": "boolean", "description": "math：加减是否允许进位退位，一年级上册用 false"},
+            "words": {"type": "array", "items": {"type": "string"},
+                      "description": "pinyin / dictation：词语，2–4 字为主，pinyin ≤30 个，dictation ≤40 个"},
+            "pinyin": {"type": "object", "description": "pinyin：多音字、查不到的给拼音，如 {\"银行\": \"yín háng\"}"},
+            "topic": {"type": "string", "description": "essay：作文题目"},
+            "words_count": {"type": "integer", "description": "essay：字数，100–800，默认 300"},
+            "hint": {"type": "string", "description": "essay：写作提示（只印在答案页，给家长看）"},
+        }, "required": ["kind"]},
+    }},
+    {"type": "function", "function": {
+        "name": "print_file",
+        "description": "用家里的打印机打印聊天里的一份东西（图片、PDF、练习纸）。黑白还是彩色、打哪几页、几份按 print 规则自己选。",
+        "parameters": {"type": "object", "properties": {
+            "file": {"type": "string",
+                     "description": "要打的东西：工具列表里的文件 id（f_…）或练习纸 id（w_…）；不确定就填 latest（最近一份）"},
+            "color": {"type": "string", "enum": ["auto", "color", "bw"],
+                      "description": "auto 按材料自己判断（默认）；color 彩色；bw 黑白"},
+            "pages": {"type": "string", "description": "页码，如「1-3,5」「第 2 页」「前两页」；空 = 全部"},
+            "copies": {"type": "integer", "description": "份数 1–5，默认 1"},
+            "fit": {"type": "string", "enum": ["fit", "fill"],
+                    "description": "fit 整张放进纸里留白边（默认）；fill 铺满裁边（照片想要满版时）"},
+            "answers": {"type": "boolean", "description": "练习纸：是否连答案页一起打（默认 false，只有家长要时才打）"},
+        }, "required": ["file"]},
+    }},
+    {"type": "function", "function": {
+        "name": "list_printables",
+        "description": "列出这段对话里能打印的东西：文件名、类型、页数、彩色多少、是谁发的。决定打哪个、黑白还是彩色前先看这个。",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+]
+NAMES = {"make_worksheet", "print_file", "list_printables"}
+WID = re.compile(r"w_([0-9a-f]{16})")  # 工具结果里的练习纸 id
+
+
+def _items(thread: str) -> list[dict]:
+    """这条线程里能打的：文件（图片、PDF、Office）+ 练习纸；新的在前，最多 12 个。"""
+    from server.family import members
+
+    try:
+        msgs = store.get(thread)["messages"]
+    except KeyError:
+        return []
+    out, seen = [], set()
+    for m in reversed(msgs):
+        for a in reversed(m.get("actions") or []):
+            m_ = WID.search(a.get("result") or "") if a.get("name") == "make_worksheet" else None
+            if m_:
+                wid = m_.group(1)
+                if wid not in seen:
+                    seen.add(wid)
+                    out.append({"ref": "w_" + wid, "at": m.get("created", 0)})
+        for f in reversed(m.get("files") or []):
+            if f["id"] not in seen:
+                seen.add(f["id"])
+                who = m.get("from") or ""
+                try:
+                    who = members.get(who)["name"] if who and who not in ("admin", "xiaoxin") else who
+                except KeyError:
+                    pass
+                out.append({"ref": "f_" + f["id"], "at": m.get("created", 0), "from": who})
+        if len(out) >= 12:
+            break
+    return out
+
+
+def _resolve(ref: str, thread: str) -> tuple[str, dict | None]:
+    """file 参数 → (文件 id, 练习纸)。latest = 最近一份。"""
+    ref = str(ref or "").strip()
+    if ref in ("", "latest", "最近", "刚才的"):
+        items = _items(thread)
+        if not items:
+            raise printing.PrintError("这段对话里还没有能打印的东西")
+        ref = items[0]["ref"]
+    if ref.startswith("w_"):
+        try:
+            ws = worksheet.get(ref[2:])
+        except KeyError:
+            raise printing.PrintError(f"没有这份练习纸：{ref}")
+        return worksheet.page_file(ws, kid_name=ctx.get().get("kid_name", ""))["id"], ws
+    fid = ref[2:] if ref.startswith("f_") else ref
+    if store.file_info(fid) is None:
+        raise printing.PrintError(f"没有这个文件：{ref}")
+    if fid not in {i["ref"][2:] for i in _items(thread) if i["ref"].startswith("f_")}:
+        raise printing.PrintError("这个文件不在这段对话里")
+    return fid, None
+
+
+def run(name: str, arguments: str) -> str:
+    try:
+        args = json.loads(arguments or "{}")
+        if not isinstance(args, dict):
+            raise ValueError
+    except ValueError:
+        return "失败：参数不是 JSON 对象"
+    c = ctx.get()
+    thread, kid = c.get("thread", ""), c.get("kid", "")
+    try:
+        if name == "make_worksheet":
+            kind = args.pop("kind", "")
+            ws = worksheet.create(kind, title=str(args.pop("title", "") or ""), for_kid=kid, **args)
+            worksheet.page_file(ws, kid_name=c.get("kid_name", ""))
+            return (f"已出好 {worksheet.summary(ws)}（w_{ws['id']}），预览在屏幕上。\n"
+                    f"播报：{ws['title']}出好了，要打印就说「打印出来」。")
+        if name == "list_printables":
+            items = _items(thread)
+            if not items:
+                return "这段对话里还没有能打印的东西"
+            lines = []
+            for it in items:
+                if it["ref"].startswith("w_"):
+                    ws = worksheet.get(it["ref"][2:])
+                    lines.append(f"- {it['ref']} 练习纸「{ws['title']}」1 页，黑白就行（小新出的）")
+                    continue
+                try:
+                    info = printing.inspect(it["ref"][2:])
+                except printing.PrintError as e:
+                    lines.append(f"- {it['ref']} 现在打不了：{e}")
+                    continue
+                kind = {"image": "图片", "pdf": "PDF", "office": "Office 文档（打不了）", "other": "文件（打不了）"}[info["kind"]]
+                pages = f"{info['pages']} 页" if info["pages"] else ""
+                lines.append(f"- {it['ref']} {kind}「{info['name']}」{pages}，彩色占比 {info['color']:.0%}"
+                             + (f"，{it['from']}发的" if it.get("from") else ""))
+            return "能打印的（新的在前）：\n" + "\n".join(lines)
+        if name == "print_file":
+            fid, ws = _resolve(args.get("file"), thread)
+            color = {"color": True, "bw": False}.get(str(args.get("color") or "auto"))
+            if ws is not None and color is None:
+                color = False  # 练习纸都是黑白排的
+            job = printing.create_job(thread, fid, pages=args.get("pages"), color=color,
+                                      copies=args.get("copies") or 1, fit=str(args.get("fit") or "fit"), by=c.get("by", ""))
+            extra = []
+            if ws is not None and args.get("answers"):
+                ans = worksheet.page_file(ws, answers=True, kid_name=c.get("kid_name", ""))
+                extra.append(printing.create_job(thread, ans["id"], color=False, by=c.get("by", "")))
+            for j in [job, *extra]:
+                _push(j)
+            how = "自动选了" + ("彩色" if job["color"] else "黑白") if job["auto_color"] else ("彩色" if job["color"] else "黑白")
+            return (f"已发给打印机：{printing.describe(job)}（{how}）" + ("，另加答案页 1 张" if extra else "") + "。\n"
+                    f"播报：好的，{'彩色' if job['color'] else '黑白'}打印 {job['sheets']} 张，马上出纸。")
+    except printing.PrintError as e:
+        return f"失败：{e}"
+    except worksheet.WorksheetError as e:
+        return f"失败：{e}"
+    except KeyError as e:
+        return f"失败：没有 {e}"
+    return f"失败：没有工具 {name}"
+
+
+def _push(job: dict) -> None:
+    """推给能进这条线程的设备；只有孩子的 pad（在家、连着打印机）会去打。"""
+    from server.family import hub
+
+    hub.publish(job["thread"], {"type": "print", "job": job})

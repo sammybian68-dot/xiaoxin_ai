@@ -494,6 +494,89 @@ def kid_new_chapter(request: Request, body: dict = Body(default={})) -> dict:
         raise HTTPException(502, f"摘要没写成，这次没换：{e}")
 
 
+# ---------------------------------------------------------------- 练习纸、打印（server/worksheet.py、server/printing.py）
+
+@app.get("/api/worksheets/{wid}")
+def worksheet_view(request: Request, wid: str) -> dict:
+    """练习纸：标题、题数、练习页和答案页的文件 id（聊天卡片里显示预览）。孩子拿不到答案页。"""
+    from server import worksheet
+
+    try:
+        ws = worksheet.get(wid)
+    except KeyError:
+        raise HTTPException(404, "没有这份练习纸")
+    w = who(request)
+    kid = members.default_kid(w)
+    if w.role == "kid" and ws.get("for") != (kid or {}).get("id"):
+        raise HTTPException(404, "没有这份练习纸")
+    name = members.get(ws["for"])["name"] if ws.get("for") else ""
+    page = worksheet.page_file(ws, kid_name=name)
+    out = {"id": ws["id"], "kind": ws["kind"], "title": ws["title"], "count": len(ws["items"]), "page": page["id"]}
+    if w.at_least("parent"):
+        out["answers"] = worksheet.page_file(ws, answers=True, kid_name=name)["id"]
+    return out
+
+
+@app.get("/api/print/jobs")
+def print_jobs(request: Request, kid: str = "") -> dict:
+    from server import printing
+
+    return {"jobs": printing.jobs(kid_for(request, kid)["thread"])}
+
+
+@app.get("/api/print/{jid}/page/{i}")
+def print_page(request: Request, jid: str, i: int) -> FileResponse:
+    """pad 取要打的第 i 页（A4 JPEG）。"""
+    from server import printing
+
+    try:
+        job = printing.get_job(jid)
+    except KeyError:
+        raise HTTPException(404, "没有这个打印任务")
+    own_thread(request, job["thread"])
+    p = printing.page_path(jid, i)
+    if p is None:
+        raise HTTPException(404, "没有这一页")
+    return FileResponse(p, media_type="image/jpeg")
+
+
+@app.post("/api/print/{jid}/result")
+def print_result(request: Request, jid: str, body: dict = Body(...)) -> dict:
+    """pad 打完回报：state=printing / done / error，error 里写原因（缺纸、没开机、找不到打印机）。推给全家。"""
+    from server import printing
+    from server.family import hub
+
+    try:
+        job = printing.get_job(jid)
+    except KeyError:
+        raise HTTPException(404, "没有这个打印任务")
+    own_thread(request, job["thread"])
+    state = str(body.get("state") or "")
+    if state not in ("printing", "done", "error"):
+        raise HTTPException(400, "state 只能是 printing / done / error")
+    job = printing.update_job(jid, state=state, error=str(body.get("error") or "")[:200], printer=str(body.get("printer") or "")[:60],
+                              finished=time.time() if state in ("done", "error") else None)
+    hub.publish(job["thread"], {"type": "print", "job": job})
+    return job
+
+
+@app.post("/api/print")
+def print_now(request: Request, body: dict = Body(...)) -> dict:
+    """界面上点「打印」（不经过小新）：和 print_file 工具同样的参数。"""
+    from server.tools import printer as printer_tools
+
+    k = kid_for(request, str(body.get("kid") or ""))
+    tok = printer_tools.ctx.set({"thread": k["thread"], "kid": k["id"], "kid_name": k["name"], "by": who(request).id})
+    try:
+        args = {x: body[x] for x in ("file", "color", "pages", "copies", "fit", "answers") if x in body}
+        out = printer_tools.run("print_file", json.dumps(args, ensure_ascii=False))
+    finally:
+        printer_tools.ctx.reset(tok)
+    if out.startswith("失败"):
+        raise HTTPException(400, out[3:])
+    return {"ok": True, "result": out}
+
+
 # ---------------------------------------------------------------- 成员和设备（管理台；docs/architecture.md 6.4、6.7）
 
 def _audit(request: Request, action: str, **detail) -> None:
@@ -788,9 +871,17 @@ MAX_CLOCK_CALLS = 8  # 一轮里本地工具（时间、闹钟）最多调几次
 def _llm_thread(model: str, history: list[dict], q, loop, voice: bool = False, cid: str | None = None) -> None:
     """见 _llm_turn。外面包一层：这条线程是哪个孩子的，闹钟工具改他的那份、prompt 带他的档案。
     跑在线程池里，contextvar 是这个线程自己的；用 with 包着，线程复用时不会带到下一个请求。"""
+    from server.tools import printer as printer_tools
+
     owner = members.kid_of_thread(cid) if cid else None
-    with clock.use(owner["id"] if owner else ""):
-        _llm_turn(model, history, q, loop, voice, cid, owner)
+    # 打印、出题工具要知道：这是哪条线程、哪个孩子（练习纸上印名字、打印推给他的 pad）
+    tok = printer_tools.ctx.set({"thread": cid or "", "kid": (owner or {}).get("id", ""),
+                                 "kid_name": (owner or {}).get("name", ""), "by": (owner or {}).get("id", "")})
+    try:
+        with clock.use(owner["id"] if owner else ""):
+            _llm_turn(model, history, q, loop, voice, cid, owner)
+    finally:
+        printer_tools.ctx.reset(tok)
 
 
 def _llm_turn(model: str, history: list[dict], q, loop, voice: bool, cid: str | None, owner: dict | None) -> None:

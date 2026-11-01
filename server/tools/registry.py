@@ -5,14 +5,15 @@ from __future__ import annotations
 
 from server.tools import clock as clock_tools
 from server.tools import hanzi as hanzi_tools
+from server.tools import printer as printer_tools
 from server.tools import time as time_tools
 from src.search import web_search
 
-SPECS = [web_search.SPEC, *time_tools.SPECS, *clock_tools.SPECS, *hanzi_tools.SPECS]
+SPECS = [web_search.SPEC, *time_tools.SPECS, *clock_tools.SPECS, *hanzi_tools.SPECS, *printer_tools.SPECS]
 SEARCH = web_search.NAME
 # 本地工具（不联网、不计搜索次数）：名字 → 执行函数
 LOCAL = {**{n: time_tools.run for n in time_tools.NAMES}, **{n: clock_tools.run for n in clock_tools.NAMES},
-         **{n: hanzi_tools.run for n in hanzi_tools.NAMES}}
+         **{n: hanzi_tools.run for n in hanzi_tools.NAMES}, **{n: printer_tools.run for n in printer_tools.NAMES}}
 
 
 def run_local(name: str, arguments: str) -> str:

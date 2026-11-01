@@ -3,3 +3,4 @@ requests==2.32.3
 uvicorn==0.48.0
 websockets==15.0.1
 pillow==12.2.0
+pypdfium2==5.8.0

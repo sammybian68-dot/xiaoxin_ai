@@ -117,6 +117,7 @@ function hubConnect() {
     if (ev.type === "msg" && document.body.classList.contains("in-chats")) hubMessage(ev.message, ev.type);
     else if ((ev.type === "msg" || ev.type === "msg.update") && ev.thread === state.conv?.id) hubMessage(ev.message, ev.type);
     if (ev.type === "presence") { state.online = new Set(ev.online); renderSide(); }
+    if (ev.type === "print") onPrintEvent(ev.job);
     if (ev.type === "file" && ev.thread === state.conv?.id) hubFile(ev.file);
   };
   ws.onclose = () => {
@@ -385,7 +386,63 @@ function replayUtterance(m, row, btn) {
 // 调了闹钟类工具：回答上方一张小卡片写清做了什么，点开闹钟面板
 const ACTION_TAB = { alarm_set: "alarms", alarm_update: "alarms", alarm_delete: "alarms", timer_start: "timers",
   timer_control: "timers", stopwatch: "stopwatch" };
+// ---------------------------------------------------------------- 打印：孩子的 pad 收到任务交给原生（Printer.java）打；
+// 所有端在聊天里那条回答下面显示进度：排队 → 打印中 → 打好了 / 出错原因。
+
+function onPrintEvent(job) {
+  if (job.state === "queued" && state.me?.role !== "parent" && native?.print) native.print(JSON.stringify(job));
+  if (job.state === "queued" && !native?.print && state.me?.role === "kid") toast("这台设备连不了打印机");
+  for (const el of document.querySelectorAll(`[data-job="${CSS.escape(job.id)}"]`)) paintJob(el, job);
+  state.jobs = { ...(state.jobs || {}), [job.id]: job };
+  if (job.state === "done") toast(`打好了：${job.name}`);
+  if (job.state === "error") toast(`没打成：${job.error}`, 5000);
+}
+
+function paintJob(el, job) {
+  const label = { queued: "⏳ 发给打印机…", printing: "🖨 打印中…", done: "✅ 打好了", error: "⚠️ " + (job.error || "没打成") }[job.state] || job.state;
+  el.className = `print-job ${job.state}`;
+  el.innerHTML = `<span>${esc(label)}</span><small>${esc(job.name)} · ${job.color ? "彩色" : "黑白"} · ${job.sheets} 张${job.auto_color ? "（自动选的）" : ""}</small>`;
+}
+
+// 练习纸卡片：标题 + 预览缩略图（点开大图）+ 「打印」按钮；家长多一个「答案」
+async function worksheetCard(row, wid) {
+  let d;
+  try { d = await api(`api/worksheets/${wid}`).then(json); } catch (_) { return; }
+  const card = document.createElement("div");
+  card.className = "ws-card";
+  card.innerHTML = `<a href="api/files/${d.page}" data-fid="${d.page}"><img src="api/files/${d.page}?v=thumb" alt=""></a>`
+    + `<div class="ws-info"><b>${esc(d.title)}</b><small>${d.count} ${d.kind === "math" ? "道题" : d.kind === "essay" ? "篇" : "个词"}</small>`
+    + `<div class="ws-btns"><button type="button" class="primary" data-ws-print>🖨 打印</button>`
+    + (d.answers ? `<a href="api/files/${d.answers}" data-fid="${d.answers}" class="ws-ans">答案</a>` : "") + `</div></div>`;
+  // 预览图是服务端排的页：查看器要能找到它（findFile 只看消息里的 files），记一下
+  state.extraFiles = { ...(state.extraFiles || {}), [d.page]: { id: d.page, name: d.title, kind: "image" },
+                       ...(d.answers ? { [d.answers]: { id: d.answers, name: d.title + "（答案）", kind: "image" } } : {}) };
+  card.querySelector("[data-ws-print]").addEventListener("click", async (e) => {
+    e.currentTarget.disabled = true;
+    try { await api("api/print", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: "w_" + wid, kid: state.conv?.kid }) }); } catch (err) { toast(err.message); }
+    e.currentTarget.disabled = false;
+  });
+  row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text"));
+  requestAnimationFrame(() => revealRow(row));
+}
+
 function showAction(row, a) {
+  if (a.name === "make_worksheet") {
+    const wid = /w_([0-9a-f]{16})/.exec(a.result || "")?.[1];
+    if (wid) { worksheetCard(row, wid); return; }
+  }
+  if (a.name === "print_file" && !/^失败/.test(a.result || "")) {
+    const el = document.createElement("div");
+    el.className = "print-job queued";
+    // 任务 id 不在工具结果里：按这轮之后最新的任务认（hub 来了 print 事件就会刷新）
+    el.dataset.pending = "1";
+    el.innerHTML = `<span>🖨 ${esc((a.result || "").split("\n")[0].replace(/^已发给打印机：/, ""))}</span>`;
+    row.querySelector(".bubble").insertBefore(el, row.querySelector(".bubble .text"));
+    claimJob(el);
+    return;
+  }
+  if (a.name === "list_printables") return;
   if (a.name === "alarm_list") {  // 闹钟清单：插一张能改能删的卡（alarmcard.js），不出文字条
     if (typeof alarmCard === "function" && clk.snap) {
       row.querySelector(".bubble").insertBefore(alarmCard(), row.querySelector(".bubble .text"));
@@ -2438,7 +2495,7 @@ document.addEventListener("click", (e) => {
 }, true);  // 捕获阶段：抢在任何 target=_blank 的默认行为之前
 function findFile(id) {
   for (const m of state.conv?.messages || []) for (const f of m.files || []) if (f.id === id) return f;
-  return null;
+  return state.extraFiles?.[id] || null;
 }
 
 // 安卓返回键（小新家长 APK 先问这里）：关大图 > 关设置 > 群里回聊天列表；返回 true 表示处理了
@@ -2523,3 +2580,13 @@ $("share-yes").addEventListener("click", async () => {
   } catch (e) { toast(e.message, 4000); }
   finally { btn.disabled = false; btn.textContent = "发送"; }
 });
+
+// 打印条认领任务：最新的、还没被别的条认领的那个
+async function claimJob(el) {
+  try {
+    const { jobs } = await api(`api/print/jobs${state.conv?.kid ? "?kid=" + state.conv.kid : ""}`).then(json);
+    const taken = new Set([...document.querySelectorAll("[data-job]")].map((x) => x.dataset.job));
+    const job = jobs.find((j) => !taken.has(j.id));
+    if (job) { el.dataset.job = job.id; delete el.dataset.pending; paintJob(el, state.jobs?.[job.id] || job); }
+  } catch (_) { /* 拿不到就显示工具那句 */ }
+}

@@ -308,6 +308,15 @@ public class TalkActivity extends Activity {
     // ---------------------------------------------------------------- 给网页用的原生接口
 
     private final class Bridge {
+        /**
+         * 打印（hub 的 print 事件，网页转过来）：后台线程逐页从中枢拉 A4 JPEG，IPP 发给家里打印机，
+         * 每一步回报 POST /api/print/{id}/result（printing → done / error），全家的界面都会更新。
+         */
+        @JavascriptInterface
+        public void print(String jobJson) {
+            new Thread(() -> runPrint(jobJson), "print").start();
+        }
+
         /** 登录页配对成功：设备 token 存成 key，原生连接（自由对话、闹钟、提示音）从此都用这台设备的身份。 */
         @JavascriptInterface
         public void setDeviceToken(String token) {
@@ -868,6 +877,79 @@ public class TalkActivity extends Activity {
         if (t != null) {
             t.stopNow();
             new Thread(t::stop, "talk-stop").start();
+        }
+    }
+
+    // ---------------------------------------------------------------- 打印
+
+    private Printer printer;
+    private final java.util.Set<String> printing = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+    private void runPrint(String jobJson) {
+        String id = "";
+        try {
+            org.json.JSONObject job = new org.json.JSONObject(jobJson);
+            id = job.getString("id");
+            if (!"queued".equals(job.optString("state")) || !printing.add(id)) {
+                return;  // 别的事件（printing / done）或者已经在打了
+            }
+            if (printer == null) {
+                printer = new Printer(this);
+            }
+            reportPrint(id, "printing", "", "");
+            int pages = job.getJSONArray("pages").length();
+            for (int i = 0; i < pages; i++) {
+                byte[] jpeg = httpGet(base() + "api/print/" + id + "/page/" + i);
+                String err = printer.printJpeg(jpeg, job.optBoolean("color"), job.optInt("copies", 1),
+                        job.optString("name", "小新") + (pages > 1 ? " 第" + (i + 1) + "页" : ""));
+                if (err != null) {
+                    reportPrint(id, "error", err, "");
+                    return;
+                }
+            }
+            reportPrint(id, "done", "", "HP DeskJet 4800");
+        } catch (Exception e) {
+            android.util.Log.w("XxPrint", "job " + id + ": " + e);
+            if (!id.isEmpty()) {
+                reportPrint(id, "error", "打印出错：" + e.getMessage(), "");
+            }
+        } finally {
+            printing.remove(id);
+        }
+    }
+
+    private byte[] httpGet(String u) throws java.io.IOException {
+        java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(u).openConnection();
+        c.setRequestProperty("Authorization", "Bearer " + key());
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(60000);
+        try (InputStream in = c.getInputStream()) {
+            java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
+            byte[] t = new byte[16384];
+            int n;
+            while ((n = in.read(t)) > 0) {
+                b.write(t, 0, n);
+            }
+            return b.toByteArray();
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    private void reportPrint(String id, String state, String error, String printerName) {
+        try {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(base() + "api/print/" + id + "/result").openConnection();
+                c.setRequestMethod("POST");
+            c.setDoOutput(true);
+            c.setRequestProperty("Authorization", "Bearer " + key());
+            c.setRequestProperty("Content-Type", "application/json");
+            byte[] body = new org.json.JSONObject().put("state", state).put("error", error).put("printer", printerName)
+                    .toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            c.getOutputStream().write(body);
+            c.getResponseCode();
+            c.disconnect();
+        } catch (Exception e) {
+            android.util.Log.w("XxPrint", "report " + id + ": " + e);
         }
     }
 
