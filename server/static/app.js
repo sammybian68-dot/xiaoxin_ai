@@ -530,7 +530,7 @@ function wireActions(row) {
 }
 
 // 像豆包：小新在念的时候，点一下最后那个小新气泡就停（朗读、自动朗读、自由对话里正在说的都停；自由对话不挂）
-function speakingNow() { return !!(player.audio || player.stream || (talk.on && talk.speaking)); }
+function speakingNow() { return !!(player.btn || player.audio || player.stream || (talk.on && talk.speaking)); }  // btn：还在生成也算
 function hushAll() {
   stopSpeaking();
   if (talk.on && talk.speaking) {
