@@ -236,3 +236,43 @@ def describe(job: dict) -> str:
         f"{len(job['pages'])} 页" if job["total"] > 1 else "1 页")
     return (f"「{job['name']}」{pages}，{'彩色' if job['color'] else '黑白'}"
             + (f"，{job['copies']} 份" if job["copies"] > 1 else "") + f"，共 {job['sheets']} 张纸")
+
+
+# ---------------------------------------------------------------- 打印机状态（pad 查到后上报；小新、家长都能问）
+
+def _status_path() -> Path:
+    return store.DATA / "printer_status.json"
+
+
+def save_status(st: dict) -> dict:
+    st = {**{k: st.get(k) for k in ("state", "reasons", "inks", "media", "name")}, "at": time.time()}
+    store._write_json(_status_path(), st)
+    return st
+
+
+def status() -> dict | None:
+    try:
+        return json.loads(_status_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def describe_status(st: dict | None) -> str:
+    """给小新的一段：开没开、有没有纸、墨还剩多少、多久前查的。"""
+    if not st:
+        return "还不知道打印机的状态（孩子的 pad 还没连上过打印机）"
+    age = time.time() - st.get("at", 0)
+    when = "刚刚" if age < 120 else f"{int(age // 60)} 分钟前" if age < 3600 else f"{int(age // 3600)} 小时前"
+    state = {3: "空闲，能打", 4: "正在打印", 5: "停住了"}.get(st.get("state"), "连不上（可能没开机）")
+    inks = []
+    for name, lvl in st.get("inks") or []:
+        label = {"black ink": "黑色墨盒", "tri-color ink": "彩色墨盒"}.get(name, name)
+        inks.append(f"{label} {lvl}%" + ("（快没了）" if isinstance(lvl, int) and 0 <= lvl <= 15 else ""))
+    reasons = [r for r in (st.get("reasons") or "").split(",") if r and r != "none"]
+    why = {"media-empty": "没纸了", "media-needed": "没纸了", "media-jam": "卡纸了", "door-open": "盖子开着",
+           "cover-open": "盖子开着", "marker-supply-low": "墨快没了", "marker-supply-empty": "没墨了", "offline": "离线"}
+    probs = sorted({why.get(r.rsplit("-", 1)[0] if r.endswith(("-warning", "-error", "-report")) else r, r) for r in reasons})
+    media = "放的是 A4 纸" if "a4" in str(st.get("media") or "").lower() else ("纸盒里没纸" if st.get("media") == "" else "")
+    return (f"打印机（{st.get('name') or 'HP DeskJet 4800'}）{state}"
+            + (f"；问题：{'、'.join(probs)}" if probs else "") + (f"；{media}" if media else "")
+            + (f"；{'，'.join(inks)}" if inks else "") + f"（{when}查的）")

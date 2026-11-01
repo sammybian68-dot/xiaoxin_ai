@@ -560,6 +560,25 @@ def print_result(request: Request, jid: str, body: dict = Body(...)) -> dict:
     return job
 
 
+@app.put("/api/printer/status")
+def printer_status_put(request: Request, body: dict = Body(...)) -> dict:
+    """孩子的 pad 查到的打印机状态（打印前后、每 10 分钟），存着给小新和家长问。"""
+    from server import printing
+
+    w = who(request)
+    if w.kind == "member" and w.role != "kid":
+        raise HTTPException(403, "只有家里的 pad 能报打印机状态")
+    return printing.save_status(body)
+
+
+@app.get("/api/printer/status")
+def printer_status_get(request: Request) -> dict:
+    from server import printing
+
+    st = printing.status()
+    return {"status": st, "text": printing.describe_status(st)}
+
+
 @app.post("/api/print")
 def print_now(request: Request, body: dict = Body(...)) -> dict:
     """界面上点「打印」（不经过小新）：和 print_file 工具同样的参数。"""

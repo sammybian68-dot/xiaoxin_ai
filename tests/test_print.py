@@ -191,3 +191,20 @@ def test_list_printables_shows_color_and_sender(family, fakes):
     family["女儿"].post(f"/api/conversations/{dau_t}/messages", json={"text": "爸爸发的打印一下"})
     res = store.get(dau_t)["messages"][-1]["actions"][0]["result"]
     assert "期中试卷.pdf" in res and "3 页" in res and "爸爸发的" in res and "彩色占比" in res
+
+
+# ---------------------------------------------------------------- 打印机状态（pad 上报，小新回答「还有墨吗」）
+
+def test_printer_status_reported_and_described(family, fakes):
+    assert "还不知道" in family["女儿"].get("/api/printer/status").json()["text"]
+    st = {"state": 3, "reasons": "none", "inks": [["tri-color ink", 12], ["black ink", 100]], "media": "iso_a4_210x297mm"}
+    assert family["女儿"].put("/api/printer/status", json=st).status_code == 200
+    assert family["爸爸"].put("/api/printer/status", json=st).status_code == 403  # 只有 pad 报
+    text = family["爸爸"].get("/api/printer/status").json()["text"]
+    assert "空闲" in text and "彩色墨盒 12%（快没了）" in text and "黑色墨盒 100%" in text and "A4" in text
+    family["女儿"].put("/api/printer/status", json={**st, "reasons": "media-empty-error", "media": ""})
+    dau_t = family["女儿"].get("/api/thread").json()["id"]
+    fakes.llm_script = [("tool", "printer_status", {}), ("text", "没纸了")]
+    family["女儿"].post(f"/api/conversations/{dau_t}/messages", json={"text": "打印机还有多少墨水"})
+    res = store.get(dau_t)["messages"][-1]["actions"][0]["result"]
+    assert "没纸了" in res and "彩色墨盒 12%" in res

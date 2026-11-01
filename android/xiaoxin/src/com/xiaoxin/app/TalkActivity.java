@@ -126,6 +126,7 @@ public class TalkActivity extends Activity {
         ClockService.listener = ev -> emitClock(ev.toString());
         ClockService.start(this);
         showRing(getIntent());
+        web.postDelayed(printerTick, 5000);
     }
 
     /** 闹钟响了被拉起来（可能在锁屏上）：亮屏、盖住锁屏、退出熄屏，网页画响铃页。 */
@@ -906,8 +907,10 @@ public class TalkActivity extends Activity {
                     reportPrint(id, "error", err, "");
                     return;
                 }
+                printer.waitIdle(120);  // 等这页出完再发下一页（打印机一次只收一个任务）
             }
             reportPrint(id, "done", "", "HP DeskJet 4800");
+            reportPrinterStatus();
         } catch (Exception e) {
             android.util.Log.w("XxPrint", "job " + id + ": " + e);
             if (!id.isEmpty()) {
@@ -917,6 +920,39 @@ public class TalkActivity extends Activity {
             printing.remove(id);
         }
     }
+
+    /** 查一次打印机（墨、纸、开没开）报给中枢，小新和家长问「还有墨吗」就看这个。找不到打印机也报（state 0）。 */
+    private void reportPrinterStatus() {
+        try {
+            if (printer == null) {
+                printer = new Printer(this);
+            }
+            Printer.Status st = printer.current();
+            org.json.JSONObject body = st != null ? st.toJson()
+                    : new org.json.JSONObject().put("state", 0).put("reasons", "offline").put("inks", new org.json.JSONArray());
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(base() + "api/printer/status").openConnection();
+            c.setRequestMethod("PUT");
+            c.setDoOutput(true);
+            c.setRequestProperty("Authorization", "Bearer " + key());
+            c.setRequestProperty("Content-Type", "application/json");
+            c.getOutputStream().write(body.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            c.getResponseCode();
+            c.disconnect();
+        } catch (Exception e) {
+            android.util.Log.w("XxPrint", "status report: " + e);
+        }
+    }
+
+    /** 每 10 分钟报一次打印机状态（App 在前台时）；启动时先报一次。 */
+    private final Runnable printerTick = new Runnable() {
+        @Override
+        public void run() {
+            new Thread(TalkActivity.this::reportPrinterStatus, "printer-status").start();
+            if (web != null) {
+                web.postDelayed(this, 10 * 60 * 1000);
+            }
+        }
+    };
 
     private byte[] httpGet(String u) throws java.io.IOException {
         java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(u).openConnection();

@@ -51,12 +51,17 @@ SPECS = [
         }, "required": ["file"]},
     }},
     {"type": "function", "function": {
+        "name": "printer_status",
+        "description": "家里打印机现在怎么样：开没开、有没有纸、墨还剩多少、有没有卡纸。问「打印机有墨吗」「还有纸吗」时调。",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
         "name": "list_printables",
         "description": "列出这段对话里能打印的东西：文件名、类型、页数、彩色多少、是谁发的。决定打哪个、黑白还是彩色前先看这个。",
         "parameters": {"type": "object", "properties": {}},
     }},
 ]
-NAMES = {"make_worksheet", "print_file", "list_printables"}
+NAMES = {"make_worksheet", "print_file", "list_printables", "printer_status"}
 WID = re.compile(r"w_([0-9a-f]{16})")  # 工具结果里的练习纸 id
 
 
@@ -129,6 +134,8 @@ def run(name: str, arguments: str) -> str:
             worksheet.page_file(ws, kid_name=c.get("kid_name", ""))
             return (f"已出好 {worksheet.summary(ws)}（w_{ws['id']}），预览在屏幕上。\n"
                     f"播报：{ws['title']}出好了，要打印就说「打印出来」。")
+        if name == "printer_status":
+            return printing.describe_status(printing.status())
         if name == "list_printables":
             items = _items(thread)
             if not items:

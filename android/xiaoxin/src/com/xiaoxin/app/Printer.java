@@ -34,12 +34,30 @@ final class Printer {
     static final class Status {
         final int state;           // 3 idle, 4 printing, 5 stopped
         final String reasons;      // media-empty、door-open、offline…（none 是正常）
-        final String inks;         // 「彩色 80% 黑色 100%」
+        final String names;        // marker-names：tri-color ink,black ink
+        final String levels;       // marker-levels：80,100
+        final String media;        // media-ready：iso_a4_210x297mm（没纸是空）
 
-        Status(int state, String reasons, String inks) {
+        Status(int state, String reasons, String names, String levels, String media) {
             this.state = state;
             this.reasons = reasons;
-            this.inks = inks;
+            this.names = names;
+            this.levels = levels;
+            this.media = media;
+        }
+
+        /** 上报给中枢的 JSON：{state, reasons, inks: [[名字, 百分比]…], media, name}。 */
+        org.json.JSONObject toJson() throws org.json.JSONException {
+            org.json.JSONArray inks = new org.json.JSONArray();
+            String[] n = names.isEmpty() ? new String[0] : names.split(",");
+            String[] l = levels.isEmpty() ? new String[0] : levels.split(",");
+            for (int i = 0; i < n.length; i++) {
+                int v = -1;
+                try { v = i < l.length ? Integer.parseInt(l[i].trim()) : -1; } catch (NumberFormatException ignored) { }
+                inks.put(new org.json.JSONArray().put(n[i].trim()).put(v));
+            }
+            return new org.json.JSONObject().put("state", state).put("reasons", reasons).put("inks", inks)
+                    .put("media", media).put("name", "HP DeskJet 4800");
         }
 
         /** 不能打的原因，用孩子听得懂的话；能打返回 null。 */
@@ -232,14 +250,42 @@ final class Printer {
             ex.add(new Object[] {0x44, "", "printer-state-reasons"});
             ex.add(new Object[] {0x44, "", "marker-names"});
             ex.add(new Object[] {0x44, "", "marker-levels"});
+            ex.add(new Object[] {0x44, "", "media-ready"});
             Object[] r = post(u, request(0x000B, u, ex), null);
             @SuppressWarnings("unchecked") java.util.Map<String, String> a = (java.util.Map<String, String>) r[1];
             int st = Integer.parseInt(a.getOrDefault("printer-state", "3"));
-            String inks = a.getOrDefault("marker-names", "") + " " + a.getOrDefault("marker-levels", "");
-            return new Status(st, a.getOrDefault("printer-state-reasons", "none"), inks.trim());
+            return new Status(st, a.getOrDefault("printer-state-reasons", "none"), a.getOrDefault("marker-names", ""),
+                    a.getOrDefault("marker-levels", ""), a.getOrDefault("media-ready", ""));
         } catch (Exception e) {
             Log.w(TAG, "status " + u + ": " + e);
             return null;
+        }
+    }
+
+    /** 现在的状态（找不到打印机返回 null）。 */
+    Status current() {
+        String u = find();
+        return u == null ? null : status(u);
+    }
+
+    /** 等打印机回到空闲（上一页打完），最多 maxS 秒。 */
+    void waitIdle(int maxS) {
+        String u = url;
+        if (u == null) {
+            return;
+        }
+        long end = System.currentTimeMillis() + maxS * 1000L;
+        try {
+            Thread.sleep(2000);  // 刚收下，状态还没变成 printing
+            while (System.currentTimeMillis() < end) {
+                Status s = status(u);
+                if (s == null || s.state == 3) {
+                    return;
+                }
+                Thread.sleep(2000);
+            }
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -266,13 +312,24 @@ final class Printer {
             ex.add(new Object[] {0x44, "print-color-mode", color ? "color" : "monochrome"});
             ex.add(new Object[] {0x44, "media", "iso_a4_210x297mm"});
             ex.add(new Object[] {0x44, "print-scaling", "fit"});
-            Object[] r = post(u, request(0x0002, u, ex), jpeg);
-            int st = (Integer) r[0];
-            if (st > 0x00FF) {  // 0x0000–0x00FF 成功
-                Log.w(TAG, "print-job status 0x" + Integer.toHexString(st) + " " + r[1]);
-                return "打印机没收下（0x" + Integer.toHexString(st) + "）";
+            // 这台打印机一次只收一个任务：上一页还在打时回 0x0507（server-error-busy），等它空下来再发，最多等 3 分钟
+            for (int attempt = 0; attempt < 60; attempt++) {
+                Object[] r = post(u, request(0x0002, u, ex), jpeg);
+                int st = (Integer) r[0];
+                if (st <= 0x00FF) {  // 0x0000–0x00FF 成功
+                    return null;
+                }
+                if (st != 0x0507 && st != 0x0502) {  // 不是「忙」也不是「暂时不可用」：别重试了
+                    Log.w(TAG, "print-job status 0x" + Integer.toHexString(st) + " " + r[1]);
+                    return "打印机没收下（0x" + Integer.toHexString(st) + "）";
+                }
+                Thread.sleep(3000);
+                Status now = status(u);
+                if (now != null && now.problem() != null) {
+                    return now.problem();  // 等的时候没纸了、卡纸了
+                }
             }
-            return null;
+            return "打印机一直在忙，等会儿再打";
         } catch (Exception e) {
             Log.w(TAG, "print-job: " + e);
             url = null;  // 下次重新找
