@@ -9,8 +9,11 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
   main { position: relative; height: 100vh; overflow: hidden; }
-  #remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
-  #local { position: absolute; right: 16px; top: 16px; width: 28vw; max-width: 240px; aspect-ratio: 3/4; object-fit: cover;
+  /* 对方画面：方向和屏幕一样（都是竖的 / 都是横的）才铺满裁边，不一样（手机竖拍到横屏 pad）就整张放下、两边留黑——
+     原来一律铺满，手机竖着拍的脸在 pad 上被放大裁掉一大块（2026-11-01 用户报「脸太大看不全」） */
+  #remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #remote.fill { object-fit: cover; }
+  #local { position: absolute; right: 16px; top: 16px; width: 28vw; max-width: 240px; aspect-ratio: 3/4; object-fit: contain; background: #111;
            border-radius: 12px; border: 2px solid rgba(255,255,255,.3); background: #222; transform: scaleX(-1); }
   #panel { position: absolute; left: 16px; bottom: 16px; right: 16px; max-width: 560px; background: rgba(23,26,33,.86);
            border-radius: 14px; padding: 12px 14px; font: 13px/1.55 ui-monospace, monospace; }
@@ -77,6 +80,19 @@ async function start() {
   const ice = await fetch("api/call/ice?who=" + (q.get("who") || "demo"), { credentials: "same-origin" }).then((r) => r.json());
   pc = new RTCPeerConnection({ iceServers: ice.iceServers, iceTransportPolicy: forceRelay ? "relay" : "all" });
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
+  // 对方画面方向变了（换摄像头、手机转了）就重新选铺满还是整张
+  const fit = () => {
+    const v = $("remote");
+    if (!v.videoWidth) return;
+    const sameShape = (v.videoWidth >= v.videoHeight) === (innerWidth >= innerHeight);
+    v.classList.toggle("fill", sameShape);
+  };
+  $("remote").addEventListener("resize", fit);
+  // 自己的小窗：按自己画面的方向定宽高比（pad 横屏前摄是横的）
+  const fitLocal = () => { const v = $("local"); if (v.videoWidth) v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`; };
+  $("local").addEventListener("resize", fitLocal);
+  $("local").addEventListener("loadedmetadata", fitLocal);
+  addEventListener("resize", fit);
   pc.ontrack = (e) => {
     $("remote").srcObject = e.streams[0];
     $("remote").muted = q.get("mute") === "1";  // 两台放一屋测试时静音，免得啸叫

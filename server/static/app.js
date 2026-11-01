@@ -1090,6 +1090,16 @@ function wsUrl(path) {
   return u.href;
 }
 
+function flushChunkTo(ws) {
+  if (!hold.bufLen) return;
+  const out = new Int16Array(hold.bufLen);
+  let o = 0;
+  for (const c of hold.buf) { out.set(c, o); o += c.length; }
+  hold.buf = []; hold.bufLen = 0;
+  if (ws.readyState === WebSocket.OPEN) ws.send(out.buffer);
+  else ws.addEventListener("open", () => ws.send(out.buffer), { once: true });
+}
+
 function flushChunk(force) {
   const ws = hold.ws;
   if (!hold.bufLen || (!force && hold.bufLen < CHUNK)) return;
@@ -1107,7 +1117,7 @@ function showLive(text) {
 }
 
 holdBtn.addEventListener("pointerdown", (e) => {
-  if (state.sending || hold.rec) return;
+  if (hold.rec) return;  // 正在录：多一根手指不算
   e.preventDefault();
   holdBtn.setPointerCapture(e.pointerId);
   Object.assign(hold, { startY: e.clientY, cancel: false, levels: [], buf: [], bufLen: 0, pendingAudio: [], text: "", final: null });
@@ -1122,8 +1132,9 @@ holdBtn.addEventListener("pointerdown", (e) => {
   const ws = new WebSocket(wsUrl("api/asr/stream"));
   ws.binaryType = "arraybuffer";
   hold.ws = ws;
+  const pendingAudio = hold.pendingAudio;  // 这一句自己的（连上前攒的音频）
   hold.final = new Promise((resolve, reject) => {
-    ws.onopen = () => { for (const b of hold.pendingAudio) ws.send(b); hold.pendingAudio = []; };
+    ws.onopen = () => { for (const b of pendingAudio) ws.send(b); pendingAudio.length = 0; };
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
       if (m.type === "ready") { if (hold.ws === ws && !m.partials && !hold.text) $("rec-live").textContent = "正在听…（Paraformer 松手后出字）"; }
@@ -1173,33 +1184,51 @@ function abortHold() {
 }
 
 async function endHold() {
-  const { rec, ws } = hold;
+  // 每一句都用自己的那套（ws、录音器、等结果的 promise）：松开后上一句在后台识别、发送，按钮马上能按下一句。
+  // 原来共用 hold.ws，上一句收尾把它置成 null，下一句松开时就「Cannot read properties of null」（2026-11-01 用户报）
+  const { rec, ws, final, starting } = hold;
   if (!rec) return;
   if (hold.cancel) { abortHold(); return; }
   hold.rec = null;
+  hold.ws = null;
   endHoldUi();
-  await hold.starting;
+  await starting;
   const seconds = rec.seconds();
   await rec.stop();
-  if (seconds < 0.4) { hold.ws = null; ws.close(); toast("太短了，按住多说一会儿"); return; }
-  flushChunk(true);
-  holdBtn.querySelector(".hold-label").textContent = "识别中…";
-  holdBtn.disabled = true;
+  if (seconds < 0.4) { ws.close(); toast("太短了，按住多说一会儿"); return; }
+  flushChunkTo(ws);
+  const row = voicePending();  // 「识别中…」占位，识别完换成那句话
   try {
     if (ws.readyState === WebSocket.CONNECTING) await new Promise((r) => ws.addEventListener("open", r, { once: true }));
     ws.send(JSON.stringify({ type: "end" }));
-    const { text } = await hold.final;
-    hold.ws = null;
+    const { text } = await final;
+    row.remove();
     if (!text) { toast("没听清，再说一次"); return; }
-    await send(text, "voice");
+    await sendWhenFree(text, "voice");
   } catch (err) {
+    row.remove();
     toast("识别失败：" + err.message);
   } finally {
-    hold.ws = null;
-    holdBtn.querySelector(".hold-label").textContent = "按住 说话";
-    holdBtn.disabled = false;
+    try { ws.close(); } catch (_) { /* 已断 */ }
   }
 }
+
+// 「识别中…」：聊天里先出一条灰的，按钮不锁
+function voicePending() {
+  const row = document.createElement("div");
+  row.className = "msg me pending-voice";
+  row.innerHTML = '<div class="bubble"><div class="text">🎤 识别中…</div></div>';
+  $("messages").appendChild(row);
+  scrollDown(true);
+  return row;
+}
+
+// 上一句还在等小新回答时又说了一句：排队，答完再发（send 本身同一时间只能一个）
+async function sendWhenFree(text, via) {
+  for (let i = 0; state.sending && i < 600; i++) await new Promise((r) => setTimeout(r, 100));
+  await send(text, via);
+}
+
 holdBtn.addEventListener("pointerup", endHold);
 holdBtn.addEventListener("pointercancel", () => { hold.cancel = true; endHold(); });
 holdBtn.addEventListener("contextmenu", (e) => e.preventDefault());
