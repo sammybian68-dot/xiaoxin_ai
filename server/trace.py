@@ -26,11 +26,45 @@ def _safe(cid: str) -> bool:
     return bool(cid) and cid.replace("-", "").isalnum() and len(cid) <= 64
 
 
+_desc_cache: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _describe(url: str) -> dict:
+    """一张 data URL 图片 → 调试面板看的：格式、尺寸、大小、160px 小缩略图（不存几百 KB 的原文）。"""
+    key = url[:64] + str(len(url)) + url[-64:]
+    if key in _desc_cache:
+        return _desc_cache[key]
+    d = {"url": "[图片]"}
+    try:
+        import base64
+        import io
+
+        from PIL import Image
+
+        head, b64 = url.split(",", 1)
+        raw = base64.b64decode(b64)
+        d = {"url": f"[图片] {head[5:].split(';')[0]} {len(raw) // 1024} KB（base64 {len(b64) // 1024} KB）"}
+        im = Image.open(io.BytesIO(raw))
+        d["url"] = d["url"].replace("[图片] ", f"[图片] {im.width}×{im.height} ", 1)
+        im.thumbnail((160, 160))
+        buf = io.BytesIO()
+        im.convert("RGB").save(buf, "JPEG", quality=60)
+        d["thumb"] = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # noqa: BLE001  解不开的图：只留格式和大小
+        pass
+    with _lock:
+        _desc_cache[key] = d
+        while len(_desc_cache) > 64:
+            _desc_cache.popitem(last=False)
+    return d
+
+
 def _strip(x):
-    """图片 data URL 换成占位：一张 2048 的图 base64 有几百 KB。"""
+    """图片 data URL 换成描述 + 小缩略图：一张 2048 的图 base64 有几百 KB，调试面板只要看格式。"""
     if isinstance(x, dict):
         if x.get("type") == "image_url":
-            return {"type": "image_url", "image_url": {"url": "[图片]"}}
+            url = (x.get("image_url") or {}).get("url") or ""
+            return {"type": "image_url", "image_url": _describe(url) if url.startswith("data:") else {"url": url}}
         return {k: _strip(v) for k, v in x.items()}
     if isinstance(x, list):
         return [_strip(v) for v in x]
@@ -84,6 +118,8 @@ def add_call(turn: dict | None, **rec) -> dict | None:
     if turn is None:
         return None
     rec.setdefault("at", time.time())
+    if "messages" in rec:
+        rec["messages"] = _strip(list(rec["messages"]))  # 记的时候就换掉图片本体，内存、落盘、给面板都小
     with _lock:
         turn["calls"].append(rec)
     return rec
@@ -110,11 +146,13 @@ def _is_note(m: dict) -> bool:
 
 
 def turn_tail(messages: list[dict]) -> tuple[int, list[dict]]:
-    """这一轮自己的那段：从这一轮的用户消息（连同紧挨在它前面的 [system] 现状消息）起到最后。
+    """这一轮自己的那段：从这一轮的用户消息（连同紧挨在它前面的 [system] 现状消息、家长不问小新时发的消息）起到最后。
     返回 (起点下标, 那段消息)。前面的历史每次都一样，调试面板只看这一段。"""
     k = next((i for i in range(len(messages) - 1, -1, -1)
               if messages[i].get("role") == "user" and not _is_note(messages[i])), 0)
-    while k > 0 and _is_note(messages[k - 1]) and not messages[k - 1]["content"].startswith("前面的对话"):
+    # 往前带上小新上次回答之后的所有 user（[system] 现状、家长发的图和话），不带开头的压缩摘要
+    while k > 0 and messages[k - 1].get("role") == "user" and not (
+            isinstance(messages[k - 1].get("content"), str) and messages[k - 1]["content"].startswith("前面的对话")):
         k -= 1
     return k, messages[k:]
 

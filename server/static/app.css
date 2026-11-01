@@ -612,3 +612,7 @@ a[data-fid] .orig { position: absolute; right: 6px; bottom: 6px; background: rgb
 .pend-state { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; text-align: center; padding: 2px 0; }
 .msg.sending-local .att-img { opacity: .75; }
 .viewer-bar button { color: #fff; background: none; border: 1px solid #555; border-radius: 16px; padding: 6px 14px; }
+.dl-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.dl-imgs figure { margin: 0; width: 120px; }
+.dl-imgs img { width: 120px; height: 90px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line, #ddd); display: block; }
+.dl-imgs figcaption { font-size: 10px; color: var(--muted, #888); word-break: break-all; line-height: 1.3; margin-top: 2px; }

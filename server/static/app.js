@@ -529,6 +529,26 @@ function wireActions(row) {
   row.querySelector('[data-act="read"]').addEventListener("click", (e) => speak(row.dataset.reply || "", e.currentTarget));
 }
 
+// 像豆包：小新在念的时候，点一下最后那个小新气泡就停（朗读、自动朗读、自由对话里正在说的都停；自由对话不挂）
+function speakingNow() { return !!(player.audio || player.stream || (talk.on && talk.speaking)); }
+function hushAll() {
+  stopSpeaking();
+  if (talk.on && talk.speaking) {
+    talk.speaking = false;
+    if (native?.hush) native.hush();
+    else { talkSend({ type: "hush" }); talk.stream?.stop(); talk.stream = null; }
+    talkStatus("你说，我听着");
+  }
+}
+$("messages").addEventListener("click", (e) => {
+  const row = e.target.closest(".msg.ai");
+  if (!row || !speakingNow() || e.target.closest("button, a, img, input, .card, canvas")) return;
+  const last = [...$("messages").querySelectorAll(".msg.ai")].pop();
+  if (row !== last) return;
+  hushAll();
+  toast("不念了");
+});
+
 // 同一时间只放一段。再点正在放的那条就是停止；点别的就切过去。
 const player = { audio: null, btn: null, seq: 0, stream: null };
 function stopSpeaking() {
@@ -1390,6 +1410,7 @@ function hangUp(fromNative = false, quiet = false) {
   if (!fromNative && !quiet && talk.on && !native) playCue("bye");
   if (!talk.on) return;
   talk.on = false;
+  talk.speaking = false;
   dropLive();
   talkUi(false);
   if (native && !fromNative) native.stop();
@@ -1473,6 +1494,7 @@ function onTalkEvent(ev) {
       break;
     }
     case "interrupt":
+      talk.speaking = false;
       talkStatus("你说，我听着");
       talk.stream?.stop();
       talk.stream = null;
@@ -1520,7 +1542,8 @@ function onTalkEvent(ev) {
       break;
     case "model": toast(`下一句用 ${state.models.find((m) => m.id === ev.model)?.label || ev.model}`); break;
     case "speaking":
-      talkStatus("小新在说（可以直接打断）");
+      talk.speaking = true;
+      talkStatus("小新在说（可以直接打断，或点一下气泡）");
       if (!native) {
         talk.stream = new PcmStream(ev.sample_rate || 24000);
         talk.stream.onStart = (at) => { talk.firstAudio = (at - talk.t0) / 1000; showTiming(); };
@@ -1533,6 +1556,7 @@ function onTalkEvent(ev) {
       }
       break;
     case "idle":
+      talk.speaking = false;
       talkStatus("在听，直接说");
       talk.stream?.close();
       if (ev.timing) { talk.server = ev.timing; showTiming(); }
@@ -2241,15 +2265,23 @@ function wireDbgFull(root) {
   }
 }
 
+// 发给模型的图片：服务端记成 {url: "[图片] image/jpeg 1536×2048 412 KB（base64 549 KB）", thumb}，这里画成小图 + 那行说明
+function dbgImgs(m) {
+  if (!Array.isArray(m.content)) return "";
+  const imgs = m.content.filter((c) => c.type === "image_url");
+  if (!imgs.length) return "";
+  return '<div class="dl-imgs">' + imgs.map((c) => `<figure>${c.image_url?.thumb ? `<img src="${c.image_url.thumb}" alt="">` : ""}`
+    + `<figcaption>${esc(c.image_url?.url || "[图片]")}</figcaption></figure>`).join("") + "</div>";
+}
 function dbgMsg(m) {
   const role = m.role === "tool" ? "tool" : m.role;
-  let text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((c) => c.text || "[图片]").join("\n") : "";
+  let text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n") : "";
   let tag = role;
   if (role === "user" && text.startsWith("[system]")) tag = "system·现状";
   else if (role === "user" && text.startsWith("前面的对话已经压缩")) tag = "压缩摘要";
   if (m.tool_calls) text = m.tool_calls.map((c) => `→ ${c.function.name}(${c.function.arguments})`).join("\n") + (text ? "\n" + text : "");
   const cls = tag === "system·现状" ? "sys" : tag === "压缩摘要" ? "sum" : role;
-  return `<div class="dm dm-${cls}"><span class="dm-role">${esc(tag)}</span><pre>${esc(text)}</pre></div>`;
+  return `<div class="dm dm-${cls}"><span class="dm-role">${esc(tag)}</span>${dbgImgs(m)}<pre>${esc(text)}</pre></div>`;
 }
 
 // 一轮 = 时间线：参数行 → system / 工具（折叠）→ 这一轮的入参（[system] 现状、user）→ iter 1 模型输出 → tool 结果 → iter 2 …
@@ -2261,7 +2293,7 @@ function dbgPre(text, max = 600) {
 }
 function dbgContent(m) {
   if (typeof m.content === "string") return m.content;
-  if (Array.isArray(m.content)) return m.content.map((c) => c.text || "[图片]").join("\n");
+  if (Array.isArray(m.content)) return m.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
   return "";
 }
 function dbgLine(icon, label, cls, inner) {
@@ -2271,7 +2303,7 @@ function dbgInput(m) {
   const text = dbgContent(m);
   if (m.role === "user" && text.startsWith("[system]")) return dbgLine("🛈", "system·现状", "is-sys", dbgPre(text));
   if (m.role === "user" && text.startsWith("前面的对话")) return dbgLine("📦", "压缩摘要", "is-sum", dbgPre(text, 200));
-  if (m.role === "user") return dbgLine("👤", "user", "is-user", dbgPre(text));
+  if (m.role === "user") return dbgLine("👤", "user", "is-user", dbgImgs(m) + dbgPre(text));
   return "";
 }
 // 一轮在对话流里 = 这一轮的输入（[system] 现状、👤 user）+ 🤖 assistant 一个块：里面 iter 1 → tool → iter 2 …

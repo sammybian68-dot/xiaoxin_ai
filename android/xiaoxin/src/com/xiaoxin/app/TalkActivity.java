@@ -484,6 +484,16 @@ public class TalkActivity extends Activity {
             }
         }
 
+        /** 点了小新最后一个气泡：停下正在说的（服务端停这一轮朗读、本地丢掉排着的音频），对话不挂。 */
+        @JavascriptInterface
+        public void hush() {
+            Talk t = talk;
+            if (t != null) {
+                new Thread(() -> t.sendText("{\"type\":\"hush\"}"), "talk-hush").start();
+                t.flushNow();
+            }
+        }
+
         /** 设置页试听「在」「拜拜」。 */
         @JavascriptInterface
         public void playCue(String name) {

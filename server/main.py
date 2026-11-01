@@ -802,18 +802,28 @@ def _speaker(m: dict, owner: dict | None) -> str:
         return "[家长] "
 
 
-def _unseen_images(cid: str) -> bool:
-    """小新最后一次回答之后有没有人发过图（这轮要带图片本体，得用能看图的模型）。"""
+MAX_IMAGES = 20  # 一个 epoch 里带本体的图片最多几张（最近的），更早的换成一句占位
+
+
+def _text_only(msgs: list[dict]) -> list[dict]:
+    """给不看图的模型：图片换成一句占位。"""
+    out = []
+    for m in msgs:
+        if isinstance(m.get("content"), list):
+            parts = [p if p["type"] == "text" else {"type": "text", "text": "[一张图片，这个模型看不了]"} for p in m["content"]]
+            m = {**m, "content": "\n\n".join(p["text"] for p in parts)}
+        out.append(m)
+    return out
+
+
+def _has_images(cid: str) -> bool:
+    """这个 epoch 里有没有图片（有就得用能看图的模型）。"""
     try:
-        msgs = store.get(cid)["messages"]
+        conv = store.get(cid)
     except KeyError:
         return False
-    for m in reversed(msgs):
-        if m["role"] == "assistant":
-            return False
-        if any(f.get("kind") == "image" for f in m.get("files") or []):
-            return True
-    return False
+    return any(f.get("kind") == "image" for m in conv["messages"][conv.get("epoch_start") or 0:]
+               for f in m.get("files") or [])
 
 
 def _llm_messages(conv: dict) -> list[dict]:
@@ -821,13 +831,15 @@ def _llm_messages(conv: dict) -> list[dict]:
 
     前缀稳定（KV cache）：同一个 epoch 里，前面发过的消息每轮都原样重放，只在末尾追加；不按条数截断
     （截了前缀就变）。长了靠 compact 换 epoch，见 server/compact.py。
-    小新最后一次回答之后的图片带本体（家长先发图不问小新、孩子再问「爸爸发了什么」，那几张图小新还没看过），
-    更早的换成一句占位，免得每轮重传。"""
+    图片原地带本体（家长先发图不问小新、孩子过几轮再问「爸爸发了什么」，小新也看得到）；前缀照样不变。
+    只留这个 epoch 最近 MAX_IMAGES 张，更早的换成一句占位。不看图的模型在发送前换占位（_text_only）。"""
     from server import compact
 
     msgs = conv["messages"][conv.get("epoch_start") or 0:]
     owner = members.kid_of_thread(conv["id"])
-    unseen = 1 + max((i for i, m in enumerate(msgs) if m["role"] == "assistant"), default=-1)
+    imgs = [(i, f["id"]) for i, m in enumerate(msgs) if m["role"] == "user"
+            for f in m.get("files") or [] if f.get("kind") == "image"]
+    keep = set(imgs[-MAX_IMAGES:])
     out = []
     if conv.get("summary"):
         out.append({"role": "user", "content": compact.SUMMARY_PREFIX + conv["summary"]})
@@ -852,7 +864,7 @@ def _llm_messages(conv: dict) -> list[dict]:
             info = store.file_info(meta["id"])
             if info is None:
                 parts.append({"type": "text", "text": f"[附件 {meta['name']} 已经不在了]"})
-            elif meta["kind"] == "image" and i >= unseen:
+            elif meta["kind"] == "image" and (i, meta["id"]) in keep:
                 img = store.best_image(meta["id"]) or info[0]  # 2048 的 screen 够模型看，原图太大
                 parts.append({"type": "image_url", "image_url": {"url": store.data_url(img, meta["mime"])}})
             elif meta["kind"] == "image":
@@ -966,15 +978,16 @@ def _llm_turn(model: str, history: list[dict], q, loop, voice: bool, cid: str | 
         tools = registry.SPECS
         system = prompts.build(voice=voice, kid=owner)
         extra = client.SELF_HOSTED.get(m, (None, None, None, {}))[3]
+        send = _text_only(msgs) if m in NO_VISION else msgs
         thinking = extra.get("chat_template_kwargs", {}).get("enable_thinking")
-        rec = trace.add_call(tr, model=m, system=system, messages=[dict(x) for x in msgs],
+        rec = trace.add_call(tr, model=m, system=system, messages=send,
                              tools=[t["function"]["name"] for t in tools], max_tokens=4096,
                              thinking="默认" if thinking is None else str(thinking).lower(),
                              provider="自部署 vLLM" if m in client.SELF_HOSTED else "公司代理")
         reasoning_chars = 0
         t_req = time.monotonic()
         try:
-            for kind, value in client.iter_stream(m, msgs, system=system, max_tokens=4096, timeout=180,
+            for kind, value in client.iter_stream(m, send, system=system, max_tokens=4096, timeout=180,
                                                   tools=tools):
                 if kind == "model":
                     served = value
@@ -1157,7 +1170,7 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
     model = str(body.get("model") or MODELS[0]["id"])
     if model not in {m["id"] for m in MODELS}:
         raise HTTPException(400, f"不支持的模型 {model}")
-    if model in NO_VISION and (any(f["kind"] == "image" for f in files) or _unseen_images(cid)):
+    if model in NO_VISION and (any(f["kind"] == "image" for f in files) or _has_images(cid)):
         model = VISION
     sender = _sender(w, cid)
     # 群聊：孩子说话小新照常答；家长发给孩子的（默认）只存不答，点亮「问小新」（ask=true）才答（docs/architecture.md 6.3）。

@@ -337,8 +337,10 @@ def test_deepseek_flash_sees_images_itself(client, fakes):
 
 
 def test_images_sent_before_question_reach_the_model(client, fakes):
-    """家长发了图不问小新（ask=false），孩子再问「爸爸发了什么」：那几张图小新没看过，这轮要带图片本体。
-    回答过之后再问，就只剩占位了（不每轮重传）。"""
+    """家长发了图不问小新（ask=false），孩子再问「爸爸发了什么」：图片本体在原位置带上；
+    过几轮再问也还在（不换占位，前缀不变）。调试记录里是格式说明，不是几百 KB 的 base64。"""
+    from server import trace
+
     fids = [client.post("/api/files", content=b"\x89PNG", headers={"Content-Type": "image/png",
                                                                      "X-Filename": f"{i}.png"}).json()["id"]
             for i in range(2)]
@@ -349,7 +351,19 @@ def test_images_sent_before_question_reach_the_model(client, fakes):
     assert first.count("data:image/") == 2
     client.post(f"/api/conversations/{cid}/messages", json={"text": "再说一遍"})
     again = json.dumps(fakes.llm_requests[-1]["messages"], ensure_ascii=False)
-    assert "data:image/" not in again and "之前发过一张图片" in again
+    assert again.count("data:image/") == 2
+    rec = json.dumps(trace.turns(cid)[0]["calls"][0]["messages"], ensure_ascii=False)
+    assert "data:image/png" not in rec and "[图片] image/png" in rec
+    tail = client.get(f"/api/debug/{cid}").json()["turns"][0]["calls"][0]["tail"]
+    assert any(isinstance(m["content"], list) for m in tail)  # 家长发的图在这一轮的入参里能看到
+
+
+def test_text_only_model_gets_image_placeholder():
+    msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,xx"}},
+                                         {"type": "text", "text": "[爸爸]（发了上面的附件）"}]}]
+    out = main._text_only(msgs)
+    assert out[0]["content"] == "[一张图片，这个模型看不了]\n\n[爸爸]（发了上面的附件）"
+    assert isinstance(msgs[0]["content"], list)  # 原来的不动
 
 
 def test_debug_trace_survives_restart(client, fakes):
