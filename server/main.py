@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -510,11 +511,105 @@ def worksheet_view(request: Request, wid: str) -> dict:
     if w.role == "kid" and ws.get("for") != (kid or {}).get("id"):
         raise HTTPException(404, "没有这份练习纸")
     name = members.get(ws["for"])["name"] if ws.get("for") else ""
-    page = worksheet.page_file(ws, kid_name=name)
-    out = {"id": ws["id"], "kind": ws["kind"], "title": ws["title"], "count": len(ws["items"]), "page": page["id"]}
+    pages = worksheet.page_files(ws, kid_name=name)
+    out = {"id": ws["id"], "kind": ws["kind"], "title": ws["title"], "count": len(ws["items"]), "page": pages[0]["id"],
+           "pages": [x["id"] for x in pages], "listen": sum(1 for it in ws["items"] if it.get("part") == "listen")}
     if w.at_least("parent"):
-        out["answers"] = worksheet.page_file(ws, answers=True, kid_name=name)["id"]
+        ans = worksheet.page_files(ws, answers=True, kid_name=name)
+        out["answers"] = ans[0]["id"]
+        out["answer_pages"] = [x["id"] for x in ans]
     return out
+
+
+# ---------------------------------------------------------------- 练习模式（server/practice.py）
+
+def _practice_of(request: Request, pid: str) -> dict:
+    from server import practice
+
+    try:
+        r = practice.get(pid)
+    except KeyError:
+        raise HTTPException(404, "没有这次练习")
+    own_thread(request, r["thread"])
+    return r
+
+
+def _practice_view(r: dict) -> dict:
+    from server import practice
+
+    return {**r, "used_s": practice.used_s(r), "overtime_s": practice.overtime_s(r), "now": time.time()}
+
+
+@app.get("/api/practice/current")
+def practice_current(request: Request, kid: str = "") -> dict:
+    """这个孩子正在进行的练习（pad 刷新、重连后接着计时）。没有就 {}。"""
+    from server import practice
+
+    k = kid_for(request, kid)
+    for r in reversed(practice.all_for(k["id"])):
+        if r["state"] in ("listening", "writing", "done") and time.time() - r["started"] < 6 * 3600:
+            return _practice_view(r)
+    return {}
+
+
+@app.post("/api/practice")
+def practice_start(request: Request, body: dict = Body(...)) -> dict:
+    """卡片上点「开始练习」（不经过小新）。"""
+    from server import practice
+    from server.family import hub
+
+    k = kid_for(request, str(body.get("kid") or ""))
+    try:
+        r = practice.start(str(body.get("worksheet") or ""), k, minutes=body.get("minutes"), by=who(request).id)
+    except practice.PracticeError as e:
+        raise HTTPException(400, str(e))
+    hub.publish(k["thread"], {"type": "practice", "practice": r})
+    return _practice_view(r)
+
+
+@app.post("/api/practice/{pid}/{step}")
+def practice_step(request: Request, pid: str, step: str, body: dict = Body(default={})) -> dict:
+    """listened：听写读完了；finish：孩子点了「完成」；submit：交卷（file_ids 是拍好的照片），后台批改，结果发群里。"""
+    from server import practice
+    from server.family import hub
+
+    r = _practice_of(request, pid)
+    kid = members.get(r["kid"])
+    if step == "listened":
+        r = practice.listen_done(pid)
+    elif step == "finish":
+        before = r["state"]
+        r = practice.finish(pid)
+        if before != "done" and r["state"] == "done":
+            store.append(r["thread"], {"role": "assistant", "text": practice.finish_text(r, kid["name"]), "model": "",
+                                       "via": "practice", "practice": pid})
+    elif step == "submit":
+        fids = [str(f) for f in body.get("file_ids") or [] if store.file_info(str(f))]
+        if not fids:
+            raise HTTPException(400, "要先拍卷子的照片")
+        if r["state"] in ("listening", "writing"):
+            r = practice.finish(pid)
+        sender = _sender(who(request), r["thread"])
+        store.append(r["thread"], {"role": "user", "text": f"交卷：{r['title']}", "files": _attachments(request, fids),
+                                   "via": "practice", "from": sender["id"], "to": "kid", "practice": pid})
+        parents = [m["name"] for m in members.all_members() if m["role"] == "parent" and m["status"] == "active"]
+
+        def work():
+            try:
+                g = practice.grade(pid, fids)
+                text = practice.grade_text(g, kid["name"], parents)
+            except Exception as e:  # noqa: BLE001  批改失败也要说一声
+                log.warning("practice grade %s: %s", pid, e)
+                text = f"卷子收到了，但批改没成功（{str(e)[:60]}），等会儿再交一次试试。"
+            store.append(r["thread"], {"role": "assistant", "text": text, "model": "", "via": "practice", "practice": pid})
+            hub.publish(r["thread"], {"type": "practice", "practice": _practice_view(practice.get(pid))})
+
+        threading.Thread(target=work, name="practice-grade", daemon=True).start()
+        r = practice.get(pid)
+    else:
+        raise HTTPException(404, "没有这一步")
+    hub.publish(r["thread"], {"type": "practice", "practice": _practice_view(r)})
+    return _practice_view(r)
 
 
 @app.get("/api/print/jobs")

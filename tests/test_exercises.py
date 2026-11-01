@@ -18,7 +18,7 @@ def _parse(q: str):
 
 
 def test_registry_and_catalog():
-    assert set(exercises.TOPICS) == {"zero_end_mul_div", "arithmetic", "pinyin_words", "dictation", "essay"}
+    assert set(exercises.TOPICS) == {"zero_end_mul_div", "arithmetic", "pinyin_words", "dictation", "essay", "word_dictation"}
     cat = exercises.catalog()
     assert "zero_end_mul_div（数学·末尾带 0 的乘除法口算" in cat and "essay（语文·作文" in cat
     for m in exercises.TOPICS.values():

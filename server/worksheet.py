@@ -34,7 +34,7 @@ FONTS = {
     "bold": ["/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "/System/Library/Fonts/STHeiti Medium.ttc",
              "/System/Library/Fonts/Hiragino Sans GB.ttc"],
 }
-KINDS = ("math", "tian", "essay")  # 排版：口算、田字格（看拼音写词语、听写）、作文稿纸
+KINDS = ("math", "tian", "essay", "dictation")  # 排版：口算、田字格（看拼音写词语、听写）、作文稿纸、生词默写（多页）
 
 
 class WorksheetError(ValueError):
@@ -103,7 +103,12 @@ def latest(for_kid: str) -> dict | None:
 def summary(ws: dict) -> str:
     """给模型看的一行：出了什么、多少题（不给答案，免得它直接念答案）。"""
     n = len(ws["items"])
-    what = {"math": f"{n} 道口算", "tian": f"{n} 个词语", "pinyin": f"{n} 个词语", "dictation": f"{n} 个词语",
+    if ws["kind"] == "dictation":
+        listen = sum(1 for it in ws["items"] if it.get("part") == "listen")
+        write = [it["q"] or "积累" for it in ws["items"] if it.get("part") == "write"]
+        return (f"练习纸 {ws['id']}「{ws['title']}」，{len(pages(ws))} 页：听写 {listen} 个词"
+                + (f"，古诗和积累 {len(write)} 题（{'、'.join(write)}）" if write else ""))
+    what = {"math": f"{n} 道口算", "tian": f"{n} 个词语", "pinyin": f"{n} 个词语",
             "essay": "1 篇作文"}[ws["kind"]]
     return f"练习纸 {ws['id']}「{ws['title']}」，{what}"
 
@@ -132,10 +137,12 @@ def _tian(d, x: int, y: int, s: int, ch: str = "", font=None) -> None:
         d.text((x + s // 2, y + s // 2), ch, font=font, fill=INK, anchor="mm")
 
 
-def render(ws: dict, answers: bool = False, kid_name: str = "") -> bytes:
-    """排一页 A4，返回 JPEG。answers=True 是答案页（家长看）。"""
+def render(ws: dict, answers: bool = False, kid_name: str = "", page: int = 0) -> bytes:
+    """排一页 A4，返回 JPEG。answers=True 是答案页（家长看）。生词默写可能好几页，page 是第几页。"""
     from PIL import Image, ImageDraw
 
+    if ws["kind"] == "dictation":
+        return _render_dictation(ws, answers, kid_name, page)
     im = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(im)
     y = _header(d, ws, kid_name)
@@ -206,8 +213,163 @@ def render(ws: dict, answers: bool = False, kid_name: str = "") -> bytes:
     return buf.getvalue()
 
 
+# ---------------------------------------------------------------- 生词默写（多页：听写格 → 古诗积累填空）
+
+S_DICT = 104   # 听写田字格边长（一页放下 40 来个两字词）
+
+
+def pages(ws: dict) -> list[list[dict]]:
+    """生词默写分页：每页放哪些块。块是 ("listen", 一行的词) 或 ("write", 一题)。一页高度按块高累加，放不下换页。"""
+    if ws["kind"] != "dictation":
+        return [[{"all": True}]]
+    top, bottom = MARGIN + 230, H - MARGIN
+    out, cur, y = [], [], top
+    usable = W - 2 * MARGIN
+
+    def put(block, h):
+        nonlocal cur, y
+        if cur and y + h > bottom:
+            out.append(cur)
+            cur, y = [], MARGIN + 60
+        cur.append(block)
+        y += h
+
+    listen = [it for it in ws["items"] if it.get("part") == "listen"]
+    if listen:
+        put({"head": "一、听写词语（听小新读，每个词读两遍）"}, 80)
+        row, w = [], 0
+        for it in listen:
+            need = len(it["a"]) * S_DICT + 40
+            if row and w + need > usable:
+                put({"row": row}, S_DICT + 64)
+                row, w = [], 0
+            row.append(it)
+            w += need
+        if row:
+            put({"row": row}, S_DICT + 64)
+    write = [it for it in ws["items"] if it.get("part") == "write"]
+    if write:
+        # 整首默写的古诗（每行都是空）窄：两首并排一块；别的（句子里挖空、积累）一题一块，占整行
+        groups, i = [], 0
+        while i < len(write):
+            if _whole_poem(write[i]) and i + 1 < len(write) and _whole_poem(write[i + 1]):
+                groups.append([write[i], write[i + 1]])
+                i += 2
+            else:
+                groups.append([write[i]])
+                i += 1
+        head = {"head": ("二、" if listen else "") + "古诗和积累"}
+        for k, g in enumerate(groups):
+            h = max((90 if it["q"] else 0) + len(it["lines"]) * 96 for it in g) + 30
+            if k == 0:
+                put({"head_with": head["head"], "write": g}, h + 90)  # 大标题跟着第一题，不单独落在页底
+            else:
+                put({"write": g}, h)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _whole_poem(it: dict) -> bool:
+    from server.exercises.chinese.word_dictation import BLANK
+
+    return bool(it["q"]) and all(BLANK.sub("", line).strip("，。；、 ") == "" for line in it["lines"])
+
+
+def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> bytes:
+    from PIL import Image, ImageDraw
+
+    from server.exercises.chinese.word_dictation import BLANK
+
+    blocks = pages(ws)[page]
+    im = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(im)
+    y = _header(d, ws, kid_name) if page == 0 else MARGIN + 20
+    if answers:
+        d.text((W - MARGIN, MARGIN + 20 if page == 0 else 50), "答案", font=_font("bold", 40), fill=(200, 60, 60), anchor="ra")
+    red = (200, 60, 60)
+    fno, fch, fhead = _font("sans", 26), _font("serif", 78), _font("bold", 40)
+    fpoem, fby = _font("serif", 52), _font("sans", 32)
+    for b in blocks:
+        if "head" in b:
+            d.text((MARGIN, y + 10), b["head"], font=fhead, fill=INK)
+            y += 80
+        elif "row" in b:
+            x = MARGIN
+            for it in b["row"]:
+                w = len(it["a"]) * S_DICT
+                d.text((x, y + 4), it["q"], font=fno, fill=MUTED)
+                for k, ch in enumerate(it["a"]):
+                    _tian(d, x + k * S_DICT, y + 40, S_DICT)
+                    if answers:
+                        d.text((x + k * S_DICT + S_DICT // 2, y + 40 + S_DICT // 2), ch, font=fch, fill=red, anchor="mm")
+                x += w + 40
+            y += S_DICT + 64
+        else:
+            if b.get("head_with"):
+                d.text((MARGIN, y + 10), b["head_with"], font=fhead, fill=INK)
+                y += 90
+            col_w = (W - 2 * MARGIN) // len(b["write"])
+            bottom = y
+            for c, it in enumerate(b["write"]):
+                x0, yy = MARGIN + c * col_w, y
+                if it["q"]:
+                    d.text((x0, yy + 10), it["q"], font=_font("bold", 46), fill=INK)
+                    if it.get("by"):
+                        d.text((x0 + d.textlength(it["q"], font=_font("bold", 46)) + 24, yy + 22), it["by"], font=fby, fill=MUTED)
+                    yy += 90
+                for line in it["lines"]:
+                    x = x0 + 30
+                    for k, part in enumerate(BLANK.split(line)):
+                        if k % 2 == 0:  # 原文
+                            d.text((x, yy + 20), part, font=fpoem, fill=INK)
+                            x += d.textlength(part, font=fpoem)
+                        else:           # 空：按字数留宽，答案页填红字
+                            wd = max(2, len(part)) * 56 + 20
+                            d.line([(x + 6, yy + 82), (x + wd - 6, yy + 82)], fill=INK, width=2)
+                            if answers:
+                                d.text((x + wd // 2, yy + 20), part, font=fpoem, fill=red, anchor="ma")
+                            x += wd
+                    yy += 96
+                bottom = max(bottom, yy)
+            y = bottom + 30
+    n = len(pages(ws))
+    d.text((W // 2, H - 60), f"小新出题 · 第 {page + 1} 页，共 {n} 页" if n > 1 else "小新出题", font=_font("sans", 22),
+           fill=MUTED, anchor="mb")
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=90, dpi=(200, 200))
+    return buf.getvalue()
+
+
+def page_files(ws: dict, answers: bool = False, kid_name: str = "") -> list[dict]:
+    """每一页一个文件（生词默写可能好几页；别的题型就一页）。"""
+    if ws["kind"] != "dictation":
+        return [page_file(ws, answers, kid_name)]
+    key = "answer_files" if answers else "page_files"
+    have = ws.get(key) or []
+    if have and all(store.file_info(f) for f in have):
+        return [store.file_info(f)[1] for f in have]
+    metas = []
+    n = len(pages(ws))
+    for i in range(n):
+        data = render(ws, answers, kid_name, i)
+        fid, path = store.allocate()
+        path.write_bytes(data)
+        suffix = ("（答案）" if answers else "") + (f"第{i + 1}页" if n > 1 else "")
+        meta = store.commit(fid, f"{ws['title']}{suffix}.jpg", "image/jpeg", len(data), owner="xiaoxin")
+        store.variant_path(fid, "thumb")
+        store.variant_path(fid, "screen")
+        metas.append(meta)
+    ws[key] = [m["id"] for m in metas]
+    ws["page_file" if not answers else "answer_file"] = metas[0]["id"]
+    store._write_json(_dir() / f"{ws['id']}.json", ws)
+    return metas
+
+
 def page_file(ws: dict, answers: bool = False, kid_name: str = "") -> dict:
     """排好的那页存成一个普通文件（store.files，图片三档都有），聊天里当图片发、打印也用它。缓存：同一份只排一次。"""
+    if ws["kind"] == "dictation":
+        return page_files(ws, answers, kid_name)[0]
     key = "answer_file" if answers else "page_file"
     if ws.get(key) and store.file_info(ws[key]):
         return store.file_info(ws[key])[1]

@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 DIR = Path(__file__).parent
-ORDER = ["persona", "time", "search", "clock", "hanzi", "english", "print"]  # 文字对话、语音通话都有
+ORDER = ["persona", "time", "search", "clock", "hanzi", "english", "print", "practice"]  # 文字对话、语音通话都有
 VOICE = "voice"                          # 只有语音通话
 WEEK = "一二三四五六日"
 _SLOT = re.compile(r"\{(\w+)\}")

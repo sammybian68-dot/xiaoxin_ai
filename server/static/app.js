@@ -121,7 +121,7 @@ function hubConnect() {
   clearTimeout(hub.timer);
   const url = new URL("api/hub", location.href).href.replace(/^http/, "ws");
   const ws = hub.ws = new WebSocket(url);
-  ws.onopen = () => { hub.wait = 2000; hubCatchUp(); printCatchUp(); };
+  ws.onopen = () => { hub.wait = 2000; hubCatchUp(); printCatchUp(); window.pracResume?.(); };
   ws.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (ev.type === "ping") { ws.send('{"type":"pong"}'); return; }
@@ -132,6 +132,7 @@ function hubConnect() {
     if (ev.type?.startsWith("call.")) onCallEvent(ev);
     if (ev.type === "print.summary" && ev.thread === state.conv?.id) onPrintSummary(ev);
     if (ev.type === "file" && ev.thread === state.conv?.id) hubFile(ev.file);
+    if (ev.type === "practice") window.onPracticeEvent?.(ev);
   };
   ws.onclose = () => {
     if (hub.ws !== ws) return;
@@ -433,13 +434,26 @@ async function worksheetCard(row, wid) {
   try { d = await api(`api/worksheets/${wid}`).then(json); } catch (_) { return; }
   const card = document.createElement("div");
   card.className = "ws-card";
-  card.innerHTML = `<a href="api/files/${d.page}" data-fid="${d.page}"><img src="api/files/${d.page}?v=thumb" alt=""></a>`
-    + `<div class="ws-info"><b>${esc(d.title)}</b><small>${d.count} ${d.kind === "math" ? "道题" : d.kind === "essay" ? "篇" : "个词"}</small>`
+  const pages = d.pages || [d.page];
+  const what = d.kind === "math" ? `${d.count} 道题` : d.kind === "essay" ? "1 篇" : d.kind === "dictation"
+    ? `${pages.length} 页 · 听写 ${d.listen} 个词` : `${d.count} 个词`;
+  card.innerHTML = `<div class="ws-pages">${pages.map((f) => `<a href="api/files/${f}" data-fid="${f}"><img src="api/files/${f}?v=thumb" alt=""></a>`).join("")}</div>`
+    + `<div class="ws-info"><b>${esc(d.title)}</b><small>${what}</small>`
     + `<div class="ws-btns"><button type="button" class="primary" data-ws-print>🖨 打印</button>`
+    + (state.me?.role !== "parent" ? `<button type="button" data-ws-practice>⏱ 开始练习</button>` : "")
     + (d.answers ? `<a href="api/files/${d.answers}" data-fid="${d.answers}" class="ws-ans">答案</a>` : "") + `</div></div>`;
   // 预览图是服务端排的页：查看器要能找到它（findFile 只看消息里的 files），记一下
-  state.extraFiles = { ...(state.extraFiles || {}), [d.page]: { id: d.page, name: d.title, kind: "image" },
-                       ...(d.answers ? { [d.answers]: { id: d.answers, name: d.title + "（答案）", kind: "image" } } : {}) };
+  state.extraFiles = { ...(state.extraFiles || {}), ...Object.fromEntries(pages.map((f, i) => [f, { id: f, name: `${d.title}${pages.length > 1 ? ` 第${i + 1}页` : ""}`, kind: "image" }])),
+                       ...Object.fromEntries((d.answer_pages || (d.answers ? [d.answers] : [])).map((f) => [f, { id: f, name: d.title + "（答案）", kind: "image" }])) };
+  card.querySelector("[data-ws-practice]")?.addEventListener("click", async (e) => {
+    e.currentTarget.disabled = true;
+    try {
+      const r = await api("api/practice", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ worksheet: wid, kid: state.conv?.kid }) }).then(json);
+      window.onPracticeEvent?.({ practice: r });
+    } catch (err) { toast(err.message); }
+    e.currentTarget.disabled = false;
+  });
   card.querySelector("[data-ws-print]").addEventListener("click", async (e) => {
     e.currentTarget.disabled = true;
     try { await api("api/print", { method: "POST", headers: { "Content-Type": "application/json" },

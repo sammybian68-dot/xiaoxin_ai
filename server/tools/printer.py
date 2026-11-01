@@ -34,6 +34,8 @@ SPECS = [
             "topic_text": {"type": "string", "description": "essay：作文题目"},
             "words_count": {"type": "integer", "description": "essay：字数，100–800，默认 300"},
             "hint": {"type": "string", "description": "essay：写作提示（只印在答案页，给家长看）"},
+            "units": {"type": "array", "items": {"type": "integer"}, "description": "word_dictation：哪几个单元，如 [4]、[1,2,3,4]"},
+            "with_extras": {"type": "boolean", "description": "word_dictation：要不要古诗和积累填空（默认要）"},
         }, "required": ["subject", "topic"]},
     }},
     {"type": "function", "function": {
@@ -185,15 +187,20 @@ def run(name: str, arguments: str) -> str:
                                       batch=batch)
             sent[key] = {"job": job["id"], "answers": bool(ws is not None and args.get("answers"))}
             extra = []
+            if ws is not None:  # 生词默写好几页：后面几页各一个任务（第一页就是上面那个）
+                for pf in worksheet.page_files(ws, kid_name=c.get("kid_name", ""))[1:]:
+                    extra.append(printing.create_job(thread, pf["id"], color=False, copies=args.get("copies") or 1,
+                                                     by=c.get("by", ""), batch=batch))
             if ws is not None and args.get("answers"):
-                ans = worksheet.page_file(ws, answers=True, kid_name=c.get("kid_name", ""))
-                extra.append(printing.create_job(thread, ans["id"], color=False, by=c.get("by", ""), batch=batch))
+                for ans in worksheet.page_files(ws, answers=True, kid_name=c.get("kid_name", "")):
+                    extra.append(printing.create_job(thread, ans["id"], color=False, by=c.get("by", ""), batch=batch))
             for j in [job, *extra]:
                 _push(j)
             how = "自动选了" + ("彩色" if job["color"] else "黑白") if job["auto_color"] else ("彩色" if job["color"] else "黑白")
             ids = " ".join("j_" + j["id"] for j in [job, *extra])  # 界面按这个认打印条（不念）
-            return (f"已发给打印机：{printing.describe(job)}（{how}）" + ("，另加答案页 1 张" if extra else "") + f"。任务 {ids}\n"
-                    f"播报：好的，{'彩色' if job['color'] else '黑白'}打印 {job['sheets']} 张，马上出纸。")
+            sheets = job["sheets"] + sum(j["sheets"] for j in extra)
+            return (f"已发给打印机：{printing.describe(job)}（{how}）" + (f"，一共 {sheets} 张" if extra else "") + f"。任务 {ids}\n"
+                    f"播报：好的，{'彩色' if job['color'] else '黑白'}打印 {sheets} 张，马上出纸。")
     except printing.PrintError as e:
         return f"失败：{e}"
     except worksheet.WorksheetError as e:

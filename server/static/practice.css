@@ -1,0 +1,21 @@
+/* 练习模式：全屏，孩子坐在桌前看得清（字大、按钮大），计时变红表示快到 / 超时 */
+.prac { position: fixed; inset: 0; z-index: 60; background: #fffaf2; color: #2b2420; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 22px; padding: 24px; font-family: "PingFang SC", "Noto Sans SC", sans-serif; text-align: center; }
+.prac-top { position: absolute; top: 18px; left: 24px; right: 24px; display: flex; justify-content: space-between; font-size: 22px; color: #8a7d72; }
+.prac-top b { color: #2b2420; }
+.prac-time { font-size: 120px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+.prac-time.soon { color: #e08a2b; }
+.prac-time.over { color: #d23b31; }
+.prac-limit { font-size: 22px; color: #8a7d72; margin-top: -10px; }
+.prac-big { font-size: 64px; font-weight: 700; color: #e0452b; }
+.prac-sub { font-size: 26px; }
+.prac-btns { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; }
+.prac-btns button, .prac-btns label { height: 64px; padding: 0 28px; border-radius: 32px; border: 0; font-size: 22px; font-weight: 600;
+  background: #f1e6cf; color: #2b2420; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.prac-btns .primary { background: #e0452b; color: #fff; }
+.prac-btns button:disabled { opacity: .5; }
+.prac-photos { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.prac-photos figure { position: relative; margin: 0; }
+.prac-photos img { width: 120px; height: 160px; object-fit: cover; border-radius: 8px; border: 2px solid #f0c9a8; }
+.prac-photos button { position: absolute; top: -8px; right: -8px; width: 30px; height: 30px; border-radius: 15px; border: 0; background: #2b2420; color: #fff; }
+@media (max-width: 640px) { .prac-time { font-size: 72px; } .prac-big { font-size: 44px; } }
