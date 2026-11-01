@@ -313,6 +313,7 @@ details.dl[open] > summary { display: none; }
 /* 气泡里有卡片（笔顺、报时）：气泡撑满可用宽度。卡片用 container query 按自己宽度排版，
    气泡如果按内容收缩，卡片就会把自己算得很窄、挤成竖排 */
 .bubble:has(.hz, .tc-wrap, .ac) { width: min(640px, 82%); }
+.bubble:has(.en-card) { width: min(900px, 92%); max-width: min(900px, 92%); }  /* 四线格要宽：一个单词好几个字母，格子才够大 */
 .action-chip { align-self: flex-start; border: 1px solid rgba(255, 181, 71, .35); background: rgba(255, 181, 71, .1); color: #ffcf85; border-radius: 12px; padding: 6px 12px; font-size: 13px; text-align: left; max-width: 100%; }
 .action-chip.bad { border-color: #5a2a2e; background: #2a1719; color: #ffb4b4; }
 .clock-btn.live { color: #ffb547; }

@@ -21,8 +21,12 @@ function englishCard(word, meaning = "") {
   const strokes = [];  // [{li, si, pts（绝对坐标）}]
   letters.forEach((c, li) => window.LETTERS[c].forEach((s, si) => strokes.push({ li, si, ch: c, pts: s.map(([px, py]) => [px + xs[li], py]) })));
 
-  wrap.innerHTML = `<div class="en-top"><b class="en-word">${esc(word)}</b>${meaning ? `<span class="en-mean">${esc(meaning)}</span>` : ""}`
-    + `<button type="button" class="en-say" title="读一遍">🔊</button></div>`
+  const phrase = /^[A-Za-z][A-Za-z '\-]*$/.test(word.trim()) && letters.length > 1;  // 单个字母不查音标
+  wrap.innerHTML = `<div class="en-top"><b class="en-word">${esc(word)}</b>${meaning ? `<span class="en-mean">${esc(meaning)}</span>` : ""}</div>`
+    + `<div class="en-ph">${phrase
+      ? ["uk", "us"].map((a) => `<button type="button" class="en-acc" data-acc="${a}"><span class="en-tag">${a === "uk" ? "英" : "美"}</span>`
+        + `<span class="en-ipa">…</span><span class="en-ico">🔊</span></button>`).join("")
+      : '<button type="button" class="en-acc" data-acc="tts"><span class="en-ico">🔊</span> 读一遍</button>'}</div>`
     + `<div class="en-board"><svg class="en-svg" viewBox="${-2} ${-6} ${W + 4} ${H + 12}" preserveAspectRatio="xMidYMid meet"></svg></div>`
     + `<div class="en-now" aria-live="polite">共 ${letters.length} 个字母、${strokes.length} 笔</div>`
     + `<div class="en-btns"><button type="button" class="primary" data-a="play">▶ 看怎么写</button>`
@@ -145,7 +149,25 @@ function englishCard(word, meaning = "") {
 
   wrap.querySelector('[data-a="play"]').addEventListener("click", play);
   wrap.querySelector('[data-a="quiz"]').addEventListener("click", startQuiz);
-  wrap.querySelector(".en-say").addEventListener("click", (e) => speak(word, e.currentTarget));
+  // 音标、英音美音：服务端从词典取（有缓存）；取不到就只剩「🔊」，点了用小新的声音读
+  const w = encodeURIComponent(word.trim());
+  if (phrase) {
+    api(`api/dict/${w}`).then(json).then((d) => {
+      for (const a of ["uk", "us"]) wrap.querySelector(`[data-acc="${a}"] .en-ipa`).textContent = d[a] ? `/${d[a]}/` : "";
+    }).catch(() => wrap.querySelectorAll(".en-ipa").forEach((e) => { e.textContent = ""; }));
+  }
+  for (const b of wrap.querySelectorAll(".en-acc")) {
+    b.addEventListener("click", () => {
+      if (b.dataset.acc === "tts") { speak(word, b.querySelector(".en-ico")); return; }
+      stopSpeaking();
+      const audio = new Audio(`api/dict/${w}/${b.dataset.acc}.mp3`);
+      player.audio = audio; player.btn = b.querySelector(".en-ico");
+      b.classList.add("on");
+      const done = () => { b.classList.remove("on"); if (player.audio === audio) stopSpeaking(); };
+      audio.onended = done;
+      audio.play().catch(() => { done(); speak(word, b.querySelector(".en-ico")); });  // 词典没这个读音：小新读
+    });
+  }
   setTimeout(play, 300);
   wrap._strokes = strokes;  // 调试 / 端到端测试用：每笔的绝对坐标（SVG 单位）
   wrap._svg = svg;

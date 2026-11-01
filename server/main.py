@@ -1745,6 +1745,29 @@ def tts(body: dict = Body(...)) -> Response:
         raise
 
 
+# ---------------------------------------------------------------- 英文词典（书写卡的音标、英音美音）
+
+@app.get("/api/dict/{word}")
+def dict_phonetic(word: str) -> dict:
+    from server import dictionary
+
+    try:
+        return dictionary.phonetic(word)
+    except dictionary.DictError as e:
+        raise HTTPException(400 if "只查" in str(e) else 502, str(e))
+
+
+@app.get("/api/dict/{word}/{accent}.mp3")
+def dict_audio(word: str, accent: str) -> Response:
+    from server import dictionary
+
+    try:
+        data = dictionary.audio(word, accent)
+    except dictionary.DictError as e:
+        raise HTTPException(400 if "只" in str(e) else 502, str(e))
+    return Response(data, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=2592000"})
+
+
 # ---------------------------------------------------------------- 音色
 
 @app.get("/api/voices")
