@@ -314,13 +314,17 @@
       <h3>唤醒词</h3>
       <p class="voice-tip">pad 开着「待命」时，本机一直听，一句话以其中任意一个开头就叫醒小新，后面可以直接接问题（「小新同学，现在几点」）。没叫醒时不上传、不花钱。每个至少 4 个字。<b>*</b> 代表任意一个字：「你好小*」能叫醒「你好小婷」「你好小嗯」这种认偏的。</p>
       <div class="words" id="wake-list" data-kind="wake"></div>
+      <div class="row">
+        <label for="set-wake-vad"><b>待命时停多久算一句</b><small>pad 本机认唤醒词时，静音这么久就把这句送去认。只认「小新同学」这几个字，短一点叫醒得快（默认 300）；家里吵、老是没叫醒再调长。改了马上生效。和「语音对话」里通话时的「停多久算说完」是分开的</small></label>
+        <span class="vad-end"><input id="set-wake-vad" type="number" min="150" max="1500" step="50" inputmode="numeric"><span>毫秒</span></span>
+      </div>
       <h3>退出词</h3>
       <p class="voice-tip">通话中，一句话正好是其中任意一个（不能多一个字），就立刻挂断回待命，在 pad 本机判断，不等云端。「你先退下吧」这种不算。和唤醒词一样，「小新」被认成「小心」也算。</p>
       <div class="words" id="exit-list" data-kind="exit"></div>
       <p id="words-msg" class="voice-msg" role="status"></p>
 
       <h3>端侧模型调试</h3>
-      <p class="voice-tip">点开始后对着 pad 说话，每句话显示本机模型的转写（去掉标点，和匹配唤醒词、退出词时用的是同一串）。断句用「语音对话」里的「停多久算说完」。只在本机听，不连云端、不会真的唤醒；调试时待命暂停，停止后恢复。</p>
+      <p class="voice-tip">点开始后对着 pad 说话，每句话显示本机模型的转写（去掉标点，和匹配唤醒词、退出词时用的是同一串）。断句用上面的「待命时停多久算一句」。只在本机听，不连云端、不会真的唤醒；调试时待命暂停，停止后恢复。</p>
       <div id="asr-debug-box" hidden>
         <div class="row">
           <span><b id="asr-debug-state">没开</b><small id="asr-debug-sub"></small></span>

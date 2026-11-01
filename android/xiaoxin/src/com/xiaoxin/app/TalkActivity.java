@@ -65,7 +65,8 @@ public class TalkActivity extends Activity {
     private volatile boolean woken;
     private String[] wakeWords = {"小新同学", "你好小新"};
     private String[] exitWords = {"小新退下", "没事了小新"};
-    private volatile int vadEndMs = 800;
+    private volatile int vadEndMs = 800;   // 通话中（退出词的本机断句）跟云端「停多久算说完」
+    private volatile int wakeVadMs = 300;  // 待命时端侧断句：只为认唤醒词，短；设置 → 唤醒里单独调，热生效
     private volatile String hangupTone = "down";
     private Cues cues;
     private Phrases phrases;
@@ -371,6 +372,23 @@ public class TalkActivity extends Activity {
             runOnUiThread(() -> applyWords(wakes, exits, idleS, endMs, tone));
         }
 
+        /** 待命时停多久算一句（毫秒）：马上换（WakeListener 下一帧就用新的）。 */
+        @JavascriptInterface
+        public void setWakeVad(int ms) {
+            if (ms < 100 || ms > 3000) {
+                return;
+            }
+            wakeVadMs = ms;
+            WakeListener w = wake;
+            if (w != null) {
+                w.setEndMs(ms);
+            }
+            WakeListener d = debugListener;
+            if (d != null) {
+                d.setEndMs(ms);
+            }
+        }
+
         /** 设置页试听提示音。 */
         @JavascriptInterface
         public void playTone(String id) {
@@ -522,12 +540,10 @@ public class TalkActivity extends Activity {
         WakeListener w = wake;
         if (w != null) {
             w.setWakeWords(wakeWords);
-            w.setEndMs(vadEndMs);
         }
         WakeListener d = debugListener;
         if (d != null) {
             d.setWakeWords(wakeWords);
-            d.setEndMs(vadEndMs);
         }
     }
 
@@ -790,7 +806,7 @@ public class TalkActivity extends Activity {
                         });
                     }
                 });
-                wake.setEndMs(vadEndMs);
+                wake.setEndMs(wakeVadMs);
                 wake.start();
                 emit("{\"type\":\"standby\",\"state\":\"listening\",\"wake_word\":" + JSONObject.quote(wakeWords[0])
                         + ",\"wake_words\":" + new org.json.JSONArray(java.util.Arrays.asList(wakeWords)) + "}");
@@ -848,10 +864,10 @@ public class TalkActivity extends Activity {
                         emit("{\"type\":\"asr_debug\",\"state\":\"error\",\"detail\":" + JSONObject.quote(message) + "}");
                     }
                 });
-                debugListener.setEndMs(vadEndMs);
+                debugListener.setEndMs(wakeVadMs);
                 debugListener.setDebug(true);
                 debugListener.start();
-                emit("{\"type\":\"asr_debug\",\"state\":\"listening\",\"end_ms\":" + vadEndMs + "}");
+                emit("{\"type\":\"asr_debug\",\"state\":\"listening\",\"end_ms\":" + wakeVadMs + "}");
             });
         }, "asr-debug-load").start();
     }

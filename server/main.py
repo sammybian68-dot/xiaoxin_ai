@@ -1730,7 +1730,8 @@ def engine_select(request: Request, body: dict = Body(...)) -> dict:
         voices.set_engines(asr=body.get("asr"), tts=body.get("tts"), vad_end_ms=body.get("vad_end_ms"),
                            wake_word=body.get("wake_word"), wake_idle_s=body.get("wake_idle_s"),
                            wake_words=body.get("wake_words"), exit_words=body.get("exit_words"),
-                           hangup_tone=body.get("hangup_tone"), asr_hotwords=body.get("asr_hotwords"))
+                           hangup_tone=body.get("hangup_tone"), asr_hotwords=body.get("asr_hotwords"),
+                           wake_vad_ms=body.get("wake_vad_ms"))
     except voices.VoiceError as e:
         raise HTTPException(400, str(e))
     return engine_settings()

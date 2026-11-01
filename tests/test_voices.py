@@ -341,3 +341,12 @@ def test_hotwords_sent_to_doubao(client, fakes, monkeypatch):
     voices.set_engines(asr_hotwords=["黑神话悟空"])
     main._transcribe("doubao", b"\0" * 3200)
     assert seen["hotwords"] == ["黑神话悟空"]
+
+
+def test_wake_vad_separate_from_call_vad(client):
+    """待命时的端侧断句（只认唤醒词）和通话时的「停多久算说完」分开，默认 300，范围 150–1500。"""
+    e = client.get("/api/engines").json()
+    assert e["wake_vad_ms"] == 300 and e["vad_end_ms"] == 800 and e["wake_vad_ms_range"] == [150, 1500]
+    e = client.put("/api/engines", json={"wake_vad_ms": 250}).json()
+    assert e["wake_vad_ms"] == 250 and e["vad_end_ms"] == 800
+    assert client.put("/api/engines", json={"wake_vad_ms": 50}).status_code == 400

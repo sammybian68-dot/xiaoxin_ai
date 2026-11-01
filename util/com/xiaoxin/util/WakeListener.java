@@ -47,10 +47,10 @@ public final class WakeListener {
         wakeWords = words;
     }
 
-    private volatile int endMs = 800;
+    private volatile int endMs = 300;  // 待命断句（TalkActivity 用设置里的 wake_vad_ms 覆盖）
     private volatile boolean debug;
 
-    /** 停多久算说完，跟主系统设置（下一句起生效）。 */
+    /** 停多久算一句（待命时只为认唤醒词，短）；改了下一帧就换。 */
     public void setEndMs(int ms) {
         if (ms > 0) {
             endMs = ms;
@@ -190,7 +190,7 @@ public final class WakeListener {
             return;
         }
         int vadMs = endMs;
-        TenVad vad = new TenVad(vadMs);  // TEN-VAD，和 carHer2 同一套；「停多久算说完」跟主系统设置，改了马上换
+        TenVad vad = new TenVad(vadMs);  // TEN-VAD，和 carHer2 同一套；停多久算一句是设置 → 唤醒里单独的，改了马上换
         byte[] frame = new byte[Pcm.FRAME_BYTES];
         boolean[] woke = {false};
         try {

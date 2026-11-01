@@ -1265,6 +1265,7 @@ async function setStandby(on) {
   $("standby").setAttribute("aria-pressed", String(on));
   $("standby").textContent = on ? "👂 待命中" : "💤 待命";
   const e = await loadVoiceSettings();
+  native.setWakeVad?.(e.wake_vad_ms || 300);  // 先设好，再开待命（老 APK 没这个方法就用它自己的默认）
   native.standby(on, e.wake_words.join(","), e.exit_words.join(","), standbyUrl(), e.wake_idle_s, e.vad_end_ms, e.hangup_tone);
   if (on) toast(`说「${e.wake_words.join("」或「")}」就能叫我，比如「${e.wake_words[0]}，现在几点」`);
 }
@@ -1273,12 +1274,13 @@ async function setStandby(on) {
 let voiceSettings = null;
 async function loadVoiceSettings() {
   try { voiceSettings = await api("api/engines").then(json); }
-  catch (_) { voiceSettings = voiceSettings || { wake_words: ["小新同学", "你好小新"], exit_words: ["小新退下", "没事了小新"], wake_idle_s: 30, vad_end_ms: 800, hangup_tone: "down" }; }
+  catch (_) { voiceSettings = voiceSettings || { wake_words: ["小新同学", "你好小新"], exit_words: ["小新退下", "没事了小新"], wake_idle_s: 30, vad_end_ms: 800, wake_vad_ms: 300, hangup_tone: "down" }; }
   return voiceSettings;
 }
 function pushVoiceSettings(e) {
   voiceSettings = e;
   native?.setWords?.(e.wake_words.join(","), e.exit_words.join(","), e.wake_idle_s, e.vad_end_ms, e.hangup_tone);
+  native?.setWakeVad?.(e.wake_vad_ms || 300);
 }
 
 function onStandby(ev) {
@@ -1926,6 +1928,8 @@ function renderEngines(e) {
   renderWords("exit-list", e.exit_words);
   renderTones(e);
   $("set-wake-idle").value = e.wake_idle_s;
+  $("set-wake-vad").value = e.wake_vad_ms ?? 300;
+  [$("set-wake-vad").min, $("set-wake-vad").max] = e.wake_vad_ms_range || [150, 1500];
   [$("set-wake-idle").min, $("set-wake-idle").max] = e.wake_idle_s_range || [10, 300];
   [$("set-vad-end").min, $("set-vad-end").max] = e.vad_end_ms_range || [300, 2000];
   fill("set-asr", e.asr_options, e.asr, { paraformer: e.paraformer_ready });
@@ -2623,3 +2627,15 @@ async function claimJob(el, jid) {
     if (job) paintJob(el, job);
   } catch (_) { /* 拿不到就显示工具那句 */ }
 }
+
+// 设置 → 唤醒：待命时停多久算一句。存服务端（全家的 pad 一样），本机马上换（不用重开待命）
+$("set-wake-vad").addEventListener("change", async () => {
+  try {
+    const e = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wake_vad_ms: Number($("set-wake-vad").value) }) }).then(json);
+    voiceSettings = e;
+    native?.setWakeVad?.(e.wake_vad_ms);
+    $("set-wake-vad").value = e.wake_vad_ms;
+    toast(`待命时停 ${e.wake_vad_ms} 毫秒算一句，马上生效`);
+  } catch (err) { toast(err.message); loadEngines(); }
+});

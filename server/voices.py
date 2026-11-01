@@ -82,6 +82,8 @@ WAKE_WORD = WAKE_WORDS[0]
 # 2026-10-30 端侧 4 种声音实测：小新退下 / 没事了小新 / 小新再见 / 小新拜拜 都 4/4；「退下」「退下吧」只有 2/4
 # （认成 对的 / 推下 / 退一下吧 / 多一下吧），所以默认用带「小新」的。
 EXIT_WORDS = ["小新退下", "没事了小新"]
+WAKE_VAD_MS = 300            # 待命时端侧断句：只为认唤醒词，一句短话，300 ms 够了（2026-11-01 用户要求，和云端的分开）
+WAKE_VAD_RANGE = (150, 1500)
 WAKE_IDLE_S = 30  # 唤醒后这么久没人说话（小新也不在说）就挂断回待命；设置里可调。最后 10 秒 pad 上倒计时
 WAKE_IDLE_RANGE = (10, 300)
 PREVIEW = "你好，我是小新。今天的作业写完了吗？有不会的题可以来问我。"
@@ -116,6 +118,8 @@ def engines() -> dict:
             "hangup_tone": s.get("hangup_tone") if s.get("hangup_tone") in TONE_IDS else "down",
             "hangup_tones": [{"id": i, "name": n} for i, n in HANGUP_TONES],
             "wake_idle_s": s.get("wake_idle_s") if isinstance(s.get("wake_idle_s"), int) else WAKE_IDLE_S,
+            "wake_vad_ms": s.get("wake_vad_ms") if isinstance(s.get("wake_vad_ms"), int) else WAKE_VAD_MS,
+            "wake_vad_ms_range": list(WAKE_VAD_RANGE),
             "wake_idle_s_range": list(WAKE_IDLE_RANGE), "asr_hotwords": hotwords(),
             "asr_options": [{"id": i, "name": n, "desc": d} for i, n, d in ASR_ENGINES],
             "tts_options": [{"id": i, "name": n, "desc": d} for i, n, d in TTS_ENGINES]}
@@ -215,7 +219,8 @@ def _int_in(value, lo: int, hi: int, what: str) -> int:
 
 
 def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None, wake_word=None,
-                wake_idle_s=None, wake_words=None, exit_words=None, hangup_tone=None, asr_hotwords=None) -> dict:
+                wake_idle_s=None, wake_words=None, exit_words=None, hangup_tone=None, asr_hotwords=None,
+                wake_vad_ms=None) -> dict:
     fields = {}
     if hangup_tone is not None:
         if hangup_tone not in TONE_IDS:
@@ -229,6 +234,8 @@ def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None,
         fields["asr_hotwords"] = check_hotwords(asr_hotwords)
     if wake_idle_s is not None:
         fields["wake_idle_s"] = _int_in(wake_idle_s, *WAKE_IDLE_RANGE, "唤醒后多久没说话回待命（秒）")
+    if wake_vad_ms is not None:
+        fields["wake_vad_ms"] = _int_in(wake_vad_ms, *WAKE_VAD_RANGE, "待命时停多久算一句（毫秒）")
     if vad_end_ms is not None:
         fields["vad_end_ms"] = _int_in(vad_end_ms, *vad.END_MS_RANGE, "说完判定（毫秒）")
     if asr is not None:
