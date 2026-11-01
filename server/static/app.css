@@ -340,9 +340,22 @@ details.dl[open] > summary { display: none; }
 }
 .hold {
   flex: 1; height: 40px; border-radius: 14px; border: 0; background: #2a2f39; font-weight: 600;
-  user-select: none; -webkit-user-select: none; touch-action: none;
+  user-select: none; -webkit-user-select: none; touch-action: none; display: none;
+  align-items: center; justify-content: center; gap: 10px; color: var(--text);
 }
 .hold.active { background: var(--accent); color: #062b16; }
+.hold.cancel { background: var(--danger); color: #fff; }
+
+/* 说话优先：输入栏变成 ⌨ [大按钮] ＋，大按钮又高又宽（小朋友手指按得准、按住时手不挡字），输入框和发送收起 */
+body.voice-first .composer { align-items: center; padding: 8px; border-radius: 40px; }
+body.voice-first .composer textarea, body.voice-first #send { display: none; }
+body.voice-first .hold { display: flex; height: 72px; border-radius: 36px; font-size: 22px; background: #2f6fe4; color: #fff;
+  box-shadow: 0 4px 14px rgba(47, 111, 228, .35); }
+body.voice-first .hold .hold-mic { font-size: 28px; }
+body.voice-first .hold.active { background: var(--accent); color: #062b16; transform: scale(1.02); box-shadow: 0 0 0 6px rgba(61, 220, 132, .25); }
+body.voice-first .hold.cancel { background: var(--danger); color: #fff; box-shadow: 0 0 0 6px rgba(255, 90, 90, .25); }
+body.voice-first .composer .icon-btn { width: 52px; height: 52px; font-size: 22px; }
+body.voice-first .composer-wrap .pending { padding-bottom: 10px; }
 .send { width: 40px; height: 40px; flex: none; border-radius: 20px; border: 0; background: var(--accent); color: #062b16; font-size: 17px; }
 .send:disabled { background: #2a2f39; color: var(--muted); cursor: default; }
 .tray { display: flex; gap: 12px; padding-top: 10px; }
@@ -353,6 +366,9 @@ details.dl[open] > summary { display: none; }
 .tray-item span { font-size: 12px; color: var(--muted); }
 
 .rec-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: grid; place-items: end center; padding-bottom: 140px; z-index: 40; pointer-events: none; }
+body.voice-first .rec-overlay { padding-bottom: 130px; }
+body.voice-first .rec-card { width: min(560px, calc(100% - 32px)); }
+body.voice-first .rec-card .rec-live { font-size: 24px; max-height: 7.5em; }
 .rec-card { background: var(--accent); color: #062b16; border-radius: 22px; padding: 14px 18px 10px; text-align: center; width: min(340px, calc(100% - 32px)); }
 .rec-card.cancel { background: var(--danger); color: #fff; }
 .rec-card canvas { width: 100%; height: 64px; display: block; }

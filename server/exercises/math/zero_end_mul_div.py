@@ -18,8 +18,8 @@ TOPIC = "zero_end_mul_div"
 NAME = "末尾带 0 的乘除法口算"
 GRADE = "三年级下～四年级上"
 LAYOUT = "math"
-DEFAULT_COUNT = 100
-MAX_COUNT = 120
+DEFAULT_COUNT = 150  # 用户说平时一套 150 道（2026-11-01）
+MAX_COUNT = 180
 HELP = "整十整百乘一位数、十几乘整十、整十乘整十、整十整百除以一位数、除以整十；ops 可只要「×」或「÷」"
 
 

@@ -145,9 +145,10 @@ def render(ws: dict, answers: bool = False, kid_name: str = "") -> bytes:
     if ws["kind"] == "math":
         n = len(items)
         cols = 6 if n > 80 else 5 if n > 60 else 4 if n > 40 else 3
-        left = 70 if cols >= 5 else MARGIN  # 题多：边距收一点，一页放下
+        left = 60 if cols >= 5 else MARGIN  # 题多：边距收一点，一页放下
         rows = -(-n // cols)
-        row_h = min(100, (H - y - MARGIN) // rows)
+        bottom = 90 if n > 100 else MARGIN  # 150 道（6×25）：底边也收一点
+        row_h = min(100, (H - y - bottom) // rows)
         col_w = (W - 2 * left) // cols
         widest = max(len(it["q"]) for it in items)
         f = _font("sans", min(44, int(row_h * 0.5), int(col_w / (widest * 0.62 + 3))))

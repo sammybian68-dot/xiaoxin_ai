@@ -105,12 +105,15 @@
 
     <footer class="composer-wrap">
       <div id="pending" class="pending"></div>
+      <!-- 两种样子（body.voice-first 切）：
+           说话（孩子 pad 默认）：⌨  [ 🎤 按住说话（大）]  ＋      —— 小朋友主要靠说，大按钮好按、不用先切换
+           打字：                🎤  [ 输入框 ]  ＋  ➤            —— 点 ⌨ 才出来，键盘弹起 -->
       <div class="composer">
         <button id="ask" class="ask" type="button" aria-pressed="false" hidden
                 title="点亮后这条是问小新的，小新会回答；不点亮就是发给孩子">问小新</button>
-        <button id="mode" class="icon-btn" type="button" aria-label="切换到按住说话">🎤</button>
-        <textarea id="input" rows="1" placeholder="发消息，或点左边按住说话" aria-label="消息"></textarea>
-        <button id="hold" class="hold" type="button" hidden>按住 说话</button>
+        <button id="mode" class="icon-btn mode-btn" type="button" aria-label="打字">⌨</button>
+        <textarea id="input" rows="1" placeholder="打字…" aria-label="消息"></textarea>
+        <button id="hold" class="hold" type="button"><span class="hold-mic" aria-hidden="true">🎤</span><span class="hold-label">按住 说话</span></button>
         <button id="plus" class="icon-btn" type="button" aria-label="添加图片或文件" aria-expanded="false">＋</button>
         <button id="send" class="send" type="button" aria-label="发送" disabled>➤</button>
       </div>

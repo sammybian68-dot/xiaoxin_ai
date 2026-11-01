@@ -39,6 +39,8 @@ async function boot() {
   state.me = me.who;
   state.kids = me.kids;
   state.people = me.people || {};
+  const vm = localGet("voiceMode");
+  setVoiceMode(vm ? vm === "1" : (!!native && me.who.role !== "parent"), false);
   state.sendOrig = localGet("orig") === "1";
   // 设置页签按角色：小新本身的（语音引擎、唤醒词、音色、提示词、成员）只给管理员；家长、孩子只看「对话」和「登录与设备」
   for (const pane of ["talk", "wake", "voice", "prompt", "members"]) {
@@ -1036,14 +1038,21 @@ function drawLevels(canvas, levels, color) {
 
 // ---------------------------------------------------------------- 按住说话
 
-$("mode").addEventListener("click", () => {
-  state.voiceMode = !state.voiceMode;
-  $("input").hidden = state.voiceMode;
-  $("send").hidden = state.voiceMode;
-  $("hold").hidden = !state.voiceMode;
-  $("mode").textContent = state.voiceMode ? "⌨" : "🎤";
-  $("mode").setAttribute("aria-label", state.voiceMode ? "切换到打字" : "切换到按住说话");
-  if (!state.voiceMode) $("input").focus();
+// 说话 / 打字两种输入栏。孩子的 pad 默认说话（大按钮常驻），家长和电脑默认打字；切过就记住（这台设备）
+function setVoiceMode(on, focus = true) {
+  state.voiceMode = on;
+  document.body.classList.toggle("voice-first", on);
+  $("mode").textContent = on ? "⌨" : "🎤";
+  $("mode").setAttribute("aria-label", on ? "打字" : "按住说话");
+  localSet("voiceMode", on ? "1" : "0");
+  if (!on && focus) $("input").focus();
+  if (on) $("input").blur();
+}
+$("mode").addEventListener("click", () => setVoiceMode(!state.voiceMode));
+// 打字时内容空了、键盘收起：回到说话（孩子 pad 上）
+$("input").addEventListener("blur", () => {
+  if (state.me?.role !== "parent" && native && !$("input").value.trim() && !state.pending.length && localGet("voiceMode") !== "0")
+    setTimeout(() => { if (document.activeElement !== $("input")) setVoiceMode(true, false); }, 200);
 });
 
 // 按下就连 WebSocket、边说边传 PCM（100 ms 一包），服务端同时转给豆包。
@@ -1081,7 +1090,7 @@ holdBtn.addEventListener("pointerdown", (e) => {
   holdBtn.setPointerCapture(e.pointerId);
   Object.assign(hold, { startY: e.clientY, cancel: false, levels: [], buf: [], bufLen: 0, pendingAudio: [], text: "", final: null });
   holdBtn.classList.add("active");
-  holdBtn.textContent = "松开 发送";
+  holdBtn.querySelector(".hold-label").textContent = "松开 发送";
   $("rec-overlay").hidden = false;
   $("rec-overlay").querySelector(".rec-card").classList.remove("cancel");
   $("rec-hint").textContent = "松开发送 · 上滑取消";
@@ -1118,13 +1127,15 @@ holdBtn.addEventListener("pointermove", (e) => {
   if (cancel !== hold.cancel) {
     hold.cancel = cancel;
     $("rec-overlay").querySelector(".rec-card").classList.toggle("cancel", cancel);
+    holdBtn.classList.toggle("cancel", cancel);
+    holdBtn.querySelector(".hold-label").textContent = cancel ? "松开 取消" : "松开 发送";
     $("rec-hint").textContent = cancel ? "松开取消" : "松开发送 · 上滑取消";
   }
 });
 
 function endHoldUi() {
-  holdBtn.classList.remove("active");
-  holdBtn.textContent = "按住 说话";
+  holdBtn.classList.remove("active", "cancel");
+  holdBtn.querySelector(".hold-label").textContent = "按住 说话";
   $("rec-overlay").hidden = true;
 }
 
