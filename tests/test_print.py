@@ -33,11 +33,11 @@ def test_math_answers_are_right(ops, max_n, carry):
 
 
 def test_worksheet_pages_render_a4():
-    ws = worksheet.create("math", count=50, ops="+-", max=100, seed=2, for_kid="k")
+    ws = worksheet.create("arithmetic", count=50, ops="+-", max=100, seed=2, for_kid="k")
     im = Image.open(io.BytesIO(worksheet.render(ws)))
     assert im.size == (worksheet.W, worksheet.H)
     py = {"森林": "sēn lín", "太阳": "tài yáng", "朋友": "péng you"}  # 测试里没有字库，拼音给全
-    for kind, kw in (("pinyin", {"words": list(py), "pinyin": py}), ("dictation", {"words": "春天 花朵 小草"}),
+    for kind, kw in (("pinyin_words", {"words": list(py), "pinyin": py}), ("dictation", {"words": "春天 花朵 小草"}),
                      ("essay", {"topic": "我的妈妈"})):
         w = worksheet.create(kind, for_kid="k", **kw)
         assert Image.open(io.BytesIO(worksheet.render(w))).size == (worksheet.W, worksheet.H)
@@ -46,12 +46,12 @@ def test_worksheet_pages_render_a4():
 
 def test_worksheet_errors():
     with pytest.raises(worksheet.WorksheetError):
-        worksheet.create("pinyin", words=["abc"])
+        worksheet.create("pinyin_words", words=["abc"])
     with pytest.raises(worksheet.WorksheetError):
         worksheet.create("essay")
     with pytest.raises(worksheet.WorksheetError):
         worksheet.create("drawing")
-    w = worksheet.create("pinyin", words=["银行"], pinyin={"银行": "yín háng"})
+    w = worksheet.create("pinyin_words", words=["银行"], pinyin={"银行": "yín háng"})
     assert w["items"][0]["q"] == "yín háng"
 
 
@@ -149,7 +149,7 @@ def test_office_files_explain(client):
 def test_worksheet_then_print_latest(family, fakes):
     dau = family["女儿"]
     tid = dau.get("/api/thread").json()["id"]
-    fakes.llm_script = [("tool", "make_worksheet", {"kind": "math", "count": 30, "max": 20, "carry": False}),
+    fakes.llm_script = [("tool", "make_exercise", {"subject": "math", "topic": "arithmetic", "count": 30, "max": 20, "carry": False}),
                         ("text", "出好了")]
     dau.post(f"/api/conversations/{tid}/messages", json={"text": "出 30 道 20 以内的口算"})
     res = store.get(tid)["messages"][-1]["actions"][0]["result"]
@@ -282,7 +282,7 @@ def test_batch_all_ok_summary():
 def test_same_worksheet_twice_in_one_turn_prints_once(family, fakes):
     dau = family["女儿"]
     tid = dau.get("/api/thread").json()["id"]
-    fakes.llm_script = [("tool", "make_worksheet", {"kind": "math", "count": 20, "max": 10}), ("text", "好")]
+    fakes.llm_script = [("tool", "make_exercise", {"subject": "math", "topic": "arithmetic", "count": 20, "max": 10}), ("text", "好")]
     dau.post(f"/api/conversations/{tid}/messages", json={"text": "出题"})
     wid = "w_" + __import__("re").search(r"w_([0-9a-f]{16})", store.get(tid)["messages"][-1]["actions"][0]["result"]).group(1)
     n = len(printing.jobs(tid, 50))

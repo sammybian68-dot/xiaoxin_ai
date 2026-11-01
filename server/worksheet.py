@@ -34,8 +34,7 @@ FONTS = {
     "bold": ["/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "/System/Library/Fonts/STHeiti Medium.ttc",
              "/System/Library/Fonts/Hiragino Sans GB.ttc"],
 }
-KINDS = ("math", "pinyin", "dictation", "essay")
-MAX_ITEMS = {"math": 100, "pinyin": 30, "dictation": 40, "essay": 1}
+KINDS = ("math", "tian", "essay")  # 排版：口算、田字格（看拼音写词语、听写）、作文稿纸
 
 
 class WorksheetError(ValueError):
@@ -55,107 +54,27 @@ def _dir() -> Path:
     return store.DATA / "worksheets"
 
 
-# ---------------------------------------------------------------- 出题
-
-OPS = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "×": lambda a, b: a * b, "÷": lambda a, b: a // b}
-
+# ---------------------------------------------------------------- 出题（题型在 server/exercises/，这里只存和排版）
 
 def math_items(count: int, ops: str = "+-", max_n: int = 100, carry: bool = True, seed: int | None = None) -> list[dict]:
-    """口算题。ops 里的运算随机混；减法不出负数；除法都能除尽；max_n 是结果（加减）或乘数（乘除）的上限。
-    carry=False：加法不进位、减法不退位（一年级上册）。同一份里不重复。"""
-    ops = "".join(o for o in ops if o in OPS) or "+"
-    rnd = random.Random(seed)
-    out, seen, tries = [], set(), 0
-    while len(out) < count and tries < count * 200:
-        tries += 1
-        op = rnd.choice(ops)
-        if op in "+-":
-            a, b = rnd.randint(1, max_n), rnd.randint(1, max_n)
-            if op == "+":
-                if a + b > max_n:
-                    continue
-                if not carry and (a % 10 + b % 10 >= 10):
-                    continue
-            else:
-                a, b = max(a, b), min(a, b)
-                if a == b or (not carry and a % 10 < b % 10):
-                    continue
-        elif op == "×":
-            top = min(max_n, 9) if max_n <= 81 else min(max_n, 99)
-            a, b = rnd.randint(2, top), rnd.randint(2, 9)
-        else:
-            b = rnd.randint(2, 9)
-            q = rnd.randint(1, 9) if max_n <= 81 else rnd.randint(2, 99 // b)  # 表内除法：商 1–9
-            a = b * q
-        key = (a, op, b)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"q": f"{a} {op} {b} =", "a": str(OPS[op](a, b))})
-    return out
+    """老接口（测试用）：通用口算。"""
+    from server.exercises.math import arithmetic
+
+    return arithmetic.items(count, ops, max_n, carry, random.Random(seed))
 
 
-def _pinyin_of(word: str) -> str:
-    from server import hanzi
+def create(kind: str, *, subject: str = "", title: str = "", for_kid: str = "", **opts) -> dict:
+    """出一套题并存下来。kind 是 server/exercises 里登记的题型；老名字（math / pinyin）也认。
+    opts 里的 topic 是作文题目（不是题型）。"""
+    from server import exercises
 
-    parts = []
-    for ch in word:
-        e = hanzi.lookup(ch)
-        py = (e or {}).get("pinyin") or []
-        if not py:
-            return ""
-        parts.append(py[0] if isinstance(py, list) else str(py).split(",")[0])
-    return " ".join(parts)
-
-
-def _clean_words(words) -> list[str]:
-    if isinstance(words, str):
-        words = re.split(r"[\s,，、;；]+", words)
-    out = []
-    for w in words or []:
-        w = re.sub(r"[^一-鿿]", "", str(w))
-        if 1 <= len(w) <= 8 and w not in out:
-            out.append(w)
-    return out
-
-
-# ---------------------------------------------------------------- 存取
-
-def create(kind: str, *, title: str = "", for_kid: str = "", **opts) -> dict:
-    """出一份练习纸并存下来。返回 {id, kind, title, items, …}。参数不对抛 WorksheetError。"""
-    if kind not in KINDS:
-        raise WorksheetError(f"不认识的练习：{kind}")
-    ws = {"id": store._new_id(), "kind": kind, "for": for_kid, "created": time.time()}
-    opts.pop("answers", None)
-    if kind == "math":
-        count = max(10, min(int(opts.get("count") or 50), MAX_ITEMS["math"]))
-        max_n = max(10, min(int(opts.get("max") or 100), 1000))
-        items = math_items(count, str(opts.get("ops") or "+-"), max_n, bool(opts.get("carry", True)), opts.get("seed"))
-        if not items:
-            raise WorksheetError("按这个条件出不来题，换个范围")
-        ops_name = "".join({"+": "加", "-": "减", "×": "乘", "÷": "除"}[o] for o in dict.fromkeys(str(opts.get("ops") or "+-")) if o in OPS)
-        ws.update(title=title or f"{max_n} 以内{ops_name}法口算", items=items)
-    elif kind in ("pinyin", "dictation"):
-        words = _clean_words(opts.get("words"))[:MAX_ITEMS[kind]]
-        if not words:
-            raise WorksheetError("要给几个词语（汉字）")
-        given = opts.get("pinyin") or {}
-        items = []
-        for w in words:
-            py = (given.get(w) if isinstance(given, dict) else "") or _pinyin_of(w)
-            items.append({"q": py, "a": w})
-        if kind == "pinyin" and any(not it["q"] for it in items):
-            missing = "、".join(it["a"] for it in items if not it["q"])
-            raise WorksheetError(f"这些词查不到拼音，要在 pinyin 里给：{missing}")
-        ws.update(title=title or ("看拼音，写词语" if kind == "pinyin" else "听写"), items=items)
-    else:
-        topic = str(opts.get("topic") or "").strip()[:40]
-        if not topic:
-            raise WorksheetError("作文要有题目")
-        words = max(100, min(int(opts.get("words_count") or 300), 800))
-        ws.update(title=title or "作文", items=[{"q": topic, "a": str(opts.get("hint") or "")[:200]}],
-                  topic=topic, words_count=words)
-    ws["title"] = ws["title"][:30]
+    topic = {"math": "arithmetic", "pinyin": "pinyin_words"}.get(kind, kind)
+    try:
+        t, layout, items, extra = exercises.create(subject, topic, title=title, **opts)
+    except exercises.ExerciseError as e:
+        raise WorksheetError(str(e)) from e
+    ws = {"id": store._new_id(), "kind": layout, "topic": topic, "subject": exercises.TOPICS[topic].SUBJECT,
+          "for": for_kid, "created": time.time(), "title": t, "items": items, **extra}
     _dir().mkdir(parents=True, exist_ok=True)
     store._write_json(_dir() / f"{ws['id']}.json", ws)
     return ws
@@ -184,7 +103,8 @@ def latest(for_kid: str) -> dict | None:
 def summary(ws: dict) -> str:
     """给模型看的一行：出了什么、多少题（不给答案，免得它直接念答案）。"""
     n = len(ws["items"])
-    what = {"math": f"{n} 道口算", "pinyin": f"{n} 个词语", "dictation": f"{n} 个词语", "essay": "1 篇作文"}[ws["kind"]]
+    what = {"math": f"{n} 道口算", "tian": f"{n} 个词语", "pinyin": f"{n} 个词语", "dictation": f"{n} 个词语",
+            "essay": "1 篇作文"}[ws["kind"]]
     return f"练习纸 {ws['id']}「{ws['title']}」，{what}"
 
 
@@ -195,8 +115,8 @@ def _header(d, ws: dict, kid_name: str) -> int:
     y = MARGIN + 110
     f = _font("sans", 32)
     d.text((MARGIN, y), f"姓名：{kid_name or '________'}", font=f, fill=INK)
-    d.text((W // 2 - 120, y), "日期：____月____日", font=f, fill=INK)
-    d.text((W - MARGIN, y), "用时：______  对了：____ 题", font=f, fill=INK, anchor="ra")
+    d.text((MARGIN + 420, y), "日期：____月____日", font=f, fill=INK)
+    d.text((W - MARGIN, y), "用时：______  得分：______", font=f, fill=INK, anchor="ra")
     y += 70
     d.line([(MARGIN, y), (W - MARGIN, y)], fill=MUTED, width=2)
     return y + 50
@@ -223,17 +143,26 @@ def render(ws: dict, answers: bool = False, kid_name: str = "") -> bytes:
         d.text((W - MARGIN, MARGIN + 20), "答案", font=_font("bold", 40), fill=(200, 60, 60), anchor="ra")
     items = ws["items"]
     if ws["kind"] == "math":
-        cols = 4 if len(items) > 50 else 3
-        rows = -(-len(items) // cols)
-        row_h = min(90, (H - y - MARGIN) // rows)
-        f = _font("sans", min(46, int(row_h * 0.52)))
-        col_w = (W - 2 * MARGIN) // cols
+        n = len(items)
+        cols = 6 if n > 80 else 5 if n > 60 else 4 if n > 40 else 3
+        left = 70 if cols >= 5 else MARGIN  # 题多：边距收一点，一页放下
+        rows = -(-n // cols)
+        row_h = min(100, (H - y - MARGIN) // rows)
+        col_w = (W - 2 * left) // cols
+        widest = max(len(it["q"]) for it in items)
+        f = _font("sans", min(44, int(row_h * 0.5), int(col_w / (widest * 0.62 + 3))))
         for i, it in enumerate(items):
-            r, c = divmod(i, cols)
-            x, yy = MARGIN + c * col_w, y + r * row_h
-            text = it["q"] + (f" {it['a']}" if answers else "")
-            d.text((x, yy), text, font=f, fill=(200, 60, 60) if answers else INK)
-    elif ws["kind"] in ("pinyin", "dictation"):
+            c, r = divmod(i, rows)  # 竖着排：一列做完再下一列，和纸质卷子一样
+            x, yy = left + c * col_w, y + r * row_h
+            d.text((x, yy), it["q"], font=f, fill=INK)
+            qw = d.textlength(it["q"] + " ", font=f)
+            line_end = x + col_w - 18
+            if answers:
+                d.text((x + qw, yy), it["a"], font=f, fill=(200, 60, 60))
+            elif line_end - (x + qw) > 30:
+                base = yy + int(f.size * 1.05)
+                d.line([(x + qw, base), (line_end, base)], fill=INK, width=2)
+    elif ws["kind"] in ("tian", "pinyin", "dictation"):
         s = 120                                   # 田字格边长
         gap_x, gap_y = 44, 70
         per_row = max(1, (W - 2 * MARGIN + gap_x) // (max(len(it["a"]) for it in items) * s + gap_x))
@@ -247,12 +176,12 @@ def render(ws: dict, answers: bool = False, kid_name: str = "") -> bytes:
                 x, yy = MARGIN, yy + s + 60 + gap_y
             if yy + s + 60 > H - MARGIN:
                 break  # 一页放不下就截掉（工具那边已限制数量）
-            label = it["q"] if ws["kind"] == "pinyin" else f"{i + 1}."
-            d.text((x + w // 2, yy), label, font=fpy if ws["kind"] == "pinyin" else fno, fill=INK, anchor="mt")
+            label = it["q"]
+            d.text((x + w // 2, yy), label, font=fno if label.endswith(".") else fpy, fill=INK, anchor="mt")
             for k, ch in enumerate(it["a"]):
                 _tian(d, x + k * s, yy + 52, s, ch if answers else "", fch)
             x += w + gap_x
-        if ws["kind"] == "dictation" and not answers:
+        if ws.get("topic") == "dictation" and not answers:
             d.text((MARGIN, H - MARGIN + 30), "家长念词语，孩子写在格子里。", font=_font("sans", 28), fill=MUTED)
     else:  # 作文：题目 + 方格稿纸
         d.text((MARGIN, y), f"题目：{ws['topic']}", font=_font("bold", 44), fill=INK)

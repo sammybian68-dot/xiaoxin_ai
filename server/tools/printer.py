@@ -14,26 +14,27 @@ from server import printing, store, worksheet
 
 ctx: contextvars.ContextVar[dict] = contextvars.ContextVar("print_ctx", default={})
 
-_KIND = {"type": "string", "enum": list(worksheet.KINDS),
-         "description": "math 口算；pinyin 看拼音写词语；dictation 听写（只有格子）；essay 作文稿纸"}
+from server import exercises  # noqa: E402
+
 SPECS = [
     {"type": "function", "function": {
-        "name": "make_worksheet",
-        "description": "出一份练习纸（A4），在屏幕上显示预览。数学题由程序算，答案一定对；语文的词语由你按年级和课文挑好传进来。",
+        "name": "make_exercise",
+        "description": ("出题：按学科和题型出一套练习（A4 卷子），屏幕上显示预览，可以打印。数学题由程序按规则随机出，答案一定对；"
+                        "语文的词语、作文题由你按年级和课文挑好传进来。题型：\n" + exercises.catalog()),
         "parameters": {"type": "object", "properties": {
-            "kind": _KIND,
-            "title": {"type": "string", "description": "标题，可空，如「二年级上册 第三单元 生字」"},
-            "count": {"type": "integer", "description": "math：题数 10–100，默认 50"},
-            "ops": {"type": "string", "description": "math：运算，「+-」「×」「÷」「+-×÷」，默认「+-」"},
-            "max": {"type": "integer", "description": "math：加减是结果上限（20、100、1000），乘除是乘数上限（9 = 表内）"},
-            "carry": {"type": "boolean", "description": "math：加减是否允许进位退位，一年级上册用 false"},
-            "words": {"type": "array", "items": {"type": "string"},
-                      "description": "pinyin / dictation：词语，2–4 字为主，pinyin ≤30 个，dictation ≤40 个"},
-            "pinyin": {"type": "object", "description": "pinyin：多音字、查不到的给拼音，如 {\"银行\": \"yín háng\"}"},
-            "topic": {"type": "string", "description": "essay：作文题目"},
+            "subject": {"type": "string", "enum": list(exercises.SUBJECTS), "description": "学科：math 数学，chinese 语文"},
+            "topic": {"type": "string", "enum": list(exercises.TOPICS), "description": "题型，见上面的列表"},
+            "count": {"type": "integer", "description": "题数（不给用这个题型的默认，口算一般 50–100）"},
+            "title": {"type": "string", "description": "卷子标题，可空（用题型默认的，如「末尾带 0 的乘除法口算练习」）"},
+            "ops": {"type": "string", "description": "数学：只要哪些运算，如「×」「÷」「+-」「+-×÷」"},
+            "max": {"type": "integer", "description": "arithmetic：加减是结果上限（20、100、1000），乘除 9 = 表内"},
+            "carry": {"type": "boolean", "description": "arithmetic：加减是否允许进位退位，一年级上册用 false"},
+            "words": {"type": "array", "items": {"type": "string"}, "description": "pinyin_words / dictation：词语"},
+            "pinyin": {"type": "object", "description": "pinyin_words：多音字、查不到的给拼音，如 {\"银行\": \"yín háng\"}"},
+            "topic_text": {"type": "string", "description": "essay：作文题目"},
             "words_count": {"type": "integer", "description": "essay：字数，100–800，默认 300"},
             "hint": {"type": "string", "description": "essay：写作提示（只印在答案页，给家长看）"},
-        }, "required": ["kind"]},
+        }, "required": ["subject", "topic"]},
     }},
     {"type": "function", "function": {
         "name": "print_file",
@@ -61,7 +62,7 @@ SPECS = [
         "parameters": {"type": "object", "properties": {}},
     }},
 ]
-NAMES = {"make_worksheet", "print_file", "list_printables", "printer_status"}
+NAMES = {"make_exercise", "make_worksheet", "print_file", "list_printables", "printer_status"}  # make_worksheet：老名字，历史里有
 WID = re.compile(r"w_([0-9a-f]{16})")  # 工具结果里的练习纸 id
 
 
@@ -76,7 +77,7 @@ def _items(thread: str) -> list[dict]:
     out, seen = [], set()
     for m in reversed(msgs):
         for a in reversed(m.get("actions") or []):
-            m_ = WID.search(a.get("result") or "") if a.get("name") == "make_worksheet" else None
+            m_ = WID.search(a.get("result") or "") if a.get("name") in ("make_exercise", "make_worksheet") else None
             if m_:
                 wid = m_.group(1)
                 if wid not in seen:
@@ -99,6 +100,8 @@ def _items(thread: str) -> list[dict]:
 def _resolve(ref: str, thread: str) -> tuple[str, dict | None]:
     """file 参数 → (文件 id, 练习纸)。latest = 最近一份。"""
     ref = str(ref or "").strip()
+    if ref in ("", "latest", "最近", "刚才的") and ctx.get().get("made"):
+        ref = "w_" + ctx.get()["made"]  # 这一轮刚出的题（还没存进对话）
     if ref in ("", "latest", "最近", "刚才的"):
         items = _items(thread)
         if not items:
@@ -128,10 +131,14 @@ def run(name: str, arguments: str) -> str:
     c = ctx.get()
     thread, kid = c.get("thread", ""), c.get("kid", "")
     try:
-        if name == "make_worksheet":
-            kind = args.pop("kind", "")
-            ws = worksheet.create(kind, title=str(args.pop("title", "") or ""), for_kid=kid, **args)
+        if name in ("make_exercise", "make_worksheet"):
+            topic = args.pop("topic", "") or args.pop("kind", "")
+            if "topic_text" in args:
+                args["topic"] = args.pop("topic_text")  # 作文题目（topic 这个名字被题型占了）
+            ws = worksheet.create(topic, subject=str(args.pop("subject", "") or ""), title=str(args.pop("title", "") or ""),
+                                  for_kid=kid, **args)
             worksheet.page_file(ws, kid_name=c.get("kid_name", ""))
+            c["made"] = ws["id"]
             return (f"已出好 {worksheet.summary(ws)}（w_{ws['id']}），预览在屏幕上。\n"
                     f"播报：{ws['title']}出好了，要打印就说「打印出来」。")
         if name == "printer_status":
