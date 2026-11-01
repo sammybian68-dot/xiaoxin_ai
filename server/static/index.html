@@ -75,6 +75,7 @@
   <main class="main">
     <header class="top">
       <button id="back-chats" class="icon-btn" type="button" aria-label="返回聊天列表" hidden>‹</button>
+      <button id="call-kid" class="icon-btn call-kid" type="button" aria-label="视频打给孩子" title="视频打给孩子" hidden>📹</button>
       <button id="menu" class="icon-btn only-narrow" type="button" aria-label="打开群信息">☰</button>
       <div class="top-title">
         <img src="static/icon.png" alt="" class="avatar sm only-narrow">
@@ -173,6 +174,19 @@
   </div>
   <div id="debug-body" class="debug-body"></div>
 </aside>
+
+<!-- 视频来电（孩子的 pad）：全屏盖住一切，「爸爸来电」+ 倒计时圆环 5→1 到 0 自动接通；接通后换成通话画面（iframe 里是 calltest?embed=1） -->
+<div id="call" class="call" hidden>
+  <div class="call-ring" id="call-ring">
+    <div class="call-face"><svg viewBox="0 0 120 120" class="call-ringsvg" aria-hidden="true"><circle cx="60" cy="60" r="54" class="call-track"/><circle cx="60" cy="60" r="54" class="call-prog" id="call-prog"/></svg>
+      <span id="call-avatar">👨</span></div>
+    <h2 id="call-title">爸爸来电</h2>
+    <div id="call-count" class="call-count">5</div>
+    <p id="call-sub" class="call-sub">秒后自动接通</p>
+    <div class="call-btns"><button type="button" id="call-yes" class="call-yes">📹 现在接</button><button type="button" id="call-no" class="call-no">✋ 先不接</button></div>
+  </div>
+  <iframe id="call-frame" class="call-frame" allow="camera; microphone; autoplay" hidden></iframe>
+</div>
 
 <!-- 从微信等分享进来：发给哪个孩子（只有一个孩子就直接是他）、附一句话、要不要原图 -->
 <dialog id="share" class="share" aria-labelledby="share-title">

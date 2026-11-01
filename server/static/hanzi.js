@@ -298,7 +298,9 @@ function hzPhrases(data) {
 function hzPrefetch(data) {
   const list = hzPhrases(data);
   if (native?.phrasePrefetch) { native.phrasePrefetch(JSON.stringify(list)); return; }
-  for (const t of list) hzWebPcm(t).catch(() => {});
+  // 浏览器（家长端、电脑）：不预取。一张笔顺卡二十来句 TTS，每句 100 KB，历史里几张卡就是几 MB，
+  // 全走 ECS 的 5 Mbps，把同时发的请求（打视频、发消息）堵好几秒（2026-11-01 实测打视频卡 6 秒）。要放时再拉
+  void list;
 }
 
 function quizResultParts(data, wrong, total) {

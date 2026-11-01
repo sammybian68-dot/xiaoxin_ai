@@ -1829,6 +1829,66 @@ def call_ice(who: str = "xiaoxin") -> dict:
     return call.ice_servers(who)
 
 
+def _call_settings() -> dict:
+    s = store.settings()
+    sec = s.get("call_auto_answer_s")
+    return {"auto_answer_s": sec if isinstance(sec, int) else 5, "quiet": s.get("call_quiet") or ["21:30", "07:00"]}
+
+
+def _in_quiet(quiet) -> bool:
+    """免打扰时段（默认 21:30–07:00）：不倒计时自动接，只响铃等孩子手动接。"""
+    now = clock.now().strftime("%H:%M")
+    a, b = (quiet or ["21:30", "07:00"])[:2]
+    return (a <= now or now < b) if a > b else (a <= now < b)
+
+
+@app.post("/api/call")
+def call_start(request: Request, body: dict = Body(default={})) -> dict:
+    """家长打给孩子：开房间、推 call.invite 给孩子的 pad。返回 {call, ice}（家长这边直接进房间等）。"""
+    from server.family import call, hub
+
+    w = need(request, "parent")
+    k = kid_for(request, str(body.get("kid") or ""))
+    caller = {"id": w.id, "name": "管理员" if w.kind == "admin" else w.member["name"]}
+    try:
+        c = call.start(k["thread"], caller, k)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    cs = _call_settings()
+    auto = 0 if _in_quiet(cs["quiet"]) else cs["auto_answer_s"]
+    c = call.update(c["id"], auto_answer_s=auto)
+    hub.publish(k["thread"], {"type": "call.invite", "call": c})
+    return {"call": c, "ice": call.ice_servers(w.id)}
+
+
+@app.post("/api/call/{cid}/{action}")
+def call_action(request: Request, cid: str, action: str) -> dict:
+    """answer（孩子接 / 倒计时到）、reject（孩子不接）、end（任一方挂断）。结束时线程里记一条。"""
+    from server.family import call, hub
+
+    c = call.get(cid)
+    if c is None:
+        raise HTTPException(404, "没有这通电话")
+    own_thread(request, c["thread"])
+    now = time.time()
+    if action == "answer" and c["state"] == "ringing":
+        c = call.update(cid, state="connected", answered=now)
+    elif action == "reject" and c["state"] == "ringing":
+        c = call.update(cid, state="rejected", ended=now)
+    elif action == "end" and c["state"] in ("ringing", "connected"):
+        c = call.update(cid, state="ended" if c["state"] == "connected" else "missed", ended=now)
+    elif action not in ("answer", "reject", "end"):
+        raise HTTPException(400, "action 只能是 answer / reject / end")
+    hub.publish(c["thread"], {"type": "call." + c["state"], "call": c})
+    if c["state"] in ("ended", "rejected", "missed"):
+        secs = int((c["ended"] or now) - (c["answered"] or now)) if c["answered"] else 0
+        what = {"ended": f"视频通话 {secs // 60} 分 {secs % 60} 秒" if secs >= 60 else f"视频通话 {secs} 秒",
+                "rejected": "视频通话：孩子没接（先不接）", "missed": "视频通话：没接通"}[c["state"]]
+        store.append(c["thread"], {"role": "user", "text": "📹 " + what, "from": c["caller"], "via": "call",
+                                   "to": "kid", "speak": False, "call": c["id"]})
+    return {"call": c}
+
+
 @app.websocket("/api/call/{room}")
 async def call_signal(ws: WebSocket, room: str) -> None:
     """信令：同一个房间最多两端，消息原样转给另一端。"""

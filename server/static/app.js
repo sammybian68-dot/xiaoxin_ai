@@ -56,6 +56,7 @@ async function boot() {
   if (state.me.role === "parent" || (state.me.kind === "admin" && matchMedia("(max-width: 820px)").matches && state.kids.length > 1)) {
     document.body.classList.add("parent-mode");
     $("ask").hidden = false;
+    $("call-kid").hidden = false;
     $("input").placeholder = "发给孩子…（开头说「小新，」就是问小新）";
     await showChats();
     setTimeout(() => window.xiaoxinShareArrived(), 0);  // 被微信「分享」拉起来的：弹「发给孩子」
@@ -64,7 +65,7 @@ async function boot() {
   }
   if (location.hash.startsWith("#settings")) openSettings(location.hash.split("/")[1]);
   if (native) api("api/voices").then(json).then((c) => syncVoiceToNative(c.current)).catch(() => {});
-  pollClock();  // clock.js：长轮询闹钟状态，模型或别的设备改了马上同步
+  if (state.me.role !== "parent") pollClock();  // clock.js：长轮询闹钟状态（家长端没有闹钟面板，不占连接）
 }
 
 function localGet(k) { try { return localStorage.getItem("xiaoxin." + k); } catch (_) { return null; } }
@@ -128,6 +129,7 @@ function hubConnect() {
     else if ((ev.type === "msg" || ev.type === "msg.update") && ev.thread === state.conv?.id) hubMessage(ev.message, ev.type);
     if (ev.type === "presence") { state.online = new Set(ev.online); renderSide(); }
     if (ev.type === "print") onPrintEvent(ev.job);
+    if (ev.type?.startsWith("call.")) onCallEvent(ev);
     if (ev.type === "print.summary" && ev.thread === state.conv?.id) onPrintSummary(ev);
     if (ev.type === "file" && ev.thread === state.conv?.id) hubFile(ev.file);
   };
@@ -2649,4 +2651,115 @@ $("set-wake-vad").addEventListener("change", async () => {
     $("set-wake-vad").value = e.wake_vad_ms;
     toast(`待命时停 ${e.wake_vad_ms} 毫秒算一句，马上生效`);
   } catch (err) { toast(err.message); loadEngines(); }
+});
+
+
+// ---------------------------------------------------------------- 视频通话（docs/architecture.md 8.3）
+// 家长：群里点 📹 → POST api/call → 自己先进房间等（全屏通话界面）。
+// 孩子 pad：hub 来 call.invite → 全屏「爸爸来电」，倒计时 5→1 到 0 自动接通（免打扰时段只响铃，要手动接）；
+//   接 → POST answer → 进同一个房间（calltest?embed=1，WebRTC：先 P2P，打不通走 ECS 中继）；不接 → POST reject。
+// 来电时停待命、让出麦克风（native.standby(false)），挂断后恢复。任一方挂断 → POST end，线程里记一条「视频通话 N 秒」。
+const call = { cur: null, timer: null, left: 0, wasStandby: false, ring: null };
+
+function callUrl(c) {
+  const q = new URLSearchParams({ room: c.room, embed: "1", name: c.caller === state.me?.id ? (state.kids.find((k) => k.id === c.kid)?.name || "孩子") : c.caller_name,
+                                  who: state.me?.id || "x" });
+  return `calltest?${q}`;
+}
+
+function showCall(mode) {
+  $("call").hidden = false;
+  $("call-ring").hidden = mode !== "ring";
+  $("call-frame").hidden = mode !== "talk";
+}
+
+function closeCall() {
+  clearInterval(call.timer);
+  call.ring?.pause?.();
+  $("call-frame").src = "about:blank";
+  $("call").hidden = true;
+  call.cur = null;
+  if (call.wasStandby) { call.wasStandby = false; setStandby(true); }  // 恢复待命
+}
+
+async function enterCallRoom(c) {
+  if (standby.on) { call.wasStandby = true; await setStandby(false); }  // 家长那边（或没响铃直接接）：也让出麦克风
+  if (talk.on) hangUp();
+  stopSpeaking();
+  $("call-frame").src = callUrl(c);
+  showCall("talk");
+}
+
+function onCallEvent(ev) {
+  const c = ev.call;
+  if (ev.type === "call.invite") {
+    if (state.me?.role === "parent" || c.kid !== (state.conv?.kid)) return;  // 只有被叫的孩子的 pad 响
+    call.cur = c;
+    const p = state.people?.[c.caller];
+    $("call-avatar").textContent = p?.avatar || "🧑";
+    $("call-title").textContent = `${c.caller_name}来电`;
+    if (talk.on) hangUp();  // 正在和小新自由对话：先打断
+    stopSpeaking();
+    if (standby.on) { call.wasStandby = true; setStandby(false); }  // 一响就停待命：不然唤醒监听占着麦克风，铃声里说的话还会被当成唤醒
+    showCall("ring");
+    native?.wakeScreen?.();
+    speak(`${c.caller_name}打视频来啦`, document.createElement("button"));
+    const auto = c.auto_answer_s || 0;
+    call.left = auto;
+    $("call-count").hidden = !auto;
+    $("call-sub").textContent = auto ? "秒后自动接通" : "现在是休息时间，要接就点「现在接」";
+    const R = 2 * Math.PI * 54;
+    $("call-prog").style.strokeDasharray = R;
+    $("call-prog").style.strokeDashoffset = 0;
+    if (auto) {
+      $("call-count").textContent = auto;
+      clearInterval(call.timer);
+      call.timer = setInterval(() => {
+        call.left--;
+        $("call-count").textContent = Math.max(0, call.left);
+        $("call-prog").style.strokeDashoffset = R * (1 - Math.max(0, call.left) / auto);
+        if (typeof hzPlay === "function") hzPlay(["#tick"]);
+        if (call.left <= 0) { clearInterval(call.timer); answerCall(); }
+      }, 1000);
+    }
+    return;
+  }
+  if (!call.cur || c.id !== call.cur.id) return;
+  if (ev.type === "call.rejected" && state.me?.role === "parent") { toast(`${state.kids.find((k) => k.id === c.kid)?.name || "孩子"}现在不方便`); closeCall(); }
+  if (ev.type === "call.missed" || ev.type === "call.ended") { if (!$("call").hidden) closeCall(); }
+}
+
+async function answerCall() {
+  const c = call.cur;
+  if (!c) return;
+  clearInterval(call.timer);
+  try { await api(`api/call/${c.id}/answer`, { method: "POST" }); } catch (e) { toast(e.message); closeCall(); return; }
+  enterCallRoom(c);
+}
+
+$("call-yes").addEventListener("click", answerCall);
+$("call-no").addEventListener("click", async () => {
+  const c = call.cur;
+  clearInterval(call.timer);
+  if (c) { try { await api(`api/call/${c.id}/reject`, { method: "POST" }); } catch (_) { /* 已经结束了 */ } }
+  closeCall();
+});
+
+// 家长：打给这个群的孩子
+$("call-kid").addEventListener("click", async () => {
+  try {
+    const d = await api("api/call", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kid: state.conv?.kid }) }).then(json);
+    call.cur = d.call;
+    enterCallRoom(d.call);
+    toast(`正在打给${state.kids.find((k) => k.id === d.call.kid)?.name || "孩子"}…`);
+  } catch (e) { toast(e.message); }
+});
+
+// 通话界面里挂断（calltest 发来的）：告诉服务端结束，关掉
+window.addEventListener("message", async (e) => {
+  if (e.origin !== location.origin || e.data?.xiaoxinCall !== "ended") return;
+  const c = call.cur;
+  if (c) { try { await api(`api/call/${c.id}/end`, { method: "POST" }); } catch (_) { /* 对方先挂了 */ } }
+  closeCall();
 });

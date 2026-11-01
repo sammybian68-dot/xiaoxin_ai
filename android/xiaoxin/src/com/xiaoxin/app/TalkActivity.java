@@ -372,6 +372,17 @@ public class TalkActivity extends Activity {
             runOnUiThread(() -> applyWords(wakes, exits, idleS, endMs, tone));
         }
 
+        /** 视频来电：亮屏、盖住锁屏、退出熄屏（和闹钟响一样）。 */
+        @JavascriptInterface
+        public void wakeScreen() {
+            runOnUiThread(() -> {
+                setShowWhenLocked(true);
+                setTurnScreenOn(true);
+                leaveNight();
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            });
+        }
+
         /** 待命时停多久算一句（毫秒）：马上换（WakeListener 下一帧就用新的）。 */
         @JavascriptInterface
         public void setWakeVad(int ms) {

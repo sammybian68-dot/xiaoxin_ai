@@ -586,3 +586,24 @@ a[data-fid] .orig { position: absolute; right: 6px; bottom: 6px; background: rgb
 .model-opt:has(input:checked) { border-color: #2f6fe4; background: rgba(47, 111, 228, .12); }
 .model-opt span { display: flex; flex-direction: column; gap: 2px; }
 .model-opt small { color: var(--muted); font-size: 12px; }
+
+/* 视频来电 / 通话：盖住一切 */
+.call { position: fixed; inset: 0; z-index: 90; background: #0b0d12; color: #fff; display: flex; }
+.call[hidden] { display: none; }
+.call-ring { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.call-ring[hidden] { display: none; }
+.call-face { position: relative; width: 180px; height: 180px; display: grid; place-items: center; }
+.call-face span { font-size: 92px; }
+.call-ringsvg { position: absolute; inset: 0; transform: rotate(-90deg); }
+.call-track { fill: none; stroke: #2a2f39; stroke-width: 6; }
+.call-prog { fill: none; stroke: #3ddc84; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+.call h2 { margin: 6px 0 0; font-size: 34px; }
+.call-count { font-size: 96px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.call-count[hidden] { display: none; }
+.call-sub { margin: 0; color: #aab; font-size: 18px; }
+.call-btns { display: flex; gap: 28px; margin-top: 24px; }
+.call-btns button { min-width: 180px; height: 72px; border-radius: 36px; border: 0; font-size: 24px; color: #fff; }
+.call-yes { background: #2fbf6f; }
+.call-no { background: #3a3f4a; }
+.call-frame { flex: 1; border: 0; width: 100%; height: 100%; background: #000; }
+.call-frame[hidden] { display: none; }

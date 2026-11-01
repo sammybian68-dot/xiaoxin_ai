@@ -19,12 +19,23 @@
   #btns { display: flex; gap: 10px; margin-bottom: 8px; }
   button { font: inherit; font-size: 15px; padding: 8px 16px; border-radius: 10px; border: 0; background: #2a2f3a; color: var(--text); }
   button.red { background: #e5484d; color: #fff; }
+  /* embed=1：嵌在小新里当通话界面（来电接通后）。调试面板收起，底下一排大按钮，左上对方名字 + 通话时长 */
+  body.embed #panel { display: none; }
+  #bar { display: none; }
+  body.embed #bar { display: flex; position: absolute; left: 0; right: 0; bottom: 28px; justify-content: center; gap: 28px; }
+  #bar button { width: 76px; height: 76px; border-radius: 50%; font-size: 30px; padding: 0; }
+  #bar #end { width: 92px; height: 92px; font-size: 36px; background: #e5484d; }
+  #who { display: none; }
+  body.embed #who { display: block; position: absolute; left: 20px; top: 16px; font: 600 20px system-ui; text-shadow: 0 1px 4px #000; }
+  #who small { display: block; font-weight: 400; font-size: 15px; opacity: .85; }
 </style>
 </head>
 <body>
 <main>
   <video id="remote" autoplay playsinline></video>
   <video id="local" autoplay playsinline muted></video>
+  <div id="who"><span id="who-name"></span><small id="who-time">接通中…</small></div>
+  <div id="bar"><button id="mute" title="静音">🎤</button><button id="end" class="red" title="挂断">✕</button><button id="flip" title="换摄像头">🔄</button></div>
   <div id="panel">
     <div id="btns"><button id="relay">只走中继：关</button><button id="hang" class="red">挂断</button></div>
     <div id="st">准备中…</div>
@@ -35,6 +46,8 @@
 // 阶段 0 的 WebRTC 最小 demo：两端打开同一个 ?room=xxx，先到的等，后到的发 offer。
 // ?relay=1 强制只走 TURN（验证 ECS 中继）。码率上限 1.2 Mbps（ECS 只有 5 Mbps）。状态每秒刷新，也写进 window.callStats 给 adb 读。
 const q = new URLSearchParams(location.search);
+if (q.get("embed") === "1") document.body.classList.add("embed");
+const who = q.get("name") || "";
 const room = q.get("room") || "demo";
 let forceRelay = q.get("relay") === "1";
 const $ = (id) => document.getElementById(id);
@@ -75,7 +88,7 @@ async function start() {
     else if (d.type === "offer") { await pc.setRemoteDescription(d.sdp); await capBitrate(); const a = await pc.createAnswer(); await pc.setLocalDescription(a); send({ type: "answer", sdp: pc.localDescription }); st.phase = "已应答"; }
     else if (d.type === "answer") { await pc.setRemoteDescription(d.sdp); await capBitrate(); st.phase = "已接通"; }
     else if (d.type === "ice") { try { await pc.addIceCandidate(d.c); } catch (_) { /* 早到的候选 */ } }
-    else if (d.type === "bye") { st.phase = "对方挂了"; $("remote").srcObject = null; }
+    else if (d.type === "bye") { st.phase = "对方挂了"; $("remote").srcObject = null; if (q.get("embed") === "1") hangup(true); }
     else if (d.type === "full") { st.err = "房间满了"; }
     show();
   };
@@ -151,7 +164,37 @@ async function stats() {
   show();
 }
 
-$("hang").addEventListener("click", () => { pc?.close(); ws?.close(); stream?.getTracks().forEach((t) => t.stop()); st.phase = "已挂断"; show(); });
+function hangup(byPeer = false) {
+  pc?.close(); ws?.close(); stream?.getTracks().forEach((t) => t.stop()); st.phase = "已挂断"; show();
+  parent?.postMessage({ xiaoxinCall: "ended", byPeer }, location.origin);  // 嵌在小新里：告诉外面关掉通话界面
+}
+$("hang").addEventListener("click", () => hangup());
+$("end").addEventListener("click", () => hangup());
+$("mute").addEventListener("click", () => {
+  const t = stream?.getAudioTracks()[0];
+  if (!t) return;
+  t.enabled = !t.enabled;
+  $("mute").textContent = t.enabled ? "🎤" : "🔇";
+});
+let facing = "user";
+$("flip").addEventListener("click", async () => {
+  facing = facing === "user" ? "environment" : "user";
+  try {
+    const s2 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } } });
+    const nt = s2.getVideoTracks()[0];
+    const sender = pc.getSenders().find((x) => x.track?.kind === "video");
+    await sender?.replaceTrack(nt);
+    stream.getVideoTracks()[0]?.stop();
+    stream.removeTrack(stream.getVideoTracks()[0]); stream.addTrack(nt);
+    $("local").srcObject = stream;
+  } catch (_) { /* 没有后摄就算了 */ }
+});
+$("who-name").textContent = who;
+let connectedAt = 0;
+setInterval(() => {
+  if (st.conn === "connected" && !connectedAt) connectedAt = Date.now();
+  if (connectedAt) { const s = Math.floor((Date.now() - connectedAt) / 1000); $("who-time").textContent = `${String(s / 60 | 0).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; }
+}, 1000);
 $("relay").addEventListener("click", () => { const u = new URL(location.href); u.searchParams.set("relay", forceRelay ? "0" : "1"); location.href = u.href; });
 start();
 </script>

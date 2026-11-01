@@ -74,3 +74,49 @@ async def relay(ws: WebSocket, room: str) -> None:
                 pass
         if not peers:
             _rooms.pop(room, None)
+
+
+# ---------------------------------------------------------------- 来电（家长打给孩子的 pad，docs/architecture.md 8.3）
+# 家长 POST /api/call → 中枢开一个房间、hub 推 call.invite 给孩子的 pad（带倒计时秒数）→ pad 全屏来电、倒计时到 0 自动接通
+# （或孩子先点接 / 拒）→ 双方各自打开 /calltest?room=…（WebRTC，媒体 P2P / ECS 中继）→ 任一方挂断 POST /api/call/{id}/end。
+# 同时只允许一通（ECS 只有 5 Mbps）。通话本身不录，线程里只记一条：谁打的、接没接、多长。
+
+import secrets as _secrets
+import threading as _threading
+
+_calls: dict[str, dict] = {}
+_calls_lock = _threading.Lock()
+RING_S = 45          # 响这么久没人接（倒计时关了或者 pad 不在）就算未接
+AUTO_ANSWER_S = 5    # 默认倒计时 5 秒自动接通（设置里可改 3–10，关掉就只响铃）
+
+
+def active() -> dict | None:
+    with _calls_lock:
+        for c in _calls.values():
+            if c["state"] in ("ringing", "connected"):
+                return c
+    return None
+
+
+def start(thread: str, caller: dict, kid: dict) -> dict:
+    import time
+
+    if active():
+        raise ValueError("正在通话中，等这一通结束")
+    cid = _secrets.token_hex(6)
+    c = {"id": cid, "room": "call" + cid, "thread": thread, "caller": caller["id"], "caller_name": caller["name"],
+         "kid": kid["id"], "state": "ringing", "created": time.time(), "answered": None, "ended": None}
+    with _calls_lock:
+        _calls[cid] = c
+    return c
+
+
+def get(cid: str) -> dict | None:
+    return _calls.get(cid)
+
+
+def update(cid: str, **fields) -> dict:
+    with _calls_lock:
+        c = _calls[cid]
+        c.update(fields)
+        return dict(c)
