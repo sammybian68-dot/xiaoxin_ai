@@ -479,6 +479,15 @@ function showAction(row, a) {
     }
     return;
   }
+  if (a.name === "show_word_writing" && !/^失败/.test(a.result || "") && typeof englishCard === "function") {
+    try {
+      const args = JSON.parse(a.arguments || "{}");
+      const card = englishCard(String(args.word || ""), String(args.meaning || ""));
+      row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text"));
+      requestAnimationFrame(() => revealRow(row));
+      return;
+    } catch (_) { /* 参数坏了就显示文字 */ }
+  }
   if (a.name === "show_stroke_order") {  // 笔顺：直接插一张能动的卡（hanzi.js）
     const card = typeof strokeCardFor === "function" ? strokeCardFor(a) : null;
     if (card) { row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text")); requestAnimationFrame(() => revealRow(row)); return; }

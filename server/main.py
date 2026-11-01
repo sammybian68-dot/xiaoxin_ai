@@ -211,7 +211,7 @@ def _index_html() -> Response:
     """index.html 里的 app.js / app.css 地址带上文件修改时间，部署后浏览器和 pad 一定拿新的。"""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     for name in ("app.js", "app.css", "clock.js", "clock.css", "hanzi.js", "hanzi.css", "timecard.js", "timecard.css",
-                 "alarmcard.js", "alarmcard.css"):
+                 "alarmcard.js", "alarmcard.css", "letters.js", "english.js", "english.css"):
         v = int((STATIC / name).stat().st_mtime)
         html = html.replace(f'static/{name}"', f'static/{name}?v={v}"')
     return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})

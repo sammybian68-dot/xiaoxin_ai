@@ -1,0 +1,24 @@
+/* 英文书写卡：四线格、一笔一笔演示、跟着写 */
+.en-card { background: #fffaf0; color: #222; border-radius: 18px; padding: 16px 18px; max-width: 640px; display: flex; flex-direction: column; gap: 10px; }
+.en-top { display: flex; align-items: baseline; gap: 12px; }
+.en-word { font-size: 28px; font-family: "Comic Sans MS", "Chalkboard SE", ui-rounded, system-ui, sans-serif; letter-spacing: 1px; }
+.en-mean { color: #8a6d3b; font-size: 16px; }
+.en-say { margin-left: auto; border: 0; background: #f1e6cf; border-radius: 16px; padding: 4px 10px; font-size: 16px; color: #222; }
+.en-board { background: #fff; border: 2px solid #f0c9a8; border-radius: 12px; padding: 8px 6px; touch-action: none; }
+.en-card.quiz .en-board { border-color: #2f6fe4; box-shadow: 0 0 0 4px rgba(47, 111, 228, .12); }
+.en-svg { width: 100%; height: auto; max-height: 240px; display: block; }
+.en-line { stroke: #9ec5ea; stroke-width: .6; }
+.en-line.base { stroke: #e27a7a; stroke-width: .8; }
+.en-ghost path { fill: none; stroke: #e8e2d6; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+.en-card.quiz .en-ghost path { stroke: #eee7da; }
+.en-stroke { fill: none; stroke-width: 4.5; stroke-linecap: round; stroke-linejoin: round; }
+.en-stroke.live { stroke: #e0453a; }
+.en-stroke:not(.live):not(.mine) { stroke: #2b2b2b; }
+.en-stroke.mine { stroke: #2f6fe4; stroke-width: 4; }
+.en-stroke.mine.wrong { stroke: #e0453a; }
+.en-start { fill: #e0453a; }
+.en-now { font-size: 17px; min-height: 1.5em; }
+.en-now .en-bad { color: #d23b31; font-weight: 600; }
+.en-btns { display: flex; gap: 10px; }
+.en-btns button { padding: 9px 16px; border-radius: 20px; border: 0; background: #f1e6cf; color: #222; font-size: 15px; }
+.en-btns .primary { background: #e0453a; color: #fff; }
