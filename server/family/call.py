@@ -86,12 +86,46 @@ import threading as _threading
 
 _calls: dict[str, dict] = {}
 _calls_lock = _threading.Lock()
+
+
+def _path():
+    from server import store
+
+    return store.DATA / "calls.json"
+
+
+def _load() -> None:
+    """服务重启（部署）后接着认得正在打的电话：不然挂断时 404，群里也不记这通（2026-11-01 实测）。"""
+    import json
+
+    try:
+        data = json.loads(_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    _calls.update({c["id"]: c for c in data if c.get("state") in ("ringing", "connected")})
+
+
+def _save() -> None:
+    from server import store
+
+    store._write_json(_path(), [c for c in _calls.values() if c["state"] in ("ringing", "connected")])
+
+
+_load()
 RING_S = 45          # 响这么久没人接（倒计时关了或者 pad 不在）就算未接
 AUTO_ANSWER_S = 5    # 默认倒计时 5 秒自动接通（设置里可改 3–10，关掉就只响铃）
 
 
 def active() -> dict | None:
+    """正在打的那一通。响了 RING_S 没人接、或者接通超过 3 小时（两边都没正常挂断）就当它结束了，免得一直占着打不了。"""
+    import time
+
     with _calls_lock:
+        for c in list(_calls.values()):
+            if c["state"] == "ringing" and time.time() - c["created"] > RING_S:
+                c["state"] = "missed"
+            elif c["state"] == "connected" and time.time() - (c.get("answered") or c["created"]) > 3 * 3600:
+                c["state"] = "ended"
         for c in _calls.values():
             if c["state"] in ("ringing", "connected"):
                 return c
@@ -108,6 +142,7 @@ def start(thread: str, caller: dict, kid: dict) -> dict:
          "kid": kid["id"], "state": "ringing", "created": time.time(), "answered": None, "ended": None}
     with _calls_lock:
         _calls[cid] = c
+        _save()
     return c
 
 
@@ -119,4 +154,5 @@ def update(cid: str, **fields) -> dict:
     with _calls_lock:
         c = _calls[cid]
         c.update(fields)
+        _save()
         return dict(c)

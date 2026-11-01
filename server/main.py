@@ -1868,6 +1868,8 @@ def call_action(request: Request, cid: str, action: str) -> dict:
 
     c = call.get(cid)
     if c is None:
+        if action == "end":
+            return {"call": {"id": cid, "state": "ended"}}  # 已经结束了（对方先挂、或者太久以前）：挂断照样算成功
         raise HTTPException(404, "没有这通电话")
     own_thread(request, c["thread"])
     now = time.time()
@@ -1879,6 +1881,8 @@ def call_action(request: Request, cid: str, action: str) -> dict:
         c = call.update(cid, state="ended" if c["state"] == "connected" else "missed", ended=now)
     elif action not in ("answer", "reject", "end"):
         raise HTTPException(400, "action 只能是 answer / reject / end")
+    else:
+        return {"call": c}  # 状态已经变过了（两边都按了挂断、超时后才点接）：不重复推、不重复记
     hub.publish(c["thread"], {"type": "call." + c["state"], "call": c})
     if c["state"] in ("ended", "rejected", "missed"):
         secs = int((c["ended"] or now) - (c["answered"] or now)) if c["answered"] else 0

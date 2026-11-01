@@ -28,6 +28,11 @@
   #who { display: none; }
   body.embed #who { display: block; position: absolute; left: 20px; top: 16px; font: 600 20px system-ui; text-shadow: 0 1px 4px #000; }
   #who small { display: block; font-weight: 400; font-size: 15px; opacity: .85; }
+  #bar button:disabled { opacity: .5; }
+  #bar #mute.off { background: #fff; color: #222; }
+  #toast { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); background: rgba(0,0,0,.7); color: #fff;
+           padding: 8px 16px; border-radius: 16px; font: 15px system-ui; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
@@ -175,20 +180,52 @@ $("mute").addEventListener("click", () => {
   if (!t) return;
   t.enabled = !t.enabled;
   $("mute").textContent = t.enabled ? "🎤" : "🔇";
+  $("mute").classList.toggle("off", !t.enabled);
+  toastMsg(t.enabled ? "麦克风开了" : "静音了，对方听不到你");
 });
 let facing = "user";
+// 换摄像头：手机大多不能前后摄同时开，要先停掉现在这个再开另一个（2026-11-01 vivo 上点了没反应，就是同时开失败被吞了）。
+// 新轨 replaceTrack 进去，对方画面不断；自己小窗后摄不镜像。开不了就换回原来的，并提示
 $("flip").addEventListener("click", async () => {
-  facing = facing === "user" ? "environment" : "user";
+  const btn = $("flip");
+  if (btn.disabled || !pc) return;
+  btn.disabled = true;
+  const want = facing === "user" ? "environment" : "user";
+  const old = stream.getVideoTracks()[0];
+  const sender = pc.getSenders().find((x) => x.track?.kind === "video" || (!x.track && x.dtmf == null));
+  const open = (mode) => navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: mode }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24 } } })
+    .catch(() => navigator.mediaDevices.getUserMedia({ video: { facingMode: mode } }));
+  old?.stop();
   try {
-    const s2 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } } });
-    const nt = s2.getVideoTracks()[0];
-    const sender = pc.getSenders().find((x) => x.track?.kind === "video");
+    const nt = (await open(want)).getVideoTracks()[0];
     await sender?.replaceTrack(nt);
-    stream.getVideoTracks()[0]?.stop();
-    stream.removeTrack(stream.getVideoTracks()[0]); stream.addTrack(nt);
+    if (old) stream.removeTrack(old);
+    stream.addTrack(nt);
+    facing = want;
     $("local").srcObject = stream;
-  } catch (_) { /* 没有后摄就算了 */ }
+    $("local").style.transform = facing === "user" ? "scaleX(-1)" : "none";
+    toastMsg(facing === "user" ? "前摄像头" : "后摄像头");
+  } catch (e) {
+    toastMsg("换不了摄像头：" + (e.name || e.message));
+    try {  // 换回原来那个
+      const back = (await open(facing)).getVideoTracks()[0];
+      await sender?.replaceTrack(back);
+      if (old) stream.removeTrack(old);
+      stream.addTrack(back);
+      $("local").srcObject = stream;
+    } catch (_) { /* 摄像头都打不开了 */ }
+  }
+  btn.disabled = false;
 });
+function toastMsg(t) {
+  let el = document.getElementById("toast");
+  if (!el) { el = document.createElement("div"); el.id = "toast"; document.body.appendChild(el); }
+  el.textContent = t;
+  el.className = "show";
+  clearTimeout(toastMsg.t);
+  toastMsg.t = setTimeout(() => { el.className = ""; }, 1800);
+}
+window.__call = () => ({ pc, stream, facing });  // 测试用：iframe 外面读不到 let 变量
 $("who-name").textContent = who;
 let connectedAt = 0;
 setInterval(() => {

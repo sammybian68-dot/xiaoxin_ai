@@ -104,3 +104,20 @@ def test_only_parents_call_and_siblings_cant_touch(family):
     c = family["爸爸"].post("/api/call", json={"kid": family["ids"]["女儿"]}).json()["call"]
     assert family["儿子"].post(f"/api/call/{c['id']}/answer").status_code == 404
     family["爸爸"].post(f"/api/call/{c['id']}/end")
+
+
+def test_call_survives_restart_and_end_is_idempotent(family):
+    """部署重启时正在打：重启后挂断照样记一条；两边都按挂断只记一次；找不到的通话挂断也返回成功。"""
+    from server import store
+
+    _reset_calls()
+    c = family["爸爸"].post("/api/call", json={"kid": family["ids"]["女儿"]}).json()["call"]
+    family["女儿"].post(f"/api/call/{c['id']}/answer")
+    call._calls.clear()
+    call._load()  # 模拟重启
+    dau_t = family["女儿"].get("/api/thread").json()["id"]
+    n = len(store.get(dau_t)["messages"])
+    assert family["爸爸"].post(f"/api/call/{c['id']}/end").json()["call"]["state"] == "ended"
+    assert family["女儿"].post(f"/api/call/{c['id']}/end").status_code == 200
+    assert len(store.get(dau_t)["messages"]) == n + 1
+    assert family["爸爸"].post("/api/call/nonexistent0/end").json()["call"]["state"] == "ended"

@@ -50,6 +50,9 @@ def isolate_env(request, tmp_path, monkeypatch):
     members._pairs.clear()  # 配对码、限流计数是进程里的：每个测试从空开始
     members._fails.clear()
     members._seen_write.clear()
+    from server.family import call
+
+    call._calls.clear()  # 通话状态是进程里的（落盘在 DATA/calls.json，DATA 每个测试新的）
     monkeypatch.setattr(doubao, "ROOT", tmp_path)  # .env 从这里读，这里没有
     for name in ("DOUBAO_TTS_API_KEY", "DOUBAO_API_KEY", "XIAOXIN_ORIGINS"):
         monkeypatch.delenv(name, raising=False)
