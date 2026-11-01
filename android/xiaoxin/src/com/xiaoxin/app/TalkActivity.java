@@ -372,6 +372,42 @@ public class TalkActivity extends Activity {
             runOnUiThread(() -> applyWords(wakes, exits, idleS, endMs, tone));
         }
 
+        /** 查看大图点「保存到相册」：后台下载这张图，存进系统相册 Pictures/小新（MediaStore，Android 10+ 不要存储权限）。 */
+        @android.webkit.JavascriptInterface
+        public void saveImage(String url, String name) {
+            if (url == null || !url.startsWith(base())) {
+                return;  // 只存自己服务上的
+            }
+            new Thread(() -> {
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                    c.setRequestProperty("Authorization", "Bearer " + key());
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(120000);
+                    android.content.ContentValues v = new android.content.ContentValues();
+                    String fn = (name == null || name.isEmpty() ? "xiaoxin" : name.replaceAll("[\\\\/:*?\"<>|]", "_"));
+                    v.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, fn);
+                    v.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                    v.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/小新");
+                    v.put(android.provider.MediaStore.Images.Media.IS_PENDING, 1);
+                    android.content.ContentResolver cr = getContentResolver();
+                    Uri dst = cr.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                    try (java.io.InputStream in = c.getInputStream(); java.io.OutputStream out = cr.openOutputStream(dst)) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) > 0) {
+                            out.write(buf, 0, n);
+                        }
+                    }
+                    v.clear();
+                    v.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0);
+                    cr.update(dst, v, null, null);
+                } catch (Exception e) {
+                    android.util.Log.w("XxSave", "save " + url + ": " + e);
+                }
+            }, "save-image").start();
+        }
+
         /** 视频来电：亮屏、盖住锁屏、退出熄屏（和闹钟响一样）。 */
         @JavascriptInterface
         public void wakeScreen() {

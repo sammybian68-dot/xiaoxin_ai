@@ -1,20 +1,68 @@
 """调试轨迹：每次发给主脑的请求原样记下来（system、messages、tools、回了什么、用量、耗时），调试面板看。
 
 照 carHer2「调试」那一栏：一轮回答可能有好几次请求（调了工具再问一次），一次一条，按轮次分组。
-只在内存里留最近 MAX_TURNS 轮（每段对话），不落盘：里面有完整上下文，量大，也不该进对话文件。
+每段对话留最近 MAX_TURNS 轮。一轮结束落一份到 XIAOXIN_DATA/trace/<cid>.json（图片本体换成占位，不然太大），
+部署重启后调试面板还能看到之前的；不进对话文件。
 """
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from collections import OrderedDict, deque
+from pathlib import Path
 
 MAX_TURNS = 20
 MAX_CONVS = 30
 _lock = threading.Lock()
 _data: "OrderedDict[str, deque]" = OrderedDict()
-_seq = 0
+_seq = int(time.time() * 1000)  # 重启后接着落盘的旧轮次往后编，id 不撞
+DIR = Path(os.environ.get("XIAOXIN_DATA") or "/Data/cmbian/private_data/xiaoxin") / "trace"
+
+
+def _safe(cid: str) -> bool:
+    return bool(cid) and cid.replace("-", "").isalnum() and len(cid) <= 64
+
+
+def _strip(x):
+    """图片 data URL 换成占位：一张 2048 的图 base64 有几百 KB。"""
+    if isinstance(x, dict):
+        if x.get("type") == "image_url":
+            return {"type": "image_url", "image_url": {"url": "[图片]"}}
+        return {k: _strip(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_strip(v) for v in x]
+    return x
+
+
+def _load(key: str) -> deque:
+    """内存里没有这段对话（刚重启）：从盘上读回来。调用方持锁。"""
+    q = deque(maxlen=MAX_TURNS)
+    if _safe(key):
+        try:
+            q.extend(json.loads((DIR / f"{key}.json").read_text()))
+        except (OSError, ValueError):
+            pass
+    _data[key] = q
+    while len(_data) > MAX_CONVS:
+        _data.popitem(last=False)
+    return q
+
+
+def _save(key: str) -> None:
+    if not _safe(key):
+        return
+    with _lock:
+        snap = _strip(list(_data.get(key, [])))
+    try:
+        DIR.mkdir(parents=True, exist_ok=True)
+        tmp = DIR / f"{key}.json.tmp"
+        tmp.write_text(json.dumps(snap, ensure_ascii=False, default=str))
+        tmp.replace(DIR / f"{key}.json")
+    except OSError:
+        pass
 
 
 def new_turn(cid: str | None, *, model: str, voice: bool) -> dict:
@@ -23,8 +71,8 @@ def new_turn(cid: str | None, *, model: str, voice: bool) -> dict:
     key = cid or "-"
     with _lock:
         _seq += 1
-        turn = {"id": _seq, "at": time.time(), "model": model, "voice": voice, "calls": [], "done": False}
-        q = _data.setdefault(key, deque(maxlen=MAX_TURNS))
+        turn = {"id": _seq, "at": time.time(), "model": model, "voice": voice, "calls": [], "done": False, "cid": key}
+        q = _data[key] if key in _data else _load(key)
         q.append(turn)
         _data.move_to_end(key)
         while len(_data) > MAX_CONVS:
@@ -46,12 +94,15 @@ def finish(turn: dict | None, **fields) -> None:
         return
     with _lock:
         turn.update(fields, done=True)
+    _save(turn.get("cid") or "-")
 
 
 def turns(cid: str) -> list[dict]:
     """最近几轮，新的在前。"""
+    key = cid or "-"
     with _lock:
-        return list(reversed(list(_data.get(cid or "-", []))))
+        q = _data[key] if key in _data else _load(key)
+        return list(reversed(list(q)))
 
 
 def _is_note(m: dict) -> bool:

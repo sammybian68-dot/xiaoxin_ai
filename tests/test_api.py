@@ -323,8 +323,43 @@ def test_chat_image_switches_to_vision_model(client, fakes):
                                                                   "X-Filename": "a.png"}).json()["id"]
     cid = client.post("/api/conversations").json()["id"]
     client.post(f"/api/conversations/{cid}/messages", json={"text": "看图", "file_ids": [fid],
-                                                            "model": "deepseek-v4.1-flash"})
+                                                            "model": "qwen3.8-27b"})
     assert main.VISION in [c[1] for c in fakes.calls if c[0] == "llm"]
+
+
+def test_deepseek_flash_sees_images_itself(client, fakes):
+    fid = client.post("/api/files", content=b"\x89PNG", headers={"Content-Type": "image/png",
+                                                                  "X-Filename": "a.png"}).json()["id"]
+    cid = client.post("/api/conversations").json()["id"]
+    client.post(f"/api/conversations/{cid}/messages", json={"text": "看图", "file_ids": [fid],
+                                                            "model": "deepseek-v4.1-flash"})
+    assert [c[1] for c in fakes.calls if c[0] == "llm"] == ["deepseek-v4.1-flash"]
+
+
+def test_images_sent_before_question_reach_the_model(client, fakes):
+    """家长发了图不问小新（ask=false），孩子再问「爸爸发了什么」：那几张图小新没看过，这轮要带图片本体。
+    回答过之后再问，就只剩占位了（不每轮重传）。"""
+    fids = [client.post("/api/files", content=b"\x89PNG", headers={"Content-Type": "image/png",
+                                                                     "X-Filename": f"{i}.png"}).json()["id"]
+            for i in range(2)]
+    cid = client.post("/api/conversations").json()["id"]
+    client.post(f"/api/conversations/{cid}/messages", json={"text": "", "file_ids": fids, "ask": False})
+    client.post(f"/api/conversations/{cid}/messages", json={"text": "爸爸发了什么"})
+    first = json.dumps(fakes.llm_requests[-1]["messages"], ensure_ascii=False)
+    assert first.count("data:image/") == 2
+    client.post(f"/api/conversations/{cid}/messages", json={"text": "再说一遍"})
+    again = json.dumps(fakes.llm_requests[-1]["messages"], ensure_ascii=False)
+    assert "data:image/" not in again and "之前发过一张图片" in again
+
+
+def test_debug_trace_survives_restart(client, fakes):
+    from server import trace
+
+    cid, _ = chat(client)
+    assert client.get(f"/api/debug/{cid}").json()["turns"]
+    trace._data.clear()  # 部署重启：内存里的没了
+    turns = client.get(f"/api/debug/{cid}").json()["turns"]
+    assert turns and turns[-1]["calls"]
 
 
 # ---------------------------------------------------------------- 联网搜索的工具循环

@@ -705,11 +705,34 @@ async function ensureConv() {
   return state.conv;
 }
 
-function canSend() { return !state.sending && !state.pending.some((p) => !p.meta) && ($("input").value.trim() || state.pending.length); }
+// 图片还在压缩上传也能点发送：点了先在聊天里出一条（本地预览），传完自动发出去（像微信）
+function canSend() { return !state.sending && ($("input").value.trim() || state.pending.length); }
 function updateSend() { $("send").disabled = !canSend(); }
+
+// 还有图片没传完：先在聊天里出一条带本地预览的「发送中」，等它们传完再真正发（这期间输入框、按钮都能用）
+async function sendAfterUploads(text, via) {
+  const waiting = state.pending.slice();
+  state.pending = [];
+  renderPending();
+  $("input").value = "";
+  autoGrow();
+  const row = document.createElement("div");
+  row.className = "msg me sending-local";
+  row.innerHTML = `<div class="bubble">${waiting.filter((p) => p.preview).map((p) => `<img class="att-img" src="${p.preview}" alt="">`).join("")}`
+    + `${text ? `<div class="text">${esc(text)}</div>` : ""}<div class="via">发送中…</div></div>`;
+  $("messages").appendChild(row);
+  scrollDown(true);
+  for (let i = 0; waiting.some((p) => !p.meta && !p.failed) && i < 1200; i++) await new Promise((r) => setTimeout(r, 100));
+  row.remove();
+  state.pending = waiting.filter((p) => p.meta);
+  if (!state.pending.length && !text) { toast("图片没传上去"); return; }
+  for (let i = 0; state.sending && i < 600; i++) await new Promise((r) => setTimeout(r, 100));
+  await send(text, via);
+}
 
 async function send(text, via = "text") {
   if (state.sending) return;
+  if (state.pending.some((p) => !p.meta)) return sendAfterUploads(text, via);
   stopSpeaking();
   const files = state.pending.filter((p) => p.meta).map((p) => p.meta);
   if (!text && !files.length) return;
@@ -893,6 +916,7 @@ async function upload(file) {
     p.meta = isImg ? await uploadImage(file) : await api("api/files", { method: "POST", body: file,
       headers: { "Content-Type": file.type || "application/octet-stream", "X-Filename": encodeURIComponent(file.name || "file") } }).then(json);
   } catch (err) {
+    p.failed = true;
     state.pending = state.pending.filter((x) => x !== p);
     toast(`${file.name} 上传失败：${err.message}`);
   }
@@ -967,6 +991,7 @@ function renderPending() {
     const el = document.createElement("div");
     el.className = "pend" + (p.meta ? "" : " uploading");
     el.innerHTML = (p.preview ? `<img src="${p.preview}" alt="">` : `<span class="name">📄 ${esc(p.file.name)}</span>`)
+      + (p.meta ? "" : '<span class="pend-state">上传中</span>')
       + '<button type="button" class="x" aria-label="去掉">✕</button>';
     el.querySelector(".x").addEventListener("click", () => { state.pending = state.pending.filter((x) => x !== p); renderPending(); });
     box.appendChild(el);
@@ -2547,6 +2572,20 @@ function openViewer(f) {
   $("viewer").showModal();
 }
 $("viewer-close").addEventListener("click", () => $("viewer").close());
+// 保存：有原图存原图，没有存 2048 的大图。APK 里交给原生写进系统相册（Pictures/小新），浏览器里就是下载
+$("viewer-save").addEventListener("click", async () => {
+  const fid = $("viewer-img").dataset.fid;
+  if (!fid) return;
+  const f = findFile(fid);
+  const hasOrig = f?.original ? f.original.received >= f.original.size : !f?.variants;
+  const url = new URL(`api/files/${fid}${hasOrig ? "" : "?v=screen"}`, location.href).href;
+  const name = (f?.name || "小新图片.jpg").replace(/\.[^.]+$/, "") + ".jpg";
+  const bridge = window.XiaoxinNative || window.XiaoxinParent;
+  if (bridge?.saveImage) { bridge.saveImage(url, name); toast("保存到相册了"); return; }
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+});
 $("viewer").addEventListener("click", (e) => { if (e.target === $("viewer")) $("viewer").close(); });
 $("viewer-orig").addEventListener("click", (e) => {
   e.preventDefault();

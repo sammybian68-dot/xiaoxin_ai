@@ -45,6 +45,10 @@ def isolate_env(request, tmp_path, monkeypatch):
     monkeypatch.setattr(store, "SETTINGS", data / "settings.json")
     monkeypatch.setattr(store, "ARCHIVE", data / "conversations_archive")
     monkeypatch.setattr(store, "BACKUP", data / "backup")
+    from server import trace
+
+    monkeypatch.setattr(trace, "DIR", data / "trace")  # 调试轨迹落盘也进临时目录
+    trace._data.clear()
     from server.family import members
 
     members._pairs.clear()  # 配对码、限流计数是进程里的：每个测试从空开始

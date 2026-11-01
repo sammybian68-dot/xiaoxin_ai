@@ -33,7 +33,7 @@ STATIC = Path(__file__).resolve().parent / "static"
 PORT = 8184
 COOKIE = "xiaoxin_auth"
 
-# 下拉里给的模型。第一个是默认；带图片的消息自动换成 VISION（deepseek 不看图）。
+# 下拉里给的模型。第一个是默认；带图片的消息遇到不看图的模型自动换成 VISION。
 MODELS = [
     {"id": "deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash"},
     {"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5"},
@@ -43,7 +43,7 @@ MODELS = [
 ]
 VISION = "claude-sonnet-5-5"
 FALLBACK = "claude-sonnet-5-5"  # 选的模型连着失败两次就换它
-NO_VISION = {"deepseek-v4.1-flash", "qwen3.8-27b"}  # 主脑是纯文本模型
+NO_VISION = {"qwen3.8-27b"}  # 主脑是纯文本模型。deepseek-v4.1-flash 能看图（2026-11-01 实测认出练习册照片）
 
 # system prompt 按功能拆在 server/prompts/*.md，prompts.build() 拼起来（填上当前时间、闹钟状态）
 MAX_SEARCHES = 2  # 一轮回答最多搜几次，照 carHer2 的 _WEB_SEARCH_TURN_LIMIT
@@ -802,17 +802,32 @@ def _speaker(m: dict, owner: dict | None) -> str:
         return "[家长] "
 
 
+def _unseen_images(cid: str) -> bool:
+    """小新最后一次回答之后有没有人发过图（这轮要带图片本体，得用能看图的模型）。"""
+    try:
+        msgs = store.get(cid)["messages"]
+    except KeyError:
+        return False
+    for m in reversed(msgs):
+        if m["role"] == "assistant":
+            return False
+        if any(f.get("kind") == "image" for f in m.get("files") or []):
+            return True
+    return False
+
+
 def _llm_messages(conv: dict) -> list[dict]:
     """对话转成 OpenAI 格式：压缩摘要（有的话）+ 这个 epoch 的原文（含 `[system]` 现状消息，按原位置回放）。
 
     前缀稳定（KV cache）：同一个 epoch 里，前面发过的消息每轮都原样重放，只在末尾追加；不按条数截断
     （截了前缀就变）。长了靠 compact 换 epoch，见 server/compact.py。
-    只有最后一条用户消息带图片本体，之前的图片换成一句占位，免得每轮重传。"""
+    小新最后一次回答之后的图片带本体（家长先发图不问小新、孩子再问「爸爸发了什么」，那几张图小新还没看过），
+    更早的换成一句占位，免得每轮重传。"""
     from server import compact
 
     msgs = conv["messages"][conv.get("epoch_start") or 0:]
     owner = members.kid_of_thread(conv["id"])
-    last_user = max((i for i, m in enumerate(msgs) if m["role"] == "user"), default=-1)
+    unseen = 1 + max((i for i, m in enumerate(msgs) if m["role"] == "assistant"), default=-1)
     out = []
     if conv.get("summary"):
         out.append({"role": "user", "content": compact.SUMMARY_PREFIX + conv["summary"]})
@@ -837,7 +852,7 @@ def _llm_messages(conv: dict) -> list[dict]:
             info = store.file_info(meta["id"])
             if info is None:
                 parts.append({"type": "text", "text": f"[附件 {meta['name']} 已经不在了]"})
-            elif meta["kind"] == "image" and i == last_user:
+            elif meta["kind"] == "image" and i >= unseen:
                 img = store.best_image(meta["id"]) or info[0]  # 2048 的 screen 够模型看，原图太大
                 parts.append({"type": "image_url", "image_url": {"url": store.data_url(img, meta["mime"])}})
             elif meta["kind"] == "image":
@@ -1142,7 +1157,7 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
     model = str(body.get("model") or MODELS[0]["id"])
     if model not in {m["id"] for m in MODELS}:
         raise HTTPException(400, f"不支持的模型 {model}")
-    if model in NO_VISION and any(f["kind"] == "image" for f in files):
+    if model in NO_VISION and (any(f["kind"] == "image" for f in files) or _unseen_images(cid)):
         model = VISION
     sender = _sender(w, cid)
     # 群聊：孩子说话小新照常答；家长发给孩子的（默认）只存不答，点亮「问小新」（ask=true）才答（docs/architecture.md 6.3）。
