@@ -112,7 +112,6 @@ body.debug-on .debug-btn { color: #7eb6ff; border-color: #7eb6ff; }
 body.debug-on .main { margin-right: min(520px, 40vw); }
 /* 调试开着、顶栏变窄：模型名先缩，按钮只留图标 */
 body.debug-on .top { gap: 6px; }
-body.debug-on .model-pick select { max-width: 120px; }
 body.debug-on .free-talk { padding: 0 12px; }
 body.debug-on .standby { padding: 0 10px; }
 body.debug-on #autoread, body.debug-on #open-clock { display: none; }
@@ -206,7 +205,6 @@ details.dl[open] > summary { display: none; }
 }
 .top-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .top-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-pick select { height: 36px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); padding: 0 8px; max-width: 170px; }
 .free-talk {
   height: 38px; padding: 0 16px; border-radius: 19px; border: 0; white-space: nowrap;
   background: var(--accent); color: #062b16; font-weight: 600;
@@ -242,10 +240,14 @@ details.dl[open] > summary { display: none; }
 .wake-input { width: 220px; max-width: 100%; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--text); padding: 0 10px; font: inherit; font-size: 15px; }
 .vad-end { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .vad-end input { width: 84px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--text); padding: 0 10px; font: inherit; font-size: 15px; }
+/* 待命 / 通话状态：在顶栏里（原来在输入栏上方，挤掉对话高度）。字多了就省略，不换行 */
 .talk-bar {
-  flex: none; display: flex; align-items: center; gap: 10px; margin: 0 auto 6px; padding: 8px 16px;
-  border-radius: 20px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 14px;
+  flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 12px; margin-left: auto;
+  border-radius: 18px; background: var(--raised); border: 1px solid var(--line); color: var(--text); font-size: 13px;
+  max-width: 380px; white-space: nowrap;
 }
+.talk-bar #talk-status { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.talk-bar .talk-track { flex: none; width: 60px; }
 .talk-bar[hidden] { display: none; }
 .talk-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: blink 1.2s steps(1) infinite; }
 .talk-track { width: 120px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
@@ -476,7 +478,7 @@ body.voice-first .rec-card .rec-live { font-size: 24px; max-height: 7.5em; }
   .side { position: fixed; inset: 0 auto 0 0; z-index: 30; width: min(300px, 84vw); transform: translateX(-100%); transition: transform .2s; }
   .side.open { transform: none; }
   .top { padding: 0 8px; gap: 6px; }
-  .model-pick select { max-width: 112px; font-size: 13px; }
+  .talk-bar { max-width: 46vw; } .talk-bar .talk-track { display: none; }
   .free-talk { padding: 0 12px; font-size: 14px; }
   .free-talk-label { display: none; }
   .messages { padding: 16px 12px 8px; }
@@ -528,7 +530,7 @@ body.voice-first .rec-card .rec-live { font-size: 24px; max-height: 7.5em; }
 .chat-list .cr i { font-style: normal; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: #f04848; color: #fff; font-size: 12px; display: grid; place-items: center; }
 .chat-list .none { padding: 24px 16px; color: var(--muted); }
 /* 家长端群聊：pad 专用的不显示（待命、自由对话、闹钟、模型、调试），返回键代替菜单键 */
-body.parent-mode #standby, body.parent-mode #free-talk, body.parent-mode #open-clock, body.parent-mode .model-pick,
+body.parent-mode #standby, body.parent-mode #free-talk, body.parent-mode #open-clock, body.parent-mode .talk-bar,
 body.parent-mode #open-debug, body.parent-mode #menu, body.parent-mode .side { display: none !important; }
 body:not(.parent-mode) #back-chats { display: none; }
 .ask { flex: none; height: 36px; padding: 0 12px; border-radius: 18px; border: 1px solid var(--line); background: none; color: var(--muted); font-size: 13px; }
@@ -577,3 +579,10 @@ a[data-fid] .orig { position: absolute; right: 6px; bottom: 6px; background: rgb
 .print-job small { color: var(--muted); font-size: 12px; }
 .print-job.done span { color: #3ddc84; }
 .print-job.error span { color: #ff8a80; }
+
+/* 设置 → 模型：单选列表（像 Cursor 的 Models） */
+.model-list { display: grid; gap: 8px; }
+.model-opt { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+.model-opt:has(input:checked) { border-color: #2f6fe4; background: rgba(47, 111, 228, .12); }
+.model-opt span { display: flex; flex-direction: column; gap: 2px; }
+.model-opt small { color: var(--muted); font-size: 12px; }

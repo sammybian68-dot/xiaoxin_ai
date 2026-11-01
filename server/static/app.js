@@ -43,7 +43,7 @@ async function boot() {
   setVoiceMode(vm ? vm === "1" : (!!native && me.who.role !== "parent"), false);
   state.sendOrig = localGet("orig") === "1";
   // 设置页签按角色：小新本身的（语音引擎、唤醒词、音色、提示词、成员）只给管理员；家长、孩子只看「对话」和「登录与设备」
-  for (const pane of ["talk", "wake", "voice", "prompt", "members"]) {
+  for (const pane of ["model", "talk", "wake", "voice", "prompt", "members"]) {
     document.querySelector(`.settings-nav [data-pane="${pane}"]`).hidden = me.who.kind !== "admin";
   }
   state.models = me.models;
@@ -52,8 +52,6 @@ async function boot() {
   state.fallback = me.fallback_model;
   const saved = localGet("model");
   state.model = me.models.some((m) => m.id === saved) ? saved : me.default_model;
-  $("model").innerHTML = me.models.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
-  $("model").value = state.model;
   // 家长：先看聊天列表（每个孩子一个群），点进去才是群聊；孩子的 pad 和管理员宽屏直接进群
   if (state.me.role === "parent" || (state.me.kind === "admin" && matchMedia("(max-width: 820px)").matches && state.kids.length > 1)) {
     document.body.classList.add("parent-mode");
@@ -77,12 +75,22 @@ const prefs = { autoread: true, enter: true };
 try { Object.assign(prefs, JSON.parse(localGet("prefs") || "{}")); } catch (_) { /* 坏数据就用默认 */ }
 function savePrefs() { localSet("prefs", JSON.stringify(prefs)); }
 
-$("model").addEventListener("change", () => {
-  state.model = $("model").value;
-  localSet("model", state.model);
+// 换模型（设置 →「模型」）：记住、待命的唤醒地址跟着换；自由对话中下一句起生效
+function setModel(id) {
+  state.model = id;
+  localSet("model", id);
   syncStandbyUrl();
-  if (talk.on) talkSend({ type: "model", model: state.model });  // 自由对话中换模型，下一句起生效
-});
+  if (talk.on) talkSend({ type: "model", model: id });
+}
+
+function renderModels() {
+  const box = $("model-list");
+  box.innerHTML = state.models.map((m) => `<label class="model-opt"><input type="radio" name="model" value="${esc(m.id)}"`
+    + `${m.id === state.model ? " checked" : ""}><span><b>${esc(m.label)}</b><small>${esc(m.id)}`
+    + `${m.id === state.vision ? " · 看图片" : ""}${m.id === state.fallback ? " · 失败时兜底" : ""}</small></span></label>`).join("");
+  for (const r of box.querySelectorAll("input")) r.addEventListener("change", () => { setModel(r.value); toast(`换成 ${state.models.find((m) => m.id === r.value)?.label}`); });
+  const label = (id) => state.models.find((m) => m.id === id)?.label || id;
+}
 
 // ---------------------------------------------------------------- 侧栏
 
@@ -1486,17 +1494,11 @@ const vrec = { rec: null, blob: null, levels: [], timer: null };
 
 // ---------------------------------------------------------------- 设置
 
-const PANES = ["general", "talk", "wake", "voice", "prompt", "members", "account"];
+const PANES = ["general", "model", "talk", "wake", "voice", "prompt", "members", "account"];
 
 function openSettings(pane = "general") {
   closeSide();
-  $("set-model").innerHTML = state.models.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
-  $("set-model").value = localGet("model") || state.model;
   $("set-autoread").checked = prefs.autoread;
-  const label = (id) => state.models.find((m) => m.id === id)?.label || id;
-  $("set-routing").textContent = state.vision
-    ? `带图片的消息，选了不看图的模型会自动换成 ${label(state.vision)}；选的模型连着失败两次，换成 ${label(state.fallback)} 回答。`
-    : "";
   $("set-enter").checked = prefs.enter;
   showPane(PANES.includes(pane) ? pane : "general");
   if (!$("settings").open) $("settings").showModal();
@@ -1509,6 +1511,7 @@ function showPane(name) {
   if (name === "talk" || name === "wake") loadEngines();
   if (name === "prompt") loadPrompts();
   if (name === "members") loadMembers();
+  if (name === "model") renderModels();
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
     loadEngines();
@@ -1526,11 +1529,6 @@ $("settings").addEventListener("close", async () => {
   history.replaceState(null, "", location.pathname);
 });
 
-$("set-model").addEventListener("change", () => {
-  state.model = $("set-model").value;
-  $("model").value = state.model;
-  localSet("model", state.model);
-});
 $("set-autoread").addEventListener("change", () => setAutoread($("set-autoread").checked));
 
 // 顶栏 🔊 / 🔇：和设置里的「回答完自动朗读」是同一个开关

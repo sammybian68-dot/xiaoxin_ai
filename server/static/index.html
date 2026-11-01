@@ -79,10 +79,13 @@
         <img src="static/icon.png" alt="" class="avatar sm only-narrow">
         <span id="conv-title">小新</span>
       </div>
-      <label class="model-pick">
-        <span class="sr-only">模型</span>
-        <select id="model"></select>
-      </label>
+      <!-- 原来的模型下拉挪到设置 →「模型」。这里放待命 / 通话状态（原来在输入栏上方，占对话的高度） -->
+      <div id="talk-bar" class="talk-bar" role="status" aria-live="polite" hidden>
+        <span class="talk-dot" aria-hidden="true"></span>
+        <span id="talk-status">在听</span>
+        <span class="talk-track" aria-hidden="true"><span id="talk-level"></span></span>
+        <span id="talk-countdown" class="talk-countdown" hidden></span>
+      </div>
       <button id="open-debug" class="debug-btn" type="button" title="看每一步发给主脑的是什么">🔍 调试</button>
       <button id="open-clock" class="icon-btn clock-btn" type="button" title="闹钟和计时" aria-label="闹钟和计时">⏰</button>
       <button id="autoread" class="icon-btn" type="button" aria-pressed="true" title="回答完自动朗读">🔊</button>
@@ -95,13 +98,6 @@
       <div id="messages" class="messages"></div>
     </section>
     <button id="chat-latest" class="chat-latest" type="button" hidden>↓ 回到最新</button>
-
-    <div id="talk-bar" class="talk-bar" role="status" aria-live="polite" hidden>
-      <span class="talk-dot" aria-hidden="true"></span>
-      <span id="talk-status">在听</span>
-      <span class="talk-track" aria-hidden="true"><span id="talk-level"></span></span>
-      <span id="talk-countdown" class="talk-countdown" hidden></span>
-    </div>
 
     <footer class="composer-wrap">
       <div id="pending" class="pending"></div>
@@ -227,6 +223,7 @@
   <div class="settings-body">
     <nav class="settings-nav" role="tablist" aria-label="设置分类">
       <button type="button" role="tab" data-pane="general">对话</button>
+      <button type="button" role="tab" data-pane="model">模型</button>
       <button type="button" role="tab" data-pane="talk">语音对话</button>
       <button type="button" role="tab" data-pane="wake">唤醒</button>
       <button type="button" role="tab" data-pane="voice">音色</button>
@@ -235,15 +232,18 @@
       <button type="button" role="tab" data-pane="account">登录与设备</button>
     </nav>
 
+    <section class="pane" role="tabpanel" data-pane="model" hidden>
+      <h3>小新用哪个模型</h3>
+      <p class="voice-tip">打字和语音对话都用这里选的。选好马上生效，正在自由对话的话下一句起换。</p>
+      <div id="model-list" class="model-list" role="radiogroup" aria-label="模型"></div>
+      <p id="set-routing" class="voice-tip"></p>
+    </section>
+
     <section class="pane" role="tabpanel" data-pane="general" hidden>
       <h3>对话</h3>
       <div class="row">
         <label><b>开始新篇章</b><small>小新的记忆从这里重新开始，聊天记录一条不删。小新记乱了、说话跑偏时用</small></label>
         <button id="new-chapter" type="button">翻开新的一页</button>
-      </div>
-      <div class="row">
-        <label for="set-model"><b>默认模型</b><small>小新默认用这个。顶栏也可以临时切换</small></label>
-        <select id="set-model"></select>
       </div>
       <div class="row">
         <label for="set-autoread"><b>回答完自动朗读</b><small>用当前的小新音色</small></label>
@@ -253,7 +253,6 @@
         <label for="set-enter"><b>回车直接发送</b><small>关掉后用 Ctrl / ⌘ + 回车发送</small></label>
         <input id="set-enter" type="checkbox" class="switch">
       </div>
-      <p id="set-routing" class="voice-tip"></p>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="prompt" hidden>
