@@ -110,7 +110,7 @@ function hubConnect() {
   clearTimeout(hub.timer);
   const url = new URL("api/hub", location.href).href.replace(/^http/, "ws");
   const ws = hub.ws = new WebSocket(url);
-  ws.onopen = () => { hub.wait = 2000; hubCatchUp(); };
+  ws.onopen = () => { hub.wait = 2000; hubCatchUp(); printCatchUp(); };
   ws.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (ev.type === "ping") { ws.send('{"type":"pong"}'); return; }
@@ -118,6 +118,7 @@ function hubConnect() {
     else if ((ev.type === "msg" || ev.type === "msg.update") && ev.thread === state.conv?.id) hubMessage(ev.message, ev.type);
     if (ev.type === "presence") { state.online = new Set(ev.online); renderSide(); }
     if (ev.type === "print") onPrintEvent(ev.job);
+    if (ev.type === "print.summary" && ev.thread === state.conv?.id) onPrintSummary(ev);
     if (ev.type === "file" && ev.thread === state.conv?.id) hubFile(ev.file);
   };
   ws.onclose = () => {
@@ -200,7 +201,7 @@ function hubMessage(m, kind) {
   else if (kind === "msg") state.conv.messages.push(m);
   if (kind !== "msg" || m.role === "note") return;
   if ($("messages").querySelector(`[data-mid="${CSS.escape(m.id)}"]`)) return;  // 本地已经画了
-  if (m.role === "assistant" && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
+  if (m.role === "assistant" && m.via !== "print" && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
   if (m.role === "user" && m.via === "talk" && talk.on) return;      // 自己这台在自由对话：那句由 heard 画（带原声小喇叭）
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
   const row = appendMessage(m);
@@ -214,17 +215,17 @@ function hubMessage(m, kind) {
 
 // 读家长消息：小新正在说、在自由对话里、正在发消息，就等它说完再读，不打断
 const sayQueue = [];
-function sayLater(m, row) {
-  sayQueue.push({ m, row });
+function sayLater(m, row, self = false) {
+  sayQueue.push({ m, row, self });
   if (sayQueue.length === 1) sayNext();
 }
 function sayNext() {
   const job = sayQueue[0];
   if (!job) return;
   if (talk.on || state.sending || player.audio || player.stream) { setTimeout(sayNext, 1500); return; }
-  const btn = job.row.querySelector('[data-act="say"]');
+  const btn = job.row.querySelector('[data-act="say"]') || document.createElement("button");
   const p = person(job.m.from);
-  speakAs(`${p.name}说：${job.m.text}`, btn, { member: job.m.from }).finally(() => {
+  speakAs(job.self ? job.m.text : `${p.name}说：${job.m.text}`, btn, job.self ? {} : { member: job.m.from }).finally(() => {
     const wait = () => { if (player.audio) { setTimeout(wait, 500); return; } sayQueue.shift(); sayNext(); };
     wait();
   });
@@ -394,8 +395,18 @@ function onPrintEvent(job) {
   if (job.state === "queued" && !native?.print && state.me?.role === "kid") toast("这台设备连不了打印机");
   for (const el of document.querySelectorAll(`[data-job="${CSS.escape(job.id)}"]`)) paintJob(el, job);
   state.jobs = { ...(state.jobs || {}), [job.id]: job };
-  if (job.state === "done") toast(`打好了：${job.name}`);
-  if (job.state === "error") toast(`没打成：${job.error}`, 5000);
+  // 每个任务不单独提示：一批全部结束后小新说一句总结（print.summary）
+
+}
+
+// 一批打完（全部结束）：小新用自己的声音说一次总结。孩子说完「打印」可能跑去打印机那儿了，不一定看屏幕。
+// 都成功、而且孩子正在跟小新说话（自由对话）就不打断；有失败的一定说。
+function onPrintSummary(ev) {
+  // 气泡由 hub 的 msg 事件画（这是小新的一条回复）；这里只负责在 pad 上念
+  if (state.me?.role === "parent" || !prefs.autoread) return;
+  if (ev.ok && talk.on) return;
+  const row = $("messages").querySelector(`[data-mid="${CSS.escape(ev.id || "")}"]`) || document.createElement("div");
+  sayLater({ text: ev.text, from: "xiaoxin", role: "assistant" }, row, true);
 }
 
 function paintJob(el, job) {
@@ -2580,6 +2591,15 @@ $("share-yes").addEventListener("click", async () => {
   } catch (e) { toast(e.message, 4000); }
   finally { btn.disabled = false; btn.textContent = "发送"; }
 });
+
+// pad 刚连上（开机、回到前台、断网重连）：把还没打的任务按顺序交给原生队列（原生按 id 去重，不会打两遍）
+async function printCatchUp() {
+  if (!native?.print || state.me?.role === "parent") return;
+  try {
+    const { jobs } = await api(`api/print/jobs?pending=1${state.conv?.kid ? "&kid=" + state.conv.kid : ""}`).then(json);
+    for (const j of jobs) native.print(JSON.stringify(j));
+  } catch (_) { /* 下次连上再补 */ }
+}
 
 // 打印条认领任务：最新的、还没被别的条认领的那个
 async function claimJob(el) {

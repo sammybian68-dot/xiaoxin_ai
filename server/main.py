@@ -518,10 +518,12 @@ def worksheet_view(request: Request, wid: str) -> dict:
 
 
 @app.get("/api/print/jobs")
-def print_jobs(request: Request, kid: str = "") -> dict:
+def print_jobs(request: Request, kid: str = "", pending: int = 0) -> dict:
+    """最近的打印任务；?pending=1 只要还没打的（pad 连上 hub 时补拉，按提交顺序）。"""
     from server import printing
 
-    return {"jobs": printing.jobs(kid_for(request, kid)["thread"])}
+    tid = kid_for(request, kid)["thread"]
+    return {"jobs": printing.pending(tid) if pending else printing.jobs(tid)}
 
 
 @app.get("/api/print/{jid}/page/{i}")
@@ -554,9 +556,22 @@ def print_result(request: Request, jid: str, body: dict = Body(...)) -> dict:
     state = str(body.get("state") or "")
     if state not in ("printing", "done", "error"):
         raise HTTPException(400, "state 只能是 printing / done / error")
-    job = printing.update_job(jid, state=state, error=str(body.get("error") or "")[:200], printer=str(body.get("printer") or "")[:60],
-                              finished=time.time() if state in ("done", "error") else None)
+    fields = {"state": state, "error": str(body.get("error") or "")[:200], "printer": str(body.get("printer") or "")[:60],
+              "finished": time.time() if state in ("done", "error") else None}
+    if isinstance(body.get("done_pages"), int):
+        fields["done_pages"] = max(0, body["done_pages"])  # 多页任务打到一半出错：前面几页已经出来了
+    job = printing.update_job(jid, **fields)
     hub.publish(job["thread"], {"type": "print", "job": job})
+    if state in ("done", "error"):
+        # 这一批（小新一轮里交的几个任务）全部结束才总结一次：「打印 5 张，3 张出来了，2 张没打成，原因…」。
+        # 写成 [system] 进对话（下一轮小新知道结果，孩子问「打好了吗」能答），推给 pad 念出来。
+        summary = printing.batch_summary(job["thread"], job.get("batch") or jid)
+        if summary:
+            # 小新的一条回复（气泡里看得到，下一轮主脑按原样回放、记得这件事），不是 [system]：用户要的是小新「说了」
+            msg = store.append(job["thread"], {"role": "assistant", "text": summary, "model": "",
+                                               "via": "print", "print_batch": job.get("batch")})
+            hub.publish(job["thread"], {"type": "print.summary", "batch": job.get("batch"), "text": summary,
+                                        "ok": "失败" not in summary and "没成功" not in summary, "id": msg["id"]})
     return job
 
 

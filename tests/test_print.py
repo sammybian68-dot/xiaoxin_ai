@@ -208,3 +208,89 @@ def test_printer_status_reported_and_described(family, fakes):
     family["女儿"].post(f"/api/conversations/{dau_t}/messages", json={"text": "打印机还有多少墨水"})
     res = store.get(dau_t)["messages"][-1]["actions"][0]["result"]
     assert "没纸了" in res and "彩色墨盒 12%" in res
+
+
+# ---------------------------------------------------------------- 异步：任务排队、补拉、结果回到对话
+
+def test_result_goes_back_to_conversation(family, fakes):  # 单任务也是一批
+    dau = family["女儿"]
+    tid = dau.get("/api/thread").json()["id"]
+    fid = _upload(dau, _textpage(), "a.jpg", "image/jpeg")
+    dau.post(f"/api/conversations/{tid}/messages", json={"text": "这个", "file_ids": [fid]})
+    job = printing.create_job(tid, fid)
+    dau.post(f"/api/print/{job['id']}/result", json={"state": "error", "error": "打印机没纸了，请放几张 A4 纸"})
+    msg = store.get(tid)["messages"][-1]
+    assert msg["role"] == "assistant" and msg["text"] == "打印没成功：打印机没纸了，请放几张 A4 纸。"
+    # 下一轮小新看得到（按原位置回放给模型），界面不推
+    dau.post(f"/api/conversations/{tid}/messages", json={"text": "怎么没出来"})
+    assistant = [m["content"] for m in fakes.llm_requests[-1]["messages"] if m["role"] == "assistant" and m.get("content")]
+    assert any("没成功" in c and "没纸" in c for c in assistant)  # 是小新自己说过的话，下一轮记得
+
+
+def test_pending_catch_up_in_order_and_stale_dropped(family, monkeypatch):
+    dau = family["女儿"]
+    tid = dau.get("/api/thread").json()["id"]
+    fid = _upload(dau, _textpage(), "a.jpg", "image/jpeg")
+    dau.post(f"/api/conversations/{tid}/messages", json={"text": "这个", "file_ids": [fid]})
+    old = printing.create_job(tid, fid)
+    printing.update_job(old["id"], created=old["created"] - printing.STALE_S - 1)  # pad 关了一晚上
+    a = printing.create_job(tid, fid)
+    b = printing.create_job(tid, fid)
+    done = printing.create_job(tid, fid)
+    printing.update_job(done["id"], state="done")
+    got = dau.get("/api/print/jobs?pending=1").json()["jobs"]
+    assert [j["id"] for j in got] == [a["id"], b["id"]]  # 按提交顺序，打完的不给
+    assert printing.get_job(old["id"])["state"] == "error" and "作废" in printing.get_job(old["id"])["error"]
+    assert family["儿子"].get("/api/print/jobs?pending=1").json()["jobs"] == []  # 别人的不给
+
+
+def test_batch_summary_once_when_all_finished(family, fakes):
+    """一轮里交了两个任务（练习纸 + 答案页）：第一个打完不说，两个都结束才一条总结，按张数算成功失败。"""
+    dau = family["女儿"]
+    tid = dau.get("/api/thread").json()["id"]
+    fid = _upload(dau, _pdf(3), "卷.pdf", "application/pdf")
+    dau.post(f"/api/conversations/{tid}/messages", json={"text": "这个", "file_ids": [fid]})
+    a = printing.create_job(tid, fid, batch="b1")             # 3 页
+    b = printing.create_job(tid, fid, pages="1-2", batch="b1")  # 2 页
+    n = len(store.get(tid)["messages"])
+    with dau.websocket_connect("/api/hub") as hub:
+        json.loads(hub.receive_text())
+        dau.post(f"/api/print/{a['id']}/result", json={"state": "done", "done_pages": 3})
+        assert len(store.get(tid)["messages"]) == n  # 还有一个没打完：不说
+        dau.post(f"/api/print/{b['id']}/result", json={"state": "error", "error": "打印机没纸了", "done_pages": 1})
+        while True:
+            ev = json.loads(hub.receive_text())
+            if ev["type"] == "print.summary":
+                break
+    assert ev["text"] == "打印完成，4 张成功，1 张失败：打印机没纸了。" and ev["ok"] is False
+    msg = store.get(tid)["messages"][-1]
+    assert msg["role"] == "assistant" and msg["text"] == ev["text"] and msg["id"] == ev["id"]
+
+
+def test_batch_all_ok_summary():
+    tid = store.thread_id()
+    from tests.test_print import _textpage  # noqa
+    fid_meta = store.allocate()
+    fid_meta[1].write_bytes(_textpage())
+    store.commit(fid_meta[0], "通知.jpg", "image/jpeg", 1)
+    store.append(tid, {"role": "user", "text": "x", "files": [store.file_info(fid_meta[0])[1]]})
+    j = printing.create_job(tid, fid_meta[0], copies=2, batch="b2")
+    printing.update_job(j["id"], state="done")
+    assert printing.batch_summary(tid, "b2") == "打印完成，2 张都出来了。"
+
+
+def test_same_worksheet_twice_in_one_turn_prints_once(family, fakes):
+    dau = family["女儿"]
+    tid = dau.get("/api/thread").json()["id"]
+    fakes.llm_script = [("tool", "make_worksheet", {"kind": "math", "count": 20, "max": 10}), ("text", "好")]
+    dau.post(f"/api/conversations/{tid}/messages", json={"text": "出题"})
+    wid = "w_" + __import__("re").search(r"w_([0-9a-f]{16})", store.get(tid)["messages"][-1]["actions"][0]["result"]).group(1)
+    n = len(printing.jobs(tid, 50))
+    fakes.llm_script = [("tool", "print_file", {"file": wid}), ("tool", "print_file", {"file": wid, "answers": True}),
+                        ("tool", "print_file", {"file": wid}), ("text", "好")]
+    dau.post(f"/api/conversations/{tid}/messages", json={"text": "打印，连答案页"})
+    js = printing.jobs(tid, 50)[: len(printing.jobs(tid, 50)) - n]
+    names = sorted(j["name"] for j in js)
+    assert len(names) == 2 and names[1] == names[0].replace(".jpg", "（答案）.jpg")  # 练习纸 1 张 + 答案页 1 张
+    res = [a["result"] for a in store.get(tid)["messages"][-1]["actions"]]
+    assert "补上答案页" in res[1] and "不重复打" in res[2]

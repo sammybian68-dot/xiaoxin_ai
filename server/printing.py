@@ -171,7 +171,7 @@ def render_pages(fid: str, pages: list[int] | None, color: bool, fit: str = "fit
 # ---------------------------------------------------------------- 打印任务
 
 def create_job(thread: str, fid: str, *, pages=None, color=None, copies: int = 1, fit: str = "fit",
-               by: str = "") -> dict:
+               by: str = "", batch: str = "") -> dict:
     """排好页、存成一个任务，返回任务（不含页面数据）。color=None 时按彩色占比自动选。"""
     info = inspect(fid)
     total = info["pages"] or 1
@@ -193,7 +193,8 @@ def create_job(thread: str, fid: str, *, pages=None, color=None, copies: int = 1
         (d / f"p{i}.jpg").write_bytes(data)
     job = {"id": jid, "thread": thread, "file": fid, "name": info["name"], "pages": [p + 1 for p in idx] if idx else [1],
            "total": total, "sheets": len(datas) * copies, "copies": copies, "color": bool(color), "auto_color": auto,
-           "fit": fit, "by": by, "state": "queued", "created": time.time(), "error": ""}
+           "fit": fit, "by": by, "state": "queued", "created": time.time(), "error": "",
+           "batch": batch or jid, "done_pages": 0}
     store._write_json(d / "job.json", job)
     return job
 
@@ -216,6 +217,22 @@ def update_job(jid: str, **fields) -> dict:
         job.update(fields)
         store._write_json(_jobs_dir() / jid / "job.json", job)
     return job
+
+
+STALE_S = 30 * 60  # 排着的任务 30 分钟没被 pad 领走就作废：pad 关了一晚上，第二天一开机突然出纸不对
+
+
+def pending(thread: str) -> list[dict]:
+    """还没打的（pad 重连后补拉）：按提交顺序；太久的标成过期，不再给。"""
+    out = []
+    for j in reversed(jobs(thread, limit=50)):
+        if j["state"] != "queued":
+            continue
+        if time.time() - j["created"] > STALE_S:
+            update_job(j["id"], state="error", error="等太久没打（pad 不在线），作废了，要打再说一次")
+            continue
+        out.append(j)
+    return out
 
 
 def jobs(thread: str, limit: int = 10) -> list[dict]:
@@ -276,3 +293,22 @@ def describe_status(st: dict | None) -> str:
     return (f"打印机（{st.get('name') or 'HP DeskJet 4800'}）{state}"
             + (f"；问题：{'、'.join(probs)}" if probs else "") + (f"；{media}" if media else "")
             + (f"；{'，'.join(inks)}" if inks else "") + f"（{when}查的）")
+
+
+# ---------------------------------------------------------------- 批次总结（一轮里提交的几个任务算一批，全部结束才说一次）
+
+def batch_summary(thread: str, batch: str) -> str | None:
+    """这一批全部结束（done / error）了就返回一句总结，还有没打完的返回 None。
+    只说张数和失败原因，不念文件名（「xx.jpg 完成，xx2.jpg 完成」听不下去，2026-11-01 用户反馈）。"""
+    js = [j for j in jobs(thread, limit=50) if j.get("batch") == batch]
+    if not js or any(j["state"] in ("queued", "printing") for j in js):
+        return None
+    ok = sum(j["sheets"] if j["state"] == "done" else j.get("done_pages", 0) * j["copies"] for j in js)
+    total = sum(j["sheets"] for j in js)
+    bad = total - ok
+    if not bad:
+        return "打印完成，出来了。" if ok == 1 else f"打印完成，{ok} 张都出来了。"
+    reasons = "、".join(dict.fromkeys(j["error"] or "没打成" for j in js if j["state"] == "error"))
+    if not ok:
+        return f"打印没成功：{reasons}。" if total == 1 else f"打印没成功，{total} 张都没出来：{reasons}。"
+    return f"打印完成，{ok} 张成功，{bad} 张失败：{reasons}。"

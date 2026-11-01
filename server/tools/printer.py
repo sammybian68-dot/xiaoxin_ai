@@ -161,12 +161,26 @@ def run(name: str, arguments: str) -> str:
             color = {"color": True, "bw": False}.get(str(args.get("color") or "auto"))
             if ws is not None and color is None:
                 color = False  # 练习纸都是黑白排的
+            batch = c.setdefault("batch", store._new_id())  # 这一轮里打的几个算一批，全部打完说一次总结
+            sent = c.setdefault("sent", {})                  # 这一轮已经交过的：(文件, 页码) → 任务
+            key = (fid, str(args.get("pages") or ""))
+            if key in sent:
+                # 同一轮又交了一遍同一份（2026-11-01 实测：先交练习纸、又带 answers 再交一遍，多出一张）：
+                # 不再打第二份；要答案页就只补答案页
+                if ws is not None and args.get("answers") and not sent[key].get("answers"):
+                    ans = worksheet.page_file(ws, answers=True, kid_name=c.get("kid_name", ""))
+                    _push(printing.create_job(thread, ans["id"], color=False, by=c.get("by", ""), batch=batch))
+                    sent[key]["answers"] = True
+                    return "已补上答案页 1 张（练习纸刚才已经交了，不再重复打）。\n播报：好的，答案页也一起打。"
+                return "这份刚才已经交给打印机了，不重复打。要多打几份就用 copies。\n播报：已经在打了。"
             job = printing.create_job(thread, fid, pages=args.get("pages"), color=color,
-                                      copies=args.get("copies") or 1, fit=str(args.get("fit") or "fit"), by=c.get("by", ""))
+                                      copies=args.get("copies") or 1, fit=str(args.get("fit") or "fit"), by=c.get("by", ""),
+                                      batch=batch)
+            sent[key] = {"job": job["id"], "answers": bool(ws is not None and args.get("answers"))}
             extra = []
             if ws is not None and args.get("answers"):
                 ans = worksheet.page_file(ws, answers=True, kid_name=c.get("kid_name", ""))
-                extra.append(printing.create_job(thread, ans["id"], color=False, by=c.get("by", "")))
+                extra.append(printing.create_job(thread, ans["id"], color=False, by=c.get("by", ""), batch=batch))
             for j in [job, *extra]:
                 _push(j)
             how = "自动选了" + ("彩色" if job["color"] else "黑白") if job["auto_color"] else ("彩色" if job["color"] else "黑白")

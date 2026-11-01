@@ -315,7 +315,15 @@ public class TalkActivity extends Activity {
          */
         @JavascriptInterface
         public void print(String jobJson) {
-            new Thread(() -> runPrint(jobJson), "print").start();
+            // 进队列：一台打印机一次只能收一个任务，按到达顺序一个个打。同一个任务 hub 推一次、重连补拉一次，只打一次
+            try {
+                org.json.JSONObject job = new org.json.JSONObject(jobJson);
+                if ("queued".equals(job.optString("state")) && seenJobs.add(job.getString("id"))) {
+                    printQueue.execute(() -> runPrint(jobJson));
+                }
+            } catch (org.json.JSONException ignored) {
+                // 不是任务
+            }
         }
 
         /** 登录页配对成功：设备 token 存成 key，原生连接（自由对话、闹钟、提示音）从此都用这台设备的身份。 */
@@ -884,40 +892,36 @@ public class TalkActivity extends Activity {
     // ---------------------------------------------------------------- 打印
 
     private Printer printer;
-    private final java.util.Set<String> printing = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.concurrent.ExecutorService printQueue = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final java.util.Set<String> seenJobs = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
 
     private void runPrint(String jobJson) {
         String id = "";
         try {
             org.json.JSONObject job = new org.json.JSONObject(jobJson);
             id = job.getString("id");
-            if (!"queued".equals(job.optString("state")) || !printing.add(id)) {
-                return;  // 别的事件（printing / done）或者已经在打了
-            }
             if (printer == null) {
                 printer = new Printer(this);
             }
-            reportPrint(id, "printing", "", "");
+            reportPrint(id, "printing", "", "", -1);
             int pages = job.getJSONArray("pages").length();
             for (int i = 0; i < pages; i++) {
                 byte[] jpeg = httpGet(base() + "api/print/" + id + "/page/" + i);
                 String err = printer.printJpeg(jpeg, job.optBoolean("color"), job.optInt("copies", 1),
                         job.optString("name", "小新") + (pages > 1 ? " 第" + (i + 1) + "页" : ""));
                 if (err != null) {
-                    reportPrint(id, "error", err, "");
+                    reportPrint(id, "error", err, "", i);  // 前 i 页已经出来了
                     return;
                 }
                 printer.waitIdle(120);  // 等这页出完再发下一页（打印机一次只收一个任务）
             }
-            reportPrint(id, "done", "", "HP DeskJet 4800");
+            reportPrint(id, "done", "", "HP DeskJet 4800", pages);
             reportPrinterStatus();
         } catch (Exception e) {
             android.util.Log.w("XxPrint", "job " + id + ": " + e);
             if (!id.isEmpty()) {
-                reportPrint(id, "error", "打印出错：" + e.getMessage(), "");
+                reportPrint(id, "error", "打印出错：" + e.getMessage(), "", -1);
             }
-        } finally {
-            printing.remove(id);
         }
     }
 
@@ -972,15 +976,18 @@ public class TalkActivity extends Activity {
         }
     }
 
-    private void reportPrint(String id, String state, String error, String printerName) {
+    private void reportPrint(String id, String state, String error, String printerName, int donePages) {
         try {
             java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(base() + "api/print/" + id + "/result").openConnection();
                 c.setRequestMethod("POST");
             c.setDoOutput(true);
             c.setRequestProperty("Authorization", "Bearer " + key());
             c.setRequestProperty("Content-Type", "application/json");
-            byte[] body = new org.json.JSONObject().put("state", state).put("error", error).put("printer", printerName)
-                    .toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            org.json.JSONObject o = new org.json.JSONObject().put("state", state).put("error", error).put("printer", printerName);
+            if (donePages >= 0) {
+                o.put("done_pages", donePages);
+            }
+            byte[] body = o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             c.getOutputStream().write(body);
             c.getResponseCode();
             c.disconnect();
