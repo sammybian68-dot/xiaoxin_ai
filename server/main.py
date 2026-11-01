@@ -778,6 +778,9 @@ def _attachments(request: Request, file_ids: list) -> list[dict]:
     return out
 
 
+CALL_XIAOXIN = re.compile(r"^\s*[@＠]?\s*小新(同学)?[\s,，:：、!！]")
+
+
 def _sender(w: "members.Who", cid: str) -> dict:
     """这条消息算谁发的：设备的主人。管理员在网页上打字是在调小新，算这条线程的孩子说的（和以前一样）。"""
     if w.kind == "member":
@@ -1144,7 +1147,11 @@ async def send(cid: str, request: Request, body: dict = Body(...)) -> StreamingR
     sender = _sender(w, cid)
     # 群聊：孩子说话小新照常答；家长发给孩子的（默认）只存不答，点亮「问小新」（ask=true）才答（docs/architecture.md 6.3）。
     # 管理员在网页上打字是在调小新，默认答（要模拟家长发消息就传 ask=false）
-    ask = body.get("ask", sender["role"] == "kid") is not False
+    ask = body.get("ask")
+    if ask is None:
+        # 家长没点「问小新」：话以「小新」「@小新」开头（「小新，帮我把作业打出来」）也算问小新，像微信群里 @ 一下
+        ask = sender["role"] == "kid" or bool(CALL_XIAOXIN.match(text))
+    ask = ask is not False
     if not ask:
         user = store.append(cid, {"role": "user", "text": text, "files": files, "via": body.get("via") or "text",
                                   "from": sender["id"], "to": "kid", "speak": bool(body.get("speak_on_pad", True))})

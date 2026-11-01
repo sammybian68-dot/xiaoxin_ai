@@ -253,3 +253,17 @@ def test_family_settings_admin_only(family):
         assert c.put("/api/voices/current", json={"voice": "doubao:x"}).status_code == 403
         assert c.delete("/api/voice/0123456789abcdef").status_code == 403
     assert family["女儿"].get("/api/voices").status_code == 200  # 看可以
+
+
+@pytest.mark.parametrize("text,asks", [("小新，把作业打印出来", True), ("@小新 今天几点放学", True), ("小新同学：在吗", True),
+                                       ("晚上七点前做完", False), ("小新的作业呢", False), ("小新", False)])
+def test_parent_message_starting_with_xiaoxin_asks(family, fakes, text, asks):
+    dau_t = family["女儿"].get("/api/thread").json()["id"]
+    n = len(fakes.llm_requests)
+    body = family["爸爸"].post(f"/api/conversations/{dau_t}/messages", json={"text": text}).text
+    assert (len(fakes.llm_requests) > n) == asks and ("event: posted" in body) != asks
+    # 点了「问小新」开关或明确 ask=false 照旧
+    if not asks:
+        n = len(fakes.llm_requests)
+        family["爸爸"].post(f"/api/conversations/{dau_t}/messages", json={"text": text, "ask": True})
+        assert len(fakes.llm_requests) > n

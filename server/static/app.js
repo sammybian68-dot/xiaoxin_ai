@@ -56,7 +56,7 @@ async function boot() {
   if (state.me.role === "parent" || (state.me.kind === "admin" && matchMedia("(max-width: 820px)").matches && state.kids.length > 1)) {
     document.body.classList.add("parent-mode");
     $("ask").hidden = false;
-    $("input").placeholder = "发给孩子…";
+    $("input").placeholder = "发给孩子…（开头说「小新，」就是问小新）";
     await showChats();
     setTimeout(() => window.xiaoxinShareArrived(), 0);  // 被微信「分享」拉起来的：弹「发给孩子」
   } else {
@@ -703,7 +703,9 @@ async function send(text, via = "text") {
   const files = state.pending.filter((p) => p.meta).map((p) => p.meta);
   if (!text && !files.length) return;
   // 家长在孩子的群里：默认是发给孩子（小新不接话），点亮「问小新」才是问小新
-  if (state.me?.role === "parent" && !askOn()) return postOnly(text, files, via);
+  // 话以「小新，」「@小新」开头也算问小新（和服务端 CALL_XIAOXIN 一样）
+  const calls = /^\s*[@＠]?\s*小新(同学)?[\s,，:：、!！]/.test(text);
+  if (state.me?.role === "parent" && !askOn() && !calls) return postOnly(text, files, via);
   state.sending = true;
   updateSend();
   const conv = await ensureConv();
@@ -2459,7 +2461,7 @@ function askOn() { return $("ask").getAttribute("aria-pressed") === "true"; }
 $("ask").addEventListener("click", () => {
   const on = !askOn();
   $("ask").setAttribute("aria-pressed", String(on));
-  $("input").placeholder = on ? "问小新…（小新会回答，孩子也看得到）" : "发给孩子…";
+  $("input").placeholder = on ? "问小新…（小新会回答，孩子也看得到）" : "发给孩子…（开头说「小新，」就是问小新）";
 });
 
 async function postOnly(text, files, via) {
