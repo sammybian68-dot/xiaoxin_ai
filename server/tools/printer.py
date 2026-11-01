@@ -191,7 +191,8 @@ def run(name: str, arguments: str) -> str:
             for j in [job, *extra]:
                 _push(j)
             how = "自动选了" + ("彩色" if job["color"] else "黑白") if job["auto_color"] else ("彩色" if job["color"] else "黑白")
-            return (f"已发给打印机：{printing.describe(job)}（{how}）" + ("，另加答案页 1 张" if extra else "") + "。\n"
+            ids = " ".join("j_" + j["id"] for j in [job, *extra])  # 界面按这个认打印条（不念）
+            return (f"已发给打印机：{printing.describe(job)}（{how}）" + ("，另加答案页 1 张" if extra else "") + f"。任务 {ids}\n"
                     f"播报：好的，{'彩色' if job['color'] else '黑白'}打印 {job['sheets']} 张，马上出纸。")
     except printing.PrintError as e:
         return f"失败：{e}"

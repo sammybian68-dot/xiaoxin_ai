@@ -450,9 +450,10 @@ function showAction(row, a) {
     el.className = "print-job queued";
     // 任务 id 不在工具结果里：按这轮之后最新的任务认（hub 来了 print 事件就会刷新）
     el.dataset.pending = "1";
-    el.innerHTML = `<span>🖨 ${esc((a.result || "").split("\n")[0].replace(/^已发给打印机：/, ""))}</span>`;
+    el.innerHTML = `<span>🖨 ${esc((a.result || "").split("\n")[0].replace(/^已发给打印机：/, "").replace(/。?任务 .*$/, ""))}</span>`;
     row.querySelector(".bubble").insertBefore(el, row.querySelector(".bubble .text"));
-    claimJob(el);
+    const jid = /j_([0-9a-f]{16})/.exec(a.result || "")?.[1];  // 老消息没有：只显示那句话，不猜是哪个任务
+    if (jid) claimJob(el, jid);
     return;
   }
   if (a.name === "list_printables") return;
@@ -1161,7 +1162,7 @@ async function endHold() {
   await rec.stop();
   if (seconds < 0.4) { hold.ws = null; ws.close(); toast("太短了，按住多说一会儿"); return; }
   flushChunk(true);
-  holdBtn.textContent = "识别中…";
+  holdBtn.querySelector(".hold-label").textContent = "识别中…";
   holdBtn.disabled = true;
   try {
     if (ws.readyState === WebSocket.CONNECTING) await new Promise((r) => ws.addEventListener("open", r, { once: true }));
@@ -1174,7 +1175,7 @@ async function endHold() {
     toast("识别失败：" + err.message);
   } finally {
     hold.ws = null;
-    holdBtn.textContent = "按住 说话";
+    holdBtn.querySelector(".hold-label").textContent = "按住 说话";
     holdBtn.disabled = false;
   }
 }
@@ -2613,11 +2614,14 @@ async function printCatchUp() {
 }
 
 // 打印条认领任务：最新的、还没被别的条认领的那个
-async function claimJob(el) {
+// 打印条：按工具结果里的任务 id 认，拿它现在的状态（之后 hub 的 print 事件按 data-job 刷新）
+async function claimJob(el, jid) {
+  el.dataset.job = jid;
+  delete el.dataset.pending;
+  if (state.jobs?.[jid]) { paintJob(el, state.jobs[jid]); return; }
   try {
     const { jobs } = await api(`api/print/jobs${state.conv?.kid ? "?kid=" + state.conv.kid : ""}`).then(json);
-    const taken = new Set([...document.querySelectorAll("[data-job]")].map((x) => x.dataset.job));
-    const job = jobs.find((j) => !taken.has(j.id));
-    if (job) { el.dataset.job = job.id; delete el.dataset.pending; paintJob(el, state.jobs?.[job.id] || job); }
+    const job = jobs.find((j) => j.id === jid);
+    if (job) paintJob(el, job);
   } catch (_) { /* 拿不到就显示工具那句 */ }
 }
