@@ -1089,11 +1089,30 @@ public class TalkActivity extends Activity {
         }
     }
 
+    /**
+     * 选好的文件。系统相册（Android 13+ 的照片选择器）多选时把结果放在 ClipData 里、getData() 是空的，
+     * FileChooserParams.parseResult 只看 getData，网页就拿到 null——选完回来什么都没有（2026-11-01 vivo 实测）。
+     */
+    private static Uri[] pickedUris(int resultCode, Intent data) {
+        if (resultCode != RESULT_OK || data == null) {
+            return null;
+        }
+        android.content.ClipData clip = data.getClipData();
+        if (clip != null && clip.getItemCount() > 0) {
+            Uri[] out = new Uri[clip.getItemCount()];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = clip.getItemAt(i).getUri();
+            }
+            return out;
+        }
+        return data.getData() != null ? new Uri[] {data.getData()} : null;
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == 2 && pendingFiles != null) {
-            pendingFiles.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+            pendingFiles.onReceiveValue(pickedUris(resultCode, data));
             pendingFiles = null;
         }
     }

@@ -92,6 +92,7 @@ async function start() {
   const fitLocal = () => { const v = $("local"); if (v.videoWidth) v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`; };
   $("local").addEventListener("resize", fitLocal);
   $("local").addEventListener("loadedmetadata", fitLocal);
+  fitLocal();  // 自己的画面在这之前已经出来了（srcObject 早就设了），事件不会再来
   addEventListener("resize", fit);
   pc.ontrack = (e) => {
     $("remote").srcObject = e.streams[0];
