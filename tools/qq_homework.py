@@ -435,6 +435,7 @@ def main() -> int:
     ap.add_argument("--day", default="", help="只抓这一天（YYYY-MM-DD）")
     ap.add_argument("--force", action="store_true", help="已经有记录的也重抓")
     ap.add_argument("--no-images", action="store_true", help="不抓附图（快，调试用）")
+    ap.add_argument("--from-shots", action="store_true", help="复用 tmp/hw 里已有的列表截图，不重新滚（读取中途失败时接着跑）")
     a = ap.parse_args()
     today = time.strftime("%Y-%m-%d")
     want = [a.day] if a.day else [time.strftime("%Y-%m-%d", time.localtime(time.time() - i * 86400)) for i in range(a.days)]
@@ -446,9 +447,15 @@ def main() -> int:
         return 0
 
     pad = Pad(a.pad)
-    open_homework(pad)
-    shots = scroll_shots(pad, "list")
-    print(f"列表截了 {len(shots)} 屏")
+    if a.from_shots:
+        shots = sorted(SHOT.glob("list_*.png"))
+        if not shots:
+            raise SystemExit("tmp/hw 里没有列表截图，去掉 --from-shots 重新抓")
+        print(f"复用已有截图 {len(shots)} 屏")
+    else:
+        open_homework(pad)
+        shots = scroll_shots(pad, "list")
+        print(f"列表截了 {len(shots)} 屏")
     days, where = read_shots(shots, today)
     print(f"读出 {len(days)} 天：{'、'.join(d.get('date', '?') for d in days)}")
 
