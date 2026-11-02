@@ -77,6 +77,7 @@ def test_practice_flow_grade_and_report(client, fakes, monkeypatch):
     store._write_json(practice._dir() / f"{r['id']}.json", rec)
     done = client.post(f"/api/practice/{r['id']}/finish").json()
     assert done["state"] == "done" and done["overtime_s"] >= 35
+    assert client.get(f"/api/practice/current?kid={kid['id']}").json() == {}  # 做完了就不再弹全屏（等拍照交卷）
     msgs = store.get(kid["thread"])["messages"]
     assert "超时" in msgs[-1]["text"] and "拍照" in msgs[-1]["text"]
 

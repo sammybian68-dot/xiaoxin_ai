@@ -579,7 +579,10 @@ def practice_current(request: Request, kid: str = "") -> dict:
 
     k = kid_for(request, kid)
     for r in reversed(practice.all_for(k["id"])):
-        if r["state"] in ("listening", "writing", "done") and time.time() - r["started"] < 6 * 3600:
+        # 只恢复「还在做」的：已经点过完成（done，等拍照交卷）的不再弹全屏——刷新后会把几小时前
+        # 做完没交的那条又顶到前台（2026-11-03 实测：屏幕上出现 20:45 那条的「用时 0:02」）。
+        # 交卷在聊天里点卡片补交就行。
+        if r["state"] in ("listening", "writing") and time.time() - r["started"] < 3 * 3600:
             return _practice_view(r)
     return {}
 
