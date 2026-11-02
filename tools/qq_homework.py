@@ -208,7 +208,7 @@ READ_PROMPT = """这是小学班级群「作业」列表的连续截图（从上
 
 
 CHUNK = 6      # 一次给模型几张图（太多会漏读、也容易超时）
-OVERLAP = 2    # 批之间重叠几张（跨批的那一条作业两边都能看到）
+OVERLAP = 3    # 批之间重叠几张：半屏步进时一张卡片横跨 3–4 屏，重叠 3 张才保证至少有一批看到完整的
 
 
 def read_chunk(shots: list[Path], today: str) -> list[dict]:
@@ -223,6 +223,14 @@ def read_chunk(shots: list[Path], today: str) -> list[dict]:
         print(f"  × 这一批没给出 JSON：{rep.text[:160]}")
         return []
     return json.loads(m.group(0)).get("days") or []
+
+
+def _score(it: dict) -> tuple[int, int]:
+    """这份读出来的正文有多可信：(有没有干净的正文, 多长)。空的最差，带「看不清」的次差。"""
+    t = str(it.get("text") or "").strip()
+    if not t:
+        return (0, 0)
+    return (1 if "看不清" not in t else 0, len(t))
 
 
 def read_shots(shots: list[Path], today: str) -> tuple[list[dict], dict]:
@@ -243,8 +251,9 @@ def read_shots(shots: list[Path], today: str) -> tuple[list[dict], dict]:
                 k = (day, str(it.get("subject") or "other"))
                 where.setdefault(k, []).extend(p.stem for p in batch)
                 old = merged.get(k)
-                # 同一条在好几批里都读到：正文最长的那份最全；notes、mentions 取并集
-                if old is None or len(str(it.get("text") or "")) > len(str(old.get("text") or "")):
+                # 同一条在好几批里都读到：挑最可信的那份（没抓到的、带「看不清」的排在后面，同档比长度），
+                # notes、mentions 取并集。实测：被屏幕切断的那批会读成「（看不清）」，不能按长度盖掉完整的那份
+                if old is None or _score(it) > _score(old):
                     it = dict(it)
                     if old:
                         it["notes"] = list(dict.fromkeys((old.get("notes") or []) + (it.get("notes") or [])))
@@ -271,23 +280,55 @@ def grab_images(pad: Pad, shots: list[Path]) -> dict[str, list[str]]:
     所以按像素找，再点那个块的中心。"""
     out: dict[str, list[str]] = {}
     for p in shots:
-        for cx, cy in photo_spots(p):
+        for cx, cy, y0, y1 in photo_spots(p):
             pad.shot("tmp_before")
             pad.tap(cx, cy, wait=2.5)
             full = pad.shot(f"img_{p.stem}_{cx}_{cy}")
-            if _same(full.read_bytes(), (SHOT / "tmp_before.png").read_bytes()):
-                full.unlink(missing_ok=True)  # 没点开（不是图片）
-                continue
-            fid = upload_image(full)
+            if _is_preview(full):
+                fid = upload_image(full)          # 全屏预览：整张都是图，裁掉边框就行
+                print(f"  附图（全屏）{full.name} → {fid}")
+                pad.back(1.6)
+            else:
+                # 没点开（点在空白处，或这版 QQ 列表里的图不能点）：退而从列表截图里把那一块裁出来
+                full.unlink(missing_ok=True)
+                fid = upload_crop(p, y0, y1, f"{p.stem}_{y0}")
+                if fid is None:
+                    continue
+                print(f"  附图（列表裁切）{p.stem} y={y0}-{y1} → {fid}")
             out.setdefault(p.stem, []).append(fid)
-            print(f"  附图 {full.name} → {fid}")
-            pad.back(1.6)
     (SHOT / "tmp_before.png").unlink(missing_ok=True)
     return out
 
 
-def photo_spots(path: Path, min_frac: float = 0.06) -> list[tuple[int, int]]:
-    """截图里像照片的区域中心点（屏幕坐标）。照片的特征：颜色杂、不是白底黑字。"""
+def _is_preview(path: Path) -> bool:
+    """点开后是不是进了全屏图片预览：QQ 预览是黑底、图片铺满，边角很暗。"""
+    from PIL import Image
+
+    im = Image.open(path).convert("L")
+    W, H = im.size
+    corners = [im.getpixel(xy) for xy in ((8, H // 2), (W - 8, H // 2), (W // 2, 8), (W // 2, H - 8))]
+    return sum(1 for c in corners if c < 60) >= 3
+
+
+def upload_crop(path: Path, y0: int, y1: int, tag: str) -> str | None:
+    """从列表截图里裁出附图那一块传上去（点不开全屏预览时的兜底）。"""
+    from PIL import Image
+
+    im = Image.open(path).convert("RGB")
+    W, H = im.size
+    y0, y1 = max(0, y0 - 10), min(H, y1 + 10)
+    if y1 - y0 < H * 0.12:
+        return None
+    im = im.crop((int(W * 0.03), y0, int(W * 0.78), y1))  # 列表卡片大致占左边 3%–78%
+    out = SHOT / f"crop_{tag}.jpg"
+    im.save(out, "JPEG", quality=88)
+    meta = api("POST", "api/files", out.read_bytes(), ctype="image/jpeg",
+               headers={"X-Filename": urllib.parse.quote(out.name)})
+    return meta["id"]
+
+
+def photo_spots(path: Path, min_frac: float = 0.06) -> list[tuple[int, int, int, int]]:
+    """截图里像照片的区域：返回 (点击点 x, 点击点 y, 上边界, 下边界)。照片的特征：颜色杂、不是白底黑字。"""
     from PIL import Image
 
     im = Image.open(path).convert("RGB")
@@ -310,7 +351,7 @@ def photo_spots(path: Path, min_frac: float = 0.06) -> list[tuple[int, int]]:
             while y < h and rows[y] > 0.45:
                 y += 1
             if (y - y0) / h > min_frac:
-                spots.append((W // 2, (y0 + y) // 2 * 16))
+                spots.append((W // 2, (y0 + y) // 2 * 16, y0 * 16, y * 16))  # (点哪里, 这块的上下边界)
         y += 1
     return spots[:4]
 

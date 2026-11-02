@@ -99,6 +99,11 @@ def test_merge_keeps_longest_text(monkeypatch, tmp_path):
     assert len(days) == 1 and days[0]["date"] == "2026-10-23"
     items = {it["subject"]: it for it in days[0]["items"]}
     assert items["chinese"]["text"].endswith("3.小册") and items["chinese"]["notes"] == ["甲", "乙"]
+    # 「（看不清）」那份不能盖掉完整的（屏幕切断时模型会这么读）
+    from tools.qq_homework import _score
+
+    assert _score({"text": "1.完成《同步》期中自我测评\n2.订正2号本"}) > _score({"text": "1.完成《同步》\n（看不清）\n还有一行"})
+    assert _score({"text": "（看不清）"}) > _score({"text": ""})
     assert items["chinese"]["mentions"] == ["练习卷.pdf"] and items["chinese"]["has_image"] is True
     assert items["math"]["text"] == "正反打印作业纸"
     assert where[("2026-10-23", "chinese")] == ["0", "1"]  # 这条出现在第 0、1 屏：附图按屏归属认领
