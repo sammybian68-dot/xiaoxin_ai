@@ -51,6 +51,15 @@ def save_day(day: str, items: list[dict], *, source: str = "qq", note: str = "")
                     "files": [dict(x) for x in it.get("files") or []],        # 群文件：{name, fid}
                     "mentions": [str(x) for x in it.get("mentions") or []],   # 正文里提到的文件名（去聊天记录找）
                     "notes": [str(x) for x in it.get("notes") or []]})        # 批评、提醒这类附加段
+    # 没有正文的条目丢掉：视觉模型有时看到学科色块就补一条空的（2026-11-03 实测 10/29、10/26 的「数学」
+    # 其实那天没有数学作业）。它身上的附图并给当天第一条有正文的
+    def _blank(it):
+        t = re.sub(r"[（(]?看不清[）)]?|\s", "", it["text"])
+        return not t  # 空的，或整条就是「（看不清）」：都算没抓到，不如不显示
+    orphan = [f for it in out if _blank(it) for f in it["images"]]
+    out = [it for it in out if not _blank(it)]
+    if orphan and out:
+        out[0]["images"] = list(dict.fromkeys(out[0]["images"] + orphan))
     out.sort(key=lambda x: ORDER.index(x["subject"]) if x["subject"] in ORDER else 9)
     rec = {"day": day, "week": WEEK[time.strptime(day, "%Y-%m-%d").tm_wday], "items": out,
            "source": source, "note": note, "collected": time.time()}

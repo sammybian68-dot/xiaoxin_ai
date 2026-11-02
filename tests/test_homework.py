@@ -107,3 +107,16 @@ def test_merge_keeps_longest_text(monkeypatch, tmp_path):
     assert items["chinese"]["mentions"] == ["练习卷.pdf"] and items["chinese"]["has_image"] is True
     assert items["math"]["text"] == "正反打印作业纸"
     assert where[("2026-10-23", "chinese")] == ["0", "1"]  # 这条出现在第 0、1 屏：附图按屏归属认领
+
+
+def test_empty_items_dropped():
+    """视觉模型有时看到学科色块就补一条空的（实测 10/29 其实没有数学作业）：没有正文的条目不存，附图并给第一条。"""
+    r = homework.save_day("2026-10-29", [{"subject": "chinese", "text": "1.默第13课词语", "images": ["a"]},
+                                         {"subject": "math", "text": "", "images": ["b"]},
+                                         {"subject": "english", "text": "   "},
+                                         {"subject": "other", "text": "（看不清）", "images": ["c"]}])
+    assert [it["subject"] for it in r["items"]] == ["chinese"]
+    assert r["items"][0]["images"] == ["a", "b", "c"]
+    # 正文里只是夹着「（看不清）」的那几行要留着
+    keep = homework.save_day("2026-10-28", [{"subject": "math", "text": "1.大册P28\n（看不清）"}])
+    assert keep["items"][0]["text"].startswith("1.大册P28")
