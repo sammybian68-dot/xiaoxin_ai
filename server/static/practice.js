@@ -35,6 +35,7 @@ function pracBusy() { return !!prac.r && ["listening", "writing", "done"].includ
 
 function pracOpen(r) {
   prac.r = r;
+  prac.openAt = Date.now();  // 刚弹出来那一下不接受点击（见下面的 pracTap）
   pracHushXiaoxin();
   prac.skew = (r.now ? r.now * 1000 - Date.now() : 0);  // 服务端时间和本机差多少
   let el = $("practice");
@@ -145,9 +146,20 @@ async function pracPhotos() {
   box.innerHTML = prac.photos.map((p, i) => `<figure><img src="${p.preview}" alt="第 ${i + 1} 页"><button type="button" data-rm="${i}" aria-label="去掉">✕</button></figure>`).join("");
 }
 
+// 误触：全屏界面是在手指底下突然出现的，手指抬起时按钮已经在那个位置，那一下的 click 就落到按钮上
+// （2026-11-02 实测：开始练习后 2 秒就收到 finish，用时显示 0:02）。所以要求手指是在练习界面上按下的，
+// 并且界面刚出来 800 毫秒内一概不认。脚本点的（detail === 0，端到端测试）放过。
+document.addEventListener("pointerdown", (e) => { prac.down = e.target.closest("#practice") ? Date.now() : 0; }, true);
+function pracTap(e) {
+  if (e.detail === 0) return true;
+  if (Date.now() - (prac.openAt || 0) < 800) return false;
+  return !!prac.down && Date.now() - prac.down < 4000;
+}
+
 document.addEventListener("click", async (e) => {
   const el = e.target.closest("#practice [data-p], #practice [data-rm]");
   if (!el || !prac.r) return;
+  if (!pracTap(e)) return;
   const p = el.dataset.p;
   if (el.dataset.rm != null) { prac.photos.splice(+el.dataset.rm, 1); pracRender(); return; }
   if (p === "again") { prac.gen++; prac.audio?.pause(); pracListen(prac.listenAt); }
@@ -156,6 +168,12 @@ document.addEventListener("click", async (e) => {
     else { prac.gen++; prac.audio?.pause(); el.dataset.on = "1"; el.textContent = "▶ 接着读"; }
   } else if (p === "skip") { prac.audio?.pause(); await pracListenDone(); }
   else if (p === "finish") {
+    if (!el.dataset.sure) {  // 点错了白瞎一次练习：再点一下才真结束
+      el.dataset.sure = "1";
+      el.textContent = "真的做完了？再点一下";
+      setTimeout(() => { if (el.dataset.sure) { delete el.dataset.sure; el.textContent = "✅ 我做完了"; } }, 5000);
+      return;
+    }
     prac.gen++;
     prac.r = await api(`api/practice/${prac.r.id}/finish`, { method: "POST" }).then(json);
     pracRender();
