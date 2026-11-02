@@ -29,6 +29,18 @@ async function homeworkCard(row, args) {
     }).join("") || '<div class="hw-text">这天没有作业</div>';
     return `<section class="hw-day"><h4>${r.day.slice(5).replace("-", " 月 ")} 日 · 星期${r.week}</h4>${items}</section>`;
   }).join("");
+  // 好几天的时候：顶上一排日期，点了滚到那天（一周的作业一屏看不完）
+  if (days.length > 1) {
+    const nav = document.createElement("div");
+    nav.className = "hw-nav";
+    nav.innerHTML = days.map((r, i) => `<button type="button" data-hw-go="${i}">${r.day.slice(5).replace("-", "/")} 周${r.week}`
+      + `<small>${(r.items || []).length} 科</small></button>`).join("");
+    nav.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-hw-go]");
+      if (b) card.querySelectorAll(".hw-day")[+b.dataset.hwGo]?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    card.prepend(nav);
+  }
   // 附图要能在查看器里翻：登记到 extraFiles
   const extra = {};
   for (const r of days) for (const it of r.items || []) for (const f of it.images || []) extra[f] = { id: f, name: `${r.day} ${HW_SUBJECT[it.subject]?.[1] || ""}作业附图`, kind: "image" };

@@ -17,3 +17,6 @@
 .hw-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .hw-file { font-size: 14px; color: #2f6fe4; background: #eef3fd; border-radius: 10px; padding: 6px 12px; text-decoration: none; }
 .hw-miss { display: inline-block; margin-top: 8px; font-size: 13px; color: #b23b31; background: #fdecea; border-radius: 10px; padding: 5px 10px; }
+.hw-nav { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 4px; }
+.hw-nav button { border: 0; background: #f4ece0; color: #2b2420; border-radius: 14px; padding: 6px 12px; font-size: 14px; display: inline-flex; gap: 6px; align-items: baseline; }
+.hw-nav small { color: #8a7d72; font-size: 12px; }

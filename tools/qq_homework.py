@@ -105,7 +105,10 @@ class Pad:
 def open_homework(pad: Pad) -> None:
     """QQ → 班级群 → 底部「作业」→「全部作业」。"""
     pad.sh("svc", "power", "stayon", "usb")
+    pad.sh("settings", "put", "system", "screen_off_timeout", "1800000")  # 半小时不熄屏（抓一轮要十几分钟）
     pad.sh("input", "keyevent", "KEYCODE_WAKEUP")
+    pad.sh("input", "swipe", "1280", "2000", "1280", "700", "200")  # 锁屏的话划开（这台没有密码）
+    time.sleep(1.5)
     pad.sh("cmd", "statusbar", "collapse")  # 通知栏拉下来的话先收起
     # 重开一次 QQ 回到会话列表：不要用返回键退（QQ 停在二级页面时连按会直接退出 QQ，跑到别的 app 上去）
     pad.sh("am", "force-stop", QQ)
@@ -157,8 +160,16 @@ def scroll_shots(pad: Pad, prefix: str, limit: int = 60) -> list[Path]:
     """从当前位置往下滚，每屏一张，画面不再变化就停。返回截图路径（从上到下）。"""
     out, last = [], None
     for i in range(limit):
+        if i % 10 == 0:
+            pad.sh("input", "keyevent", "KEYCODE_WAKEUP")  # 别让它中途熄屏（熄了后面全是锁屏截图）
         p = pad.shot(f"{prefix}_{i:02d}")
         cur = p.read_bytes()
+        if "keyguardShowing=true" in pad.sh("dumpsys", "window", "|", "grep", "keyguard"):
+            p.unlink(missing_ok=True)
+            pad.sh("input", "keyevent", "KEYCODE_WAKEUP")
+            pad.sh("input", "swipe", "1280", "2000", "1280", "700", "200")
+            time.sleep(2)
+            continue
         if last is not None and _same(cur, last):
             p.unlink(missing_ok=True)
             break
@@ -332,9 +343,15 @@ def group_files(pad: Pad, wanted: set[str]) -> dict[str, str]:
     pad.tap(*at, wait=4)
     for name in wanted:
         key = re.sub(r"\.[a-z0-9]+$", "", name)[:10]
-        spot = pad.find(key)
+        # 群文件列表按日期倒序、可能很长：先在当前屏找，找不到往下滚几屏再找（文件名有时也是自绘的，兜底用视觉）
+        spot = None
+        for page in range(6):
+            spot = pad.find(key) or find_on_screen(pad, "群文件列表", f"文件名里含「{key}」的那一行（没有就说找不到）")
+            if spot:
+                break
+            pad.swipe(1280, 1250, 1280, 500, 420, 1.4)
         if spot is None:
-            print(f"  × 群文件里没有「{name}」")
+            print(f"  × 群文件里没有「{name}」（翻了 6 屏）")
             continue
         pad.tap(*spot, wait=5)
         save = pad.find("保存到手机") or pad.find("更多")
@@ -420,6 +437,7 @@ def main() -> int:
         print(f"✓ {day} 星期{rec['week']}：{len(rec['items'])} 科" + (f"，附图 {sum(len(x['images']) for x in rec['items'])} 张" if rec["items"] else ""))
         n += 1
     pad.sh("svc", "power", "stayon", "false")
+    pad.sh("settings", "put", "system", "screen_off_timeout", "60000")
     print(f"存了 {n} 天。还缺：{'、'.join(d for d in want if d not in {x['day'] for x in api('GET', 'api/homework')['days']}) or '无'}")
     return 0
 
