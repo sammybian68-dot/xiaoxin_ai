@@ -673,9 +673,12 @@ def test_hush_stops_current_turn(call, fakes, monkeypatch):
     before = c.audio
     time.sleep(0.6)
     c.ws.send_text(json.dumps({"type": "say", "text": "好"}))  # 随便收一条确认连接还活着
-    c.until("speaking")
-    assert "idle" not in c.kinds()[c.kinds().index("speaking"):-1] or True
-    assert c.audio - before < 24000 * 2  # hush 之后旧这一轮不再下发大段音频
+    # 只数「新一轮 speaking 之前」收到的音频：until 读到 speaking 才停，那之后的是新一轮的「好」。
+    # 原来按 until 结束时的总量算，新一轮的音频偶尔先到一块就超过阈值（全量里偶发失败）
+    old = c.audio
+    m = c.until("speaking")
+    assert m["type"] == "speaking"
+    assert old - before < 24000 * 2  # hush 之后旧这一轮不再下发大段音频
 
 
 def test_talk_turn_is_traced_under_conversation(call, fakes):
