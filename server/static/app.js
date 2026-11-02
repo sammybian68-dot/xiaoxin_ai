@@ -2649,13 +2649,26 @@ $("viewer").addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") { e.preventDefault(); viewerStep(-1); }
   else if (e.key === "ArrowRight") { e.preventDefault(); viewerStep(1); }
 });
-$("viewer-img").addEventListener("pointerdown", (e) => { viewer.x0 = e.clientX; viewer.y0 = e.clientY; });
-$("viewer-img").addEventListener("pointerup", (e) => {
-  if (viewer.x0 == null) return;
-  const dx = e.clientX - viewer.x0, dy = e.clientY - viewer.y0;
-  viewer.x0 = null;
-  if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) viewerStep(dx < 0 ? 1 : -1);
+// 手指左右滑翻页：在 pointermove 里就判（滑到一半就翻），不等 pointerup——WebView 把横向拖当成滚动手势，
+// 中途发 pointercancel，pointerup 根本不来（2026-11-02 pad 实测滑动没反应就是这个）。touch-action: none 也一起加上。
+$("viewer").addEventListener("pointerdown", (e) => {
+  if (e.target.closest("button, a")) return;
+  viewer.x0 = e.clientX;
+  viewer.y0 = e.clientY;
+  viewer.done = false;
 });
+$("viewer").addEventListener("pointermove", (e) => {
+  if (viewer.x0 == null || viewer.done) return;
+  const dx = e.clientX - viewer.x0, dy = e.clientY - viewer.y0;
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+    viewer.done = true;      // 这一下已经翻了：手指抬起来之前不再翻第二张
+    viewer.x0 = null;
+    viewerStep(dx < 0 ? 1 : -1);
+  }
+});
+for (const ev of ["pointerup", "pointercancel", "pointerleave"]) {
+  $("viewer").addEventListener(ev, () => { viewer.x0 = null; });
+}
 // 保存：有原图存原图，没有存 2048 的大图。APK 里交给原生写进系统相册（Pictures/小新），浏览器里就是下载
 $("viewer-save").addEventListener("click", async () => {
   const fid = $("viewer-img").dataset.fid;

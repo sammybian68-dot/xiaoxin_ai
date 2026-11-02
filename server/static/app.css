@@ -541,7 +541,7 @@ body:not(.parent-mode) #back-chats { display: none; }
 .viewer { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: #000; }
 .viewer::backdrop { background: #000; }
 .viewer[open] { display: flex; flex-direction: column; }
-.viewer img { flex: 1; min-height: 0; width: 100%; object-fit: contain; }
+.viewer img { flex: 1; min-height: 0; width: 100%; object-fit: contain; touch-action: none; -webkit-user-drag: none; user-select: none; }
 .viewer-bar { display: flex; align-items: center; gap: 12px; padding: 12px 16px; color: #ddd; }
 .viewer-bar a { color: #fff; border: 1px solid #555; border-radius: 16px; padding: 6px 14px; text-decoration: none; }
 .viewer-bar span { flex: 1; color: #aaa; font-size: 13px; }
