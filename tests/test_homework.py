@@ -140,3 +140,14 @@ def test_run_log(client):
     client.post("/api/homework/runs", json={"since": "2026-11-03", "until": "2026-11-03", "ok": False, "why": "没找到"})
     runs = client.get("/api/homework/runs").json()["runs"]
     assert [r["ok"] for r in runs] == [False, True] and runs[1]["trigger"] == "schedule" and "junk" not in runs[1]
+
+
+def test_notify_as_xiaoxin(client):
+    from server.family import members
+
+    kid = members.kids()[0]
+    r = client.post("/api/homework/notify", json={"text": "今天的作业我没抓到，去 QQ 群看一眼。"}).json()
+    assert kid["id"] in r["sent"]
+    last = store.get(kid["thread"])["messages"][-1]
+    assert last["role"] == "assistant" and last["via"] == "homework" and "没抓到" in last["text"]
+    assert client.post("/api/homework/notify", json={"text": " "}).status_code == 400

@@ -591,6 +591,20 @@ def homework_run_log(request: Request, body: dict = Body(...)) -> dict:
     return homework.log_run(keep)
 
 
+@app.post("/api/homework/notify")
+def homework_notify(request: Request, body: dict = Body(...)) -> dict:
+    """定时任务一天都没抓到作业时，以小新的身份在每个孩子的群里说一句（和打印完成的总结一样，是小新的一条回复）。"""
+    need(request, "admin")
+    text = str(body.get("text") or "").strip()[:300]
+    if not text:
+        raise HTTPException(400, "没有要说的话")
+    sent = []
+    for k in members.kids():
+        store.append(k["thread"], {"role": "assistant", "text": text, "model": "", "via": "homework"})
+        sent.append(k["id"])
+    return {"sent": sent}
+
+
 @app.put("/api/homework/{day}")
 def homework_put(request: Request, day: str, body: dict = Body(...)) -> dict:
     """采集脚本写一天的作业（按天幂等，覆盖这一天）。只有管理员能写。"""
