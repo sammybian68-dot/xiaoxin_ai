@@ -93,15 +93,16 @@ def test_practice_flow_grade_and_report(client, fakes, monkeypatch):
     fid = client.post("/api/files", content=b"\xff\xd8\xff" + b"\0" * 64,
                       headers={"Content-Type": "image/jpeg", "X-Filename": "paper.jpg"}).json()["id"]
     client.post(f"/api/practice/{r['id']}/submit", json={"file_ids": [fid]})
-    for _ in range(50):
-        if practice.get(r["id"])["state"] == "graded":
+    # 批改在后台线程：先写 graded 再发群消息。等「批改好了」那条真出现再看，不然偶发读到上一条
+    last = ""
+    for _ in range(100):
+        last = store.get(kid["thread"])["messages"][-1].get("text") or ""
+        if "批改好了" in last:
             break
         time.sleep(0.05)
     g = practice.get(r["id"])
     assert g["state"] == "graded" and g["grade"]["right"] == 1
     assert '"want": "山坡"' in seen["parts"][0]["text"] and seen["parts"][1]["type"] == "image_url"
-    time.sleep(0.05)
-    last = store.get(kid["thread"])["messages"][-1]["text"]
     assert "@爸爸" in last and "对了 1 / 2" in last and "写成了「学笑」" in last and "超时" in last
 
     # 再练一次同一张：第 2 次

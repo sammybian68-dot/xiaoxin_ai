@@ -120,3 +120,13 @@ def test_empty_items_dropped():
     # 正文里只是夹着「（看不清）」的那几行要留着
     keep = homework.save_day("2026-10-28", [{"subject": "math", "text": "1.大册P28\n（看不清）"}])
     assert keep["items"][0]["text"].startswith("1.大册P28")
+
+
+def test_agent_settings(client):
+    d = client.get("/api/agent").json()
+    assert d["model"] == "claude-opus-5-5" and d["at"][0] == "17:00" and "claude-opus-5-5" in d["models"]
+    d = client.put("/api/agent", json={"model": "claude-sonnet-5-5", "at": ["17:30", "坏的", "19:00"], "max_steps": 99}).json()
+    assert d["model"] == "claude-sonnet-5-5" and d["at"] == ["17:30", "19:00"] and d["max_steps"] == 60
+    assert client.put("/api/agent", json={"model": "gpt-9"}).status_code == 400
+    assert client.put("/api/agent", json={"at": ["明天"]}).status_code == 400
+    assert client.get("/api/agent").json()["model"] == "claude-sonnet-5-5"  # 存住了

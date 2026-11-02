@@ -521,6 +521,38 @@ def worksheet_view(request: Request, wid: str) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- 后台 agent 任务的设置（抓作业等）
+
+AGENT_DEFAULTS = {"model": "claude-opus-5-5", "at": ["17:00", "18:00", "19:00", "20:30"], "max_steps": 30}
+
+
+@app.get("/api/agent")
+def agent_settings(request: Request) -> dict:
+    """后台 agent（现在只有「抓作业」）用哪个模型、几点跑、最多走几步。看屏操作要强模型，默认 opus。"""
+    who(request)
+    return {**AGENT_DEFAULTS, **(store.settings().get("agent") or {}),
+            "models": [m["id"] for m in MODELS]}
+
+
+@app.put("/api/agent")
+def agent_update(request: Request, body: dict = Body(...)) -> dict:
+    need(request, "admin")
+    cur = {**AGENT_DEFAULTS, **(store.settings().get("agent") or {})}
+    if body.get("model"):
+        if body["model"] not in {m["id"] for m in MODELS}:
+            raise HTTPException(400, f"不支持的模型 {body['model']}")
+        cur["model"] = body["model"]
+    if isinstance(body.get("at"), list):
+        at = [t for t in (str(x).strip() for x in body["at"]) if re.fullmatch(r"[0-2]\d:[0-5]\d", t)]
+        if not at:
+            raise HTTPException(400, "时刻要写成 17:00 这样")
+        cur["at"] = at[:8]
+    if body.get("max_steps"):
+        cur["max_steps"] = max(10, min(int(body["max_steps"]), 60))
+    store.update_settings(agent=cur)
+    return agent_settings(request)
+
+
 # ---------------------------------------------------------------- 班级作业（server/homework.py）
 
 @app.get("/api/homework")
