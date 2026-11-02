@@ -10,7 +10,8 @@ const prac = { r: null, timer: 0, gen: 0, paused: false, listenAt: 0, said: {}, 
 function pracIsKid() { return state.me?.role === "kid" || (state.me?.kind === "admin" && !!native); }
 
 async function pracSay(text) {
-  // 用小新的声音念一句，念完才返回（听写要等它念完再开始数 5 秒）
+  // 用小新的声音念一句，念完才返回（听写要等它念完再开始数 5 秒）。念之前先掐掉别的声音
+  if (player.audio || player.stream || (talk.on && talk.speaking)) pracHushXiaoxin();
   const r = await api("api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
   const blob = await r.blob();
   return new Promise((resolve) => {
@@ -22,8 +23,19 @@ async function pracSay(text) {
 }
 const pracSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 练习 / 考试一开始：小新立刻闭嘴——手动朗读、自动朗读队列、正在流的那一轮语音、自由对话里正在说的，全停；
+// 练习中也不再自动朗读（app.js 里按 pracBusy() 判断），不然和听写抢喇叭、两个声音叠在一起
+function pracHushXiaoxin() {
+  sayQueue.length = 0;
+  if (typeof hushAll === "function") hushAll();
+  else stopSpeaking();
+  state.abort?.abort();  // 正在流的那一轮：连着的 PCM 朗读也断掉
+}
+function pracBusy() { return !!prac.r && ["listening", "writing", "done"].includes(prac.r.state); }
+
 function pracOpen(r) {
   prac.r = r;
+  pracHushXiaoxin();
   prac.skew = (r.now ? r.now * 1000 - Date.now() : 0);  // 服务端时间和本机差多少
   let el = $("practice");
   if (!el) {
@@ -192,5 +204,6 @@ async function pracResume() {
   } catch (_) { /* 没有就算了 */ }
 }
 
+window.pracBusy = pracBusy;
 window.onPracticeEvent = onPracticeEvent;
 window.pracResume = pracResume;

@@ -223,7 +223,7 @@ function hubMessage(m, kind) {
   if (m.files?.length) renderSide();
   // 孩子的 pad：爸爸妈妈发来的话，用他们设的声音读一遍（docs/architecture.md 6.2 的 speak）
   if (m.role === "user" && m.text && m.speak !== false && state.me?.role !== "parent"
-      && state.people?.[m.from]?.role === "parent" && prefs.autoread) sayLater(m, row);
+      && state.people?.[m.from]?.role === "parent" && prefs.autoread && !window.pracBusy?.()) sayLater(m, row);
 }
 
 // 读家长消息：小新正在说、在自由对话里、正在发消息，就等它说完再读，不打断
@@ -235,6 +235,7 @@ function sayLater(m, row, self = false) {
 function sayNext() {
   const job = sayQueue[0];
   if (!job) return;
+  if (window.pracBusy?.()) { setTimeout(sayNext, 3000); return; }  // 练习中：等练完再读家长的话
   if (talk.on || state.sending || player.audio || player.stream) { setTimeout(sayNext, 1500); return; }
   const btn = job.row.querySelector('[data-act="say"]') || document.createElement("button");
   const p = person(job.m.from);
@@ -792,7 +793,7 @@ async function send(text, via = "text") {
   let reply = "", reasoning = 0;
   const searches = [];
   // 开着自动朗读就让服务端边出字边合成，音频跟着 SSE 一起下来；打断（停止、发新消息、按住说话）就断开这条流。
-  const speakNow = prefs.autoread;
+  const speakNow = prefs.autoread && !window.pracBusy?.();  // 练习 / 考试中：小新不朗读，别和听写抢喇叭
   const readBtn = row.querySelector('[data-act="read"]');
   const abort = new AbortController();
   // 首响：从点发送算起。文字 = 第一个字上屏，语音 = 第一声出来（开了自动朗读才有）
@@ -2602,7 +2603,30 @@ async function postOnly(text, files, via) {
 
 // ---------------------------------------------------------------- 看大图（页内，不跳页）
 // 先给 2048 的大图；有原图（勾了「原图」、已传完）才出「查看原图」，点了再下原图（几 MB，ECS 只有 5 Mbps）
-function openViewer(f) {
+// 当前这组图：聊天里出现过的所有图片（新的在后），加上卡片的练习纸页。左右能翻的就是这一组
+function viewerList() {
+  const out = [], seen = new Set();
+  for (const m of state.conv?.messages || []) for (const f of m.files || []) {
+    if (f.kind === "image" && !seen.has(f.id)) { seen.add(f.id); out.push(f); }
+  }
+  for (const f of Object.values(state.extraFiles || {})) if (f.kind === "image" && !seen.has(f.id)) { seen.add(f.id); out.push(f); }
+  return out;
+}
+
+function viewerStep(d) {
+  const list = viewer.list, i = list.findIndex((x) => x.id === $("viewer-img").dataset.fid);
+  const next = list[i + d];
+  if (next) openViewer(next, list);
+}
+
+const viewer = { list: [], x0: null };
+function openViewer(f, list) {
+  viewer.list = list && list.length ? list : viewerList();
+  if (!viewer.list.some((x) => x.id === f.id)) viewer.list = [f, ...viewer.list];
+  const at = viewer.list.findIndex((x) => x.id === f.id);
+  $("viewer-count").textContent = viewer.list.length > 1 ? `${at + 1} / ${viewer.list.length}` : "";
+  $("viewer-prev").hidden = at <= 0;
+  $("viewer-next").hidden = at >= viewer.list.length - 1;
   const o = f.original;
   const img = $("viewer-img");
   // 和微信一样瞬间打开：先放已经在缓存里的缩略图（气泡、侧栏刚显示过），大图下完再无缝换上，不出现黑屏等图
@@ -2615,9 +2639,23 @@ function openViewer(f) {
   $("viewer-orig").href = `api/files/${f.id}`;
   $("viewer-orig").textContent = o ? `查看原图（${sizeLabel(o.size)}）` : "查看原图";
   $("viewer-note").textContent = o && o.received < o.size ? `对方原图上传中 ${Math.floor(o.received / o.size * 100)}%` : "";
-  $("viewer").showModal();
+  if (!$("viewer").open) $("viewer").showModal();
 }
 $("viewer-close").addEventListener("click", () => $("viewer").close());
+// 左右翻：按钮、键盘方向键、手指左右滑（像相册）
+$("viewer-prev").addEventListener("click", (e) => { e.stopPropagation(); viewerStep(-1); });
+$("viewer-next").addEventListener("click", (e) => { e.stopPropagation(); viewerStep(1); });
+$("viewer").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft") { e.preventDefault(); viewerStep(-1); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); viewerStep(1); }
+});
+$("viewer-img").addEventListener("pointerdown", (e) => { viewer.x0 = e.clientX; viewer.y0 = e.clientY; });
+$("viewer-img").addEventListener("pointerup", (e) => {
+  if (viewer.x0 == null) return;
+  const dx = e.clientX - viewer.x0, dy = e.clientY - viewer.y0;
+  viewer.x0 = null;
+  if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) viewerStep(dx < 0 ? 1 : -1);
+});
 // 保存：有原图存原图，没有存 2048 的大图。APK 里交给原生写进系统相册（Pictures/小新），浏览器里就是下载
 $("viewer-save").addEventListener("click", async () => {
   const fid = $("viewer-img").dataset.fid;
@@ -2643,7 +2681,11 @@ document.addEventListener("click", (e) => {
   if (!a) return;
   e.preventDefault();
   const f = findFile(a.dataset.fid);
-  if (f) openViewer(f);
+  if (!f) return;
+  // 练习纸的几页是一组（在这几页里翻），别的图用整段对话那一组
+  const group = a.closest(".ws-pages");
+  const list = group ? [...group.querySelectorAll("a[data-fid]")].map((x) => findFile(x.dataset.fid)).filter(Boolean) : null;
+  openViewer(f, list);
 }, true);  // 捕获阶段：抢在任何 target=_blank 的默认行为之前
 function findFile(id) {
   for (const m of state.conv?.messages || []) for (const f of m.files || []) if (f.id === id) return f;
