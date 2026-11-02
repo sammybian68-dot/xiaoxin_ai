@@ -72,3 +72,33 @@ def test_tool_card_in_chat(client, fakes):
     client.post(f"/api/conversations/{tid}/messages", json={"text": "看下今天的作业"})
     acts = store.get(tid)["messages"][-1]["actions"]
     assert acts[0]["name"] == "homework_report" and "抄词第12课" in acts[0]["result"]
+
+
+# ---------------------------------------------------------------- 采集：分批读出来的结果怎么合并（tools/qq_homework.py）
+
+def test_merge_keeps_longest_text(monkeypatch, tmp_path):
+    """同一条作业在相邻几批里都读到：正文被屏幕切断的那份短，要留最全的；notes / mentions 取并集、附图标记取或。"""
+    from tools import qq_homework as q
+
+    batches = [
+        [{"date": "2026-10-23", "items": [{"subject": "chinese", "text": "1.抄词第12课；\n2.习字", "notes": ["甲"]}]}],
+        [{"date": "2026-10-23", "items": [{"subject": "chinese", "text": "1.抄词第12课；\n2.习字册；\n3.小册", "notes": ["乙"],
+                                           "mentions": ["练习卷.pdf"], "has_image": True}]}],
+        [{"date": "2026-10-23", "items": [{"subject": "math", "text": "正反打印作业纸"}]}],
+    ]
+    monkeypatch.setattr(q, "CHUNK", 1)
+    monkeypatch.setattr(q, "OVERLAP", 0)
+    monkeypatch.setattr(q, "read_chunk", lambda shots, today: batches[int(shots[0].stem)])
+    shots = []
+    for i in range(3):
+        p = tmp_path / f"{i}.png"
+        p.write_bytes(b"x")
+        shots.append(p)
+
+    days, where = q.read_shots(shots, "2026-10-25")
+    assert len(days) == 1 and days[0]["date"] == "2026-10-23"
+    items = {it["subject"]: it for it in days[0]["items"]}
+    assert items["chinese"]["text"].endswith("3.小册") and items["chinese"]["notes"] == ["甲", "乙"]
+    assert items["chinese"]["mentions"] == ["练习卷.pdf"] and items["chinese"]["has_image"] is True
+    assert items["math"]["text"] == "正反打印作业纸"
+    assert where[("2026-10-23", "chinese")] == ["0", "1"]  # 这条出现在第 0、1 屏：附图按屏归属认领
