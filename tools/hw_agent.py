@@ -1,17 +1,17 @@
-"""抓今天的班级作业：让 opus 亲自看屏幕操作 pad（agent 循环），不走写死的点击流程。
+"""抓班级作业：让模型亲自看屏幕操作 pad（agent 循环），不走写死的点击流程。
 
-    .venv/bin/python -m tools.hw_agent              抓今天
-    .venv/bin/python -m tools.hw_agent --day 2026-11-03 --max-steps 40
+    .venv/bin/python -m tools.hw_agent                                  抓今天（定时任务用这个）
+    .venv/bin/python -m tools.hw_agent --day 2026-11-02                 抓某一天
+    .venv/bin/python -m tools.hw_agent --since 2026-09-15 --until 2026-11-02   一次滑到底抓一段
+    加 --dry-run 只读不写库，--only-missing 跳过已有记录的日子
 
 为什么是 agent：QQ 是自绘界面，写死坐标那版实测五个坑——开屏广告吃掉点击、点进推送视频页、
-中途锁屏、点到「宠物」、跨屏图裁成窄带。这些都不是「模型读不懂」，是脚本假设了界面状态。
-让模型每一步先看当前截图再决定下一步，看到广告就先关掉，走错就退回来，才扛得住。
+中途锁屏、点到「宠物」、跨屏图裁成窄带。都不是「模型读不懂」，是脚本假设了界面状态。
+让模型每一步先看当前截图再决定下一步，看到广告先关掉、走错就退回来，才扛得住。
 
-它能用的工具都在 ACTIONS 里：看屏、点、滑、返回、重开 QQ、取消熄屏，以及 submit（交答案）。
-每一步都把新截图回给模型。只抓一天，正常三五步就能到作业页，十来步出结果。
-
-结果经 server/homework.py 校验后按天写回（幂等）。校验不过就当这次失败——让定时任务重试，
-绝不写错数据进库（错作业比没作业更糟）。
+动作在 ACTIONS 里：look / tap / swipe / back / restart_qq / capture_image / save_day / finish。
+从新到旧读，**读完一天就 save_day 一天**：立刻校验、附图核验、写库（按天幂等）。中途断了也不丢已存的那几天。
+校验不过就拒收、让模型重读——宁可没有，也不写错数据进库（错作业比没作业更糟）。
 """
 
 from __future__ import annotations
@@ -43,26 +43,36 @@ CTX.verify_mode = ssl.CERT_NONE
 
 SYSTEM = """你在操作一台安卓平板（屏幕已锁定横屏），用 QQ 抓班级群「勤惜2024级3班」的作业。
 
-路径：QQ 会话列表 → 群「勤惜2024级3班」→ 群聊底部工具栏「作业」→「全部作业」列表，列表按日期从新到旧。
+路径：QQ 会话列表 → 群「勤惜2024级3班」→ 群聊底部工具栏「作业」→「全部作业」列表。
+列表按日期**从新到旧**：每天一个大标题（「今天」「星期一 11月2日」这样），下面是这天每个学科一张卡片。
 
-每一步我会给你当前屏幕截图（缩到 1280 宽，tap 的坐标就用这张图里的像素坐标），有时还附上能读到的控件和坐标——
-有就优先用那个坐标，最准。你看图决定下一步，调一个工具。注意：
-- 点了没反应：先 look 等一下（页面可能在加载），还不行就检查是不是点偏了，别在同一个位置反复点。
-- 这个 QQ 经常弹开屏广告、活动弹窗、推送内容页。看到不是目标页面就先关掉（点 ✕ 或 back），再继续。
-- 走错页面（比如点进了「宠物」「频道」或某个视频）：用 back 退回去，或者 restart_qq 从头来。
-- 列表是自绘的，正文只能靠看图读。往下滑用 swipe，一次滑半屏左右，正文才不会被切断。
-- 找到目标那天的作业后，把那天每个学科的作业**原样**读出来，调 submit 交上去。
-- 附图：作业正文下面常跟着照片（订正范本、黑板照、作业纸），在列表里默认**折叠**，只露一条淡淡的边。
-  要先点「查看完整作业」展开，再点图片打开全屏预览，确认整张图都在屏幕上了，调 capture_image 存下来，再 back 回列表。
-  每张图都要这么做，存之前一定看清楚它属于哪一科（紧跟在哪条作业正文下面）。抓不到图不影响交正文。
-- 读不到、翻了很多屏也没找到那天，就调 submit 交 {"found": false, "why": "..."}，不要编作业内容。
+每一步我会给你当前屏幕截图（缩到 1280 宽，tap 的坐标就用这张图里的像素坐标），有时附上能读到的控件和坐标——
+有就优先用，最准。你看图决定下一步，**每次调一个工具**。
 
-读作业的要求：
-- 正文原样抄，保留 1. 2. 的编号和换行，错别字照抄，不要改写、不要补充、不要漏行。
+## 怎么走
+- 这个 QQ 常弹开屏广告、活动弹窗、推送内容页。不是目标页面就先关掉（点 ✕ 或 back）再继续。
+- 走错页面（「宠物」「频道」、某个视频）：back 退回，或 restart_qq 从头来。
+- 点了没反应：先 look 等一下（可能在加载），还不行就是点偏了，换位置，别在同一点反复点。
+- 列表往下看用 swipe down（一次半屏，正文才不会被切断）。
+
+## 读一天
+- 从最新的往旧的读。**读完一天就马上调 save_day 交这一天**，再往下读下一天。别攒着最后一起交。
+- 一天里每个学科一条：subject、submit（卡片右上角的「无需提交 / 去完成 / 已完成」）、text（正文）。
+- 正文**原样抄**：保留 1. 2. 的编号和换行，错别字照抄，不改写、不补充、不漏行。卡片太长被折叠时先点「查看完整作业」展开。
 - 老师点名批评、友情提醒这类和作业条目并列的段落放 notes，学号串照抄。
-- 只输出截图里真看到正文的学科。那天只有语文和英语就只给两条，不要凭空补一条数学。
-- submit 的格式：{"found": true, "date": "2026-11-03", "items": [{"subject": "chinese|math|english|other",
-  "submit": "无需提交|去完成|已完成", "text": "正文", "notes": ["..."], "mentions": ["正文里提到的群文件名"]}]}
+- 只交截图里**真看到正文**的学科。那天只有语文和英语就只交两条，不要凭空补一条数学。
+- 有的学科作业**整个就是一张图**（数学老师常发黑板照，卡片里没有文字）：先把图点开全屏 capture_image，
+  text 写「见附图：」再抄上图上能看清的字（如「见附图：10/29 数回 大册P43…」），不要因为没文字就不交这科。
+- 正文提到群里的文件（「完成群里发的 xxx.pdf」）把文件名放 mentions。
+
+## 附图
+- 卡片正文下面常跟着照片（订正范本、黑板照、作业纸），默认折叠只露一条淡边。
+- 先展开卡片，再点图片打开**全屏预览**，确认整张图都在屏幕上，调 capture_image（写清是哪天哪科），再 back 回列表。
+- 图片属于哪天哪科，看它**紧跟在哪张卡片的正文下面**。抓不到图不影响交正文。
+- 附图要在交这一天之前抓完：save_day 会把你前面为这一天 capture 的图一起交上去。
+
+## 结束
+- 读到目标范围最早那天（或更早）、或者列表到底了，调 finish。
 """
 
 ACTIONS = [
@@ -81,21 +91,25 @@ ACTIONS = [
     {"type": "function", "function": {"name": "restart_qq", "description": "强杀并重开 QQ，回到会话列表（彻底走错时用）",
      "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "capture_image",
-     "description": "把当前屏幕存成某条作业的附图。只在**已经点开了全屏图片预览、整张图都在屏幕上**的时候调；"
-                    "列表里折叠着的、只露一条边的图不要存（先点「查看完整作业」展开，再点图片打开预览）。存完记得 back 回列表。",
+     "description": "把当前屏幕存成某天某科作业的附图。只在**已经点开全屏图片预览、整张图都在屏幕上**时调；"
+                    "列表里折叠着只露一条边的图不要存。存完记得 back 回列表。",
      "parameters": {"type": "object", "properties": {
-         "subject": {"type": "string", "enum": ["chinese", "math", "english", "other"], "description": "这张图属于哪科的作业"},
-         "what": {"type": "string", "description": "图上是什么（如「乐林枫的默写本订正」「黑板上的数学作业」）"}},
-      "required": ["subject", "what"]}}},
-    {"type": "function", "function": {"name": "submit", "description": "交结果（读到了作业，或确认读不到）",
+         "date": {"type": "string", "description": "这张图属于哪天，YYYY-MM-DD"},
+         "subject": {"type": "string", "enum": ["chinese", "math", "english", "other"], "description": "属于哪科"},
+         "what": {"type": "string", "description": "图上是什么（如「乐林枫的默写本订正」）"}},
+      "required": ["date", "subject", "what"]}}},
+    {"type": "function", "function": {"name": "save_day", "description": "读完一天就交这一天（连同前面为这天抓的附图）。交完接着往下读下一天",
      "parameters": {"type": "object", "properties": {
-         "found": {"type": "boolean"}, "date": {"type": "string"}, "why": {"type": "string"},
+         "date": {"type": "string", "description": "YYYY-MM-DD"},
          "items": {"type": "array", "items": {"type": "object", "properties": {
-             "subject": {"type": "string"}, "submit": {"type": "string"}, "text": {"type": "string"},
+             "subject": {"type": "string", "enum": ["chinese", "math", "english", "other"]},
+             "submit": {"type": "string"}, "text": {"type": "string"},
              "notes": {"type": "array", "items": {"type": "string"}},
-             "mentions": {"type": "array", "items": {"type": "string"}}}}}},
-      "required": ["found"]}}},
-]
+             "mentions": {"type": "array", "items": {"type": "string"}}},
+           "required": ["subject", "text"]}}},
+      "required": ["date", "items"]}}},
+    {"type": "function", "function": {"name": "finish", "description": "目标范围读完了（或列表到底了），结束",
+     "parameters": {"type": "object", "properties": {"why": {"type": "string"}}}}},]
 
 
 def env(name: str) -> str:
@@ -204,8 +218,9 @@ class Pad:
             return "按了返回"
         if name == "capture_image":
             raw = subprocess.run(["adb", "-s", self.s, "exec-out", "screencap", "-p"], capture_output=True).stdout
-            self.images.append({"subject": args.get("subject") or "other", "what": str(args.get("what") or ""), "raw": raw})
-            return f"存了一张附图（{args.get('subject')}：{args.get('what')}），一共 {len(self.images)} 张"
+            self.images.append({"date": str(args.get("date") or ""), "subject": args.get("subject") or "other",
+                                "what": str(args.get("what") or ""), "raw": raw})
+            return f"存了一张附图（{args.get('date')} {args.get('subject')}：{args.get('what')}）"
         if name == "restart_qq":
             self.sh("am", "force-stop", QQ)
             time.sleep(2)
@@ -225,39 +240,6 @@ def models() -> list[str]:
         return DEFAULT_MODELS
     chain = [str(want)] + [m for m in DEFAULT_MODELS if m != want]
     return chain
-
-
-def ask(msgs: list[dict], chain: list[str]) -> tuple[str, dict, str]:
-    """问模型下一步。返回 (动作名, 参数, 它说的话)。流式拿不到 tool_calls（2026-11-03 实测），用非流式。"""
-    import requests
-
-    from src.llm import client
-
-    last = ""
-    for model in chain:
-        body = {"model": model, "max_tokens": 4000, "tools": ACTIONS,
-                "messages": [{"role": "system", "content": SYSTEM}, *msgs]}
-        url, headers, body = client._endpoint(model, body)
-        try:
-            r = requests.post(url, headers=headers, json=body, timeout=300)
-        except requests.RequestException as e:
-            last = repr(e)
-            continue
-        if r.status_code != 200:
-            last = f"HTTP {r.status_code}: {r.text[:200]}"
-            continue
-        m = r.json()["choices"][0]["message"]
-        calls = m.get("tool_calls") or []
-        said = (m.get("content") or "").strip()
-        if not calls:
-            return "look", {}, said or "（没调工具）"
-        c = calls[0]["function"]
-        try:
-            args = json.loads(c.get("arguments") or "{}")
-        except ValueError:
-            args = {}
-        return c["name"], args, said
-    raise SystemExit(f"模型都失败了：{last}")
 
 
 VIEW_W = 1280  # 给模型看的截图宽度。模型报的坐标都在这张图里，点之前按比例换回屏幕坐标
@@ -282,30 +264,127 @@ def hint(pad: Pad) -> str:
     return (f"\n能读到的控件（坐标是这张截图里的，点它们用这个坐标最准）：{w}" if w else "")
 
 
-def run(pad: Pad, day: str, max_steps: int) -> dict:
-    """agent 循环：每一步给它当前截图，它调一个动作，直到 submit。返回 submit 的参数。"""
+
+def ask(msgs: list[dict], chain: list[str]) -> dict:
+    """问模型下一步，返回它的 assistant 消息（带 tool_calls）。流式拿不到 tool_calls（2026-11-03 实测），用非流式。
+    用真的 tool_call / tool 消息记历史：之前把动作写成「[动作] tap …」文字塞回去，模型学着用文字回答、不调工具，
+    白白浪费了好几步。"""
+    import requests
+
+    from src.llm import client
+
+    last = ""
+    for model in chain:
+        body = {"model": model, "max_tokens": 6000, "tools": ACTIONS,
+                "messages": [{"role": "system", "content": SYSTEM}, *msgs]}
+        url, headers, body = client._endpoint(model, body)
+        for attempt in range(4):
+            try:
+                r = requests.post(url, headers=headers, json=body, timeout=300)
+            except requests.RequestException as e:
+                # 网断一下（实测一次 DNS 解析失败就把一整轮丢了）：等一等再试，不急着换模型
+                last = repr(e)[:200]
+                time.sleep(10 * (attempt + 1))
+                continue
+            if r.status_code == 200:
+                m = r.json()["choices"][0]["message"]
+                return {"role": "assistant", "content": m.get("content") or None, "tool_calls": m.get("tool_calls") or []}
+            last = f"{model} HTTP {r.status_code}: {r.text[:200]}"
+            if r.status_code < 500 and r.status_code != 429:
+                break
+    raise RuntimeError(f"模型都失败了：{last}")
+
+
+def day_range(since: str, until: str) -> list[str]:
+    t, end, out = time.mktime(time.strptime(since, "%Y-%m-%d")), time.mktime(time.strptime(until, "%Y-%m-%d")), []
+    while t <= end + 3600:
+        out.append(time.strftime("%Y-%m-%d", time.localtime(t)))
+        t += 86400
+    return out
+
+
+KEEP = 48  # 历史最多留多少条（一次滑到底抓几十天要走几百步，全留着又慢又贵）
+
+
+def trim(msgs: list[dict], saved: list[str]) -> list[dict]:
+    """历史太长：留开头的目标那条 + 最近 KEEP 条，中间换成一句「已经存好了哪几天」。
+    切点要落在一条普通 user 消息上（不能把 assistant 的 tool_calls 和它的 tool 结果拆开）。"""
+    if len(msgs) <= KEEP + 1:
+        return msgs
+    cut = len(msgs) - KEEP
+    while cut < len(msgs) and not (msgs[cut]["role"] == "user"):
+        cut += 1
+    if cut >= len(msgs):
+        return msgs
+    done = "、".join(saved) or "还没有"
+    note = {"role": "user", "content": f"（前面的步骤省略了。已经存好的日子：{done}。接着往下读更早的日子。）"}
+    head = msgs[0]
+    first = msgs[cut]
+    if isinstance(first.get("content"), str):
+        first = {"role": "user", "content": note["content"] + "\n" + first["content"]}
+        return [head, {"role": "assistant", "content": "好的。"}, first, *msgs[cut + 1:]]
+    return [head, {"role": "assistant", "content": "好的。"}, {**first, "content": [{"type": "text", "text": note["content"]}, *first["content"]]},
+            *msgs[cut + 1:]]
+
+
+def run(pad: Pad, since: str, until: str, max_steps: int, on_day) -> dict:
+    """agent 循环：从最新往旧读，读完一天就 save_day（on_day 立刻校验写库），直到 finish 或步数用完。
+    中途失败也不丢已经存好的那几天。返回 {"saved": [...], "why": 结束原因}。"""
     pad.awake()
     pad.act("restart_qq", {})
+    goal = (f"目标：抓 {since} 到 {until} 每一天的作业（今天是 {time.strftime('%Y-%m-%d')}）。" if since != until
+            else f"目标：抓 {since} 那一天的作业（今天是 {time.strftime('%Y-%m-%d')}）。")
     msgs = [{"role": "user", "content": [
-        {"type": "text", "text": f"目标：抓 {day} 那天的作业（今天是 {time.strftime('%Y-%m-%d')}）。"
-                                 f"刚重开了 QQ，这是当前屏幕。按路径走到作业列表，找到 {day}，读出来后调 submit。" + hint(pad)},
+        {"type": "text", "text": goal + "刚重开了 QQ，这是当前屏幕。走到作业列表，从新到旧读，读完一天 save_day 一天，"
+                                        f"读到 {since} 或更早就 finish。" + hint(pad)},
         shot_part(pad.shot())]}]
     chain = models()
-    print(f"  用模型：{chain[0]}" + (f"（失败就换 {chain[1]}）" if len(chain) > 1 else ""))
+    print(f"  用模型：{chain[0]}" + (f"（失败换 {chain[1]}）" if len(chain) > 1 else ""))
+    saved: list[str] = []
+    idle = 0
     for step in range(max_steps):
-        name, args, said = ask(msgs, chain)
-        tag = args.get("why") or args.get("dir") or ""
-        print(f"  [{step + 1}] {name} {tag}" + (f"  …{said[:70]}" if said else ""))
-        if name == "submit":
-            return args
-        out = pad.act(name, args)
-        # 只保留最近 3 张截图（图很贵，更早的换成一句话）
-        msgs.append({"role": "assistant", "content": f"[动作] {name} {json.dumps(args, ensure_ascii=False)[:200]}"})
-        msgs.append({"role": "user", "content": [{"type": "text", "text": f"{out}。这是现在的屏幕。" + hint(pad)}, shot_part(pad.shot())]})
-        imgs = [i for i, m in enumerate(msgs) if isinstance(m.get("content"), list)]
+        try:
+            m = ask(msgs, chain)
+        except RuntimeError as e:
+            return {"saved": saved, "why": str(e)}
+        calls = m["tool_calls"]
+        if not calls:
+            # 没调工具：提醒一次，再不调就算这一步空转
+            idle += 1
+            msgs.append({"role": "assistant", "content": m["content"] or "（没说话）"})
+            msgs.append({"role": "user", "content": "请调一个工具（look / tap / swipe / back / restart_qq / capture_image / save_day / finish），不要只回文字。"})
+            if idle >= 3:
+                return {"saved": saved, "why": "模型连着三次不调工具"}
+            continue
+        idle = 0
+        c = calls[0]
+        name = c["function"]["name"]
+        try:
+            args = json.loads(c["function"].get("arguments") or "{}")
+        except ValueError:
+            args = {}
+        tag = args.get("why") or args.get("date") or args.get("dir") or args.get("what") or ""
+        print(f"  [{step + 1}] {name} {tag}")
+        msgs.append({"role": "assistant", "content": m["content"], "tool_calls": [c]})
+        if name == "finish":
+            return {"saved": saved, "why": str(args.get("why") or "读完了")}
+        if name == "save_day":
+            out = on_day(args, pad)
+            if out.startswith("✓"):
+                saved.append(str(args.get("date")))
+            print(f"      {out}")
+            msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out + " 继续往下读下一天。"})
+            msgs.append({"role": "user", "content": [{"type": "text", "text": "这是现在的屏幕。" + hint(pad)}, shot_part(pad.shot())]})
+        else:
+            out = pad.act(name, args)
+            msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
+            msgs.append({"role": "user", "content": [{"type": "text", "text": "这是现在的屏幕。" + hint(pad)}, shot_part(pad.shot())]})
+        # 只留最近 3 张截图（图很贵），更早的换成一句话；tool 消息和 assistant 的 tool_calls 必须成对留着
+        imgs = [i for i, x in enumerate(msgs) if x["role"] == "user" and isinstance(x.get("content"), list)]
         for i in imgs[:-3]:
-            msgs[i] = {"role": "user", "content": "（这一步的截图已省略）"}
-    return {"found": False, "why": f"走了 {max_steps} 步还没读到"}
+            msgs[i] = {"role": "user", "content": "（这一步的截图省略了）"}
+        msgs = trim(msgs, saved)
+    return {"saved": saved, "why": f"走了 {max_steps} 步，没走完"}
 
 
 SUBJECTS = {"chinese", "math", "english", "other"}
@@ -353,95 +432,138 @@ def crop_preview(raw: bytes) -> bytes:
     return buf.getvalue()
 
 
-def check(res: dict, day: str) -> tuple[list[dict], str]:
-    """校验：不合格一律当这次失败（宁可重试，也不写错数据进库）。返回 (条目, 失败原因)。"""
-    if not res.get("found"):
-        return [], str(res.get("why") or "没找到这一天的作业")
-    if str(res.get("date") or day) != day:
-        return [], f"读到的日期是 {res.get('date')}，不是 {day}"
+DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def check(args: dict, since: str, until: str) -> tuple[str, list[dict], str]:
+    """校验 save_day 交上来的一天：不合格一律拒收（宁可没有，也不写错数据进库）。返回 (日期, 条目, 拒收原因)。"""
+    day = str(args.get("date") or "").strip()
+    if not DAY.match(day):
+        return day, [], f"日期格式不对：{day}"
+    if day > time.strftime("%Y-%m-%d"):
+        return day, [], f"{day} 还没到"
     items = []
-    for it in res.get("items") or []:
+    for it in args.get("items") or []:
         sub = str(it.get("subject") or "").strip()
         text = str(it.get("text") or "").strip()
         if sub not in SUBJECTS:
-            return [], f"学科不对：{sub}"
+            return day, [], f"学科不对：{sub}"
         if not text or re.fullmatch(r"[（(]?看不清[）)]?", text):
-            return [], f"{sub} 没读到正文"
+            return day, [], f"{sub} 没读到正文（如果这科作业整个就是一张图，text 写「见附图」加上图上能看清的字，并先把图 capture 下来）"
         items.append({"subject": sub, "submit": str(it.get("submit") or ""), "text": text,
-                      "notes": [str(x) for x in it.get("notes") or []],
-                      "mentions": [str(x) for x in it.get("mentions") or []]})
+                      "notes": [str(x) for x in it.get("notes") or [] if str(x).strip()],
+                      "mentions": [str(x) for x in it.get("mentions") or [] if str(x).strip()],
+                      "images": []})
     if not items:
-        return [], "一条作业都没读到"
+        return day, [], "一条作业都没读到"
     if len({it["subject"] for it in items}) != len(items):
-        return [], "同一个学科出现了两条"
-    return items, ""
+        return day, [], "同一个学科出现了两条"
+    return day, items, ""
+
+
+class Saver:
+    """save_day 的处理：校验 → 这天的附图核验、裁边、去重、上传 → 按天写库（幂等）。每交一天立刻落库。"""
+
+    def __init__(self, since: str, until: str, dry_run: bool, only_missing: bool):
+        self.since, self.until, self.dry, self.only_missing = since, until, dry_run, only_missing
+        self.chain = models()
+        self.done: dict[str, int] = {}     # 存好的：日期 → 附图张数
+        self.rejected: dict[str, str] = {}
+        self.have = set() if not only_missing else {d["day"] for d in api("GET", f"api/homework?since={since}&until={until}")["days"]}
+
+    def __call__(self, args: dict, pad: Pad) -> str:
+        day, items, bad = check(args, self.since, self.until)
+        if bad:
+            self.rejected[day] = bad
+            return f"× {day} 没收：{bad}。重新看清楚这一天，读对了再 save_day 一次。"
+        if not (self.since <= day <= self.until):
+            return f"· {day} 不在要抓的范围（{self.since}～{self.until}），跳过。"
+        if day in self.have:
+            return f"· {day} 已经有记录，跳过。"
+        imgs = [x for x in pad.images if x["date"] == day]
+        pad.images = [x for x in pad.images if x["date"] != day]
+        seen, n_img, notes = set(), 0, []
+        import hashlib
+
+        for img in imgs:
+            data = crop_preview(img["raw"])
+            h = hashlib.md5(data).hexdigest()
+            if h in seen:
+                continue
+            seen.add(h)
+            it = next((x for x in items if x["subject"] == img["subject"]), None)
+            if it is None:
+                notes.append(f"一张图说是 {img['subject']} 的，但这天没有这科，丢了")
+                continue
+            ok, why = verify_image(img["raw"], self.chain)
+            if not ok:
+                notes.append(f"一张图没过核验（{why}），丢了")
+                continue
+            SHOT.mkdir(parents=True, exist_ok=True)
+            (SHOT / f"img_{day}_{img['subject']}_{n_img + 1}.jpg").write_bytes(data)
+            if not self.dry:
+                meta = api("POST", "api/files", data, ctype="image/jpeg",
+                           headers={"X-Filename": urllib.parse.quote(f"{day}-{img['subject']}-{n_img + 1}.jpg")})
+                it["images"].append(meta["id"])
+            n_img += 1
+        # 「见附图」的科目：附图一张都没收下，这科就等于没有内容，拒收让它补抓图
+        empty = [x["subject"] for x in items if x["text"].startswith("见附图") and not (x["images"] or self.dry and n_img)]
+        if empty:
+            self.rejected[day] = f"{'、'.join(empty)} 写的「见附图」，但没收到图"
+            return (f"× {day} 没收：{'、'.join(empty)} 写的是「见附图」，可是这科没有抓到图（或图没过核验）。"
+                    f"先把这科的图点开全屏 capture_image，再 save_day。")
+        if not self.dry:
+            api("PUT", f"api/homework/{day}", {"items": items, "source": "qq-agent",
+                                               "note": f"agent 看屏抓的 {time.strftime('%m-%d %H:%M')}"})
+        self.done[day] = n_img
+        self.rejected.pop(day, None)
+        subs = "、".join(x["subject"] for x in items)
+        return f"✓ {day} 存好了：{subs}，附图 {n_img} 张" + (f"（{'；'.join(notes)}）" if notes else "") + ("［dry-run］" if self.dry else "")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pad", default="HA2KGGAH")
-    ap.add_argument("--day", default="", help="哪一天，默认今天")
-    ap.add_argument("--max-steps", type=int, default=30)
+    ap.add_argument("--day", default="", help="只抓这一天，默认今天")
+    ap.add_argument("--since", default="", help="从哪天起（和 --until 一起，抓一段）")
+    ap.add_argument("--until", default="", help="到哪天，默认今天")
+    ap.add_argument("--max-steps", type=int, default=0, help="最多走几步，默认一天 40 步、一段按天数加")
+    ap.add_argument("--only-missing", action="store_true", help="已经有记录的日子跳过")
     ap.add_argument("--dry-run", action="store_true", help="只读不写库")
+    ap.add_argument("--trigger", default="manual", help="谁触发的（定时任务传 schedule），记进运行记录")
     a = ap.parse_args()
-    day = a.day or time.strftime("%Y-%m-%d")
+    today = time.strftime("%Y-%m-%d")
+    until = a.until or a.day or today
+    since = a.since or a.day or today
+    days = day_range(since, until)
+    steps = a.max_steps or (40 if len(days) == 1 else 40 + 12 * len(days))
     pad = Pad(a.pad)
     pad.sh("settings", "put", "system", "screen_off_timeout", "1800000")
-    rot = pad.sh("settings", "get", "system", "accelerometer_rotation").strip()
-    urot = pad.sh("settings", "get", "system", "user_rotation").strip()
-    pad.sh("settings", "put", "system", "accelerometer_rotation", "0")  # 抓的时候锁横屏，别中途转
-    pad.sh("settings", "put", "system", "user_rotation", "1")          # 1 = 横屏（实测 2560×1600）
-    print(f"抓 {day}（pad {a.pad}）")
+    # 不锁方向：QQ 点开图片预览会自己转成竖屏，wm user-rotation lock 也锁不住（2026-11-03 实测 49 张里 43 张竖屏）。
+    # 点击和滑动都按每张截图的实际尺寸换算，横竖都对
+    was = pad.sh("wm", "user-rotation").strip()
+    print(f"抓 {since}～{until}（{len(days)} 天，最多 {steps} 步，pad {a.pad}）")
+    saver = Saver(since, until, a.dry_run, a.only_missing)
     t0 = time.monotonic()
     try:
-        res = run(pad, day, a.max_steps)
+        res = run(pad, since, until, steps, saver)
     finally:
         pad.sh("settings", "put", "system", "screen_off_timeout", "120000")
-        pad.sh("settings", "put", "system", "accelerometer_rotation", rot if rot in ("0", "1") else "1")
-        if urot in ("0", "1", "2", "3"):
-            pad.sh("settings", "put", "system", "user_rotation", urot)
-    items, bad = check(res, day)
+        if not was.startswith("lock"):
+            pad.sh("wm", "user-rotation", "free")  # 之前的版本锁过，确保放开
     secs = round(time.monotonic() - t0)
-    if bad:
-        print(f"× 这次没成：{bad}（{secs}s，{pad.n} 张截图）")
-        return 1
-    print(f"读到 {len(items)} 科（{secs}s，{pad.n} 张截图）：")
-    for it in items:
-        print(f"  [{it['subject']}] {it['submit']} {it['text'][:70].replace(chr(10), ' / ')}")
-    chain = models()
-    seen: set[str] = set()
-    for i, img in enumerate(pad.images):
-        import hashlib
-
-        h = hashlib.md5(crop_preview(img["raw"])).hexdigest()
-        if h in seen:
-            print(f"  · 附图 {i + 1} 和前面一张一样，跳过")
-            continue
-        seen.add(h)
-        ok, why = verify_image(img["raw"], chain)
-        if not ok:
-            print(f"  × 附图 {i + 1}（{img['subject']}：{img['what']}）没过核验，丢掉：{why}")
-            continue
-        it = next((x for x in items if x["subject"] == img["subject"]), None)
-        if it is None:
-            print(f"  × 附图 {i + 1} 说是 {img['subject']} 的，但那天没有这科作业，丢掉")
-            continue
-        data = crop_preview(img["raw"])
-        (SHOT / f"img_{i + 1}_{img['subject']}.jpg").write_bytes(data)
-        if a.dry_run:
-            print(f"  ✓ 附图 {i + 1} → {img['subject']}（{img['what']}）通过核验 [dry-run 不上传]")
-            continue
-        meta = api("POST", "api/files", data, ctype="image/jpeg",
-                   headers={"X-Filename": urllib.parse.quote(f"{day}-{img['subject']}-{i + 1}.jpg")})
-        it.setdefault("images", []).append(meta["id"])
-        print(f"  ✓ 附图 {i + 1} → {img['subject']}（{img['what']}）")
-    if a.dry_run:
-        print("（--dry-run，没写库）")
-        return 0
-    rec = api("PUT", f"api/homework/{day}", {"items": items, "source": "qq-agent",
-                                             "note": f"opus 看屏抓的 {time.strftime('%m-%d %H:%M')}"})
-    print(f"✓ 存好了 {rec['day']} 星期{rec['week']}：{len(rec['items'])} 科")
-    return 0
+    print(f"结束：{res['why']}（{secs}s，{pad.n} 张截图）")
+    print(f"存了 {len(saver.done)} 天：" + "、".join(f"{d}(图{n})" for d, n in sorted(saver.done.items())))
+    if saver.rejected:
+        print("拒收：" + "；".join(f"{d} {w}" for d, w in saver.rejected.items()))
+    if not a.dry_run:
+        try:
+            api("POST", "api/homework/runs", {"since": since, "until": until, "ok": bool(saver.done),
+                                              "saved": sorted(saver.done), "rejected": saver.rejected, "why": res["why"],
+                                              "secs": secs, "steps": pad.n, "model": saver.chain[0], "trigger": a.trigger})
+        except Exception as e:  # noqa: BLE001  记不上不影响结果
+            print(f"（运行记录没写上：{e}）")
+    return 0 if saver.done else 1
 
 
 if __name__ == "__main__":

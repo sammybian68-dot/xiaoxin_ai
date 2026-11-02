@@ -128,3 +128,32 @@ def describe(recs: list[dict], *, full: bool = True) -> str:
                 if not any(m == f.get("name") for f in it["files"]):
                     lines.append(f"  提到但没找到的文件：{m}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- 采集运行记录（定时任务每跑一轮记一条）
+
+def _runs_path() -> Path:
+    return _dir() / "runs.jsonl"
+
+
+def log_run(rec: dict) -> dict:
+    """记一轮采集：什么时候、抓哪几天、成没成、存了哪几天、为什么结束、用了多久。只追加。"""
+    rec = {"at": time.time(), **rec}
+    _dir().mkdir(parents=True, exist_ok=True)
+    with _runs_path().open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
+def runs(limit: int = 30) -> list[dict]:
+    try:
+        lines = _runs_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            pass
+    return list(reversed(out))

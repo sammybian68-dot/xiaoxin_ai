@@ -130,3 +130,13 @@ def test_agent_settings(client):
     assert client.put("/api/agent", json={"model": "gpt-9"}).status_code == 400
     assert client.put("/api/agent", json={"at": ["明天"]}).status_code == 400
     assert client.get("/api/agent").json()["model"] == "claude-sonnet-5-5"  # 存住了
+
+
+def test_run_log(client):
+    assert client.get("/api/homework/runs").json()["runs"] == []
+    client.post("/api/homework/runs", json={"since": "2026-11-02", "until": "2026-11-02", "ok": True,
+                                            "saved": ["2026-11-02"], "why": "读完了", "secs": 178, "trigger": "schedule",
+                                            "junk": "不该存"})
+    client.post("/api/homework/runs", json={"since": "2026-11-03", "until": "2026-11-03", "ok": False, "why": "没找到"})
+    runs = client.get("/api/homework/runs").json()["runs"]
+    assert [r["ok"] for r in runs] == [False, True] and runs[1]["trigger"] == "schedule" and "junk" not in runs[1]

@@ -572,6 +572,25 @@ def homework_list(request: Request, date: str = "", since: str = "", until: str 
         raise HTTPException(400, str(e))
 
 
+@app.get("/api/homework/runs")
+def homework_runs(request: Request, limit: int = 30) -> dict:
+    """最近几轮采集的记录（新的在前）：成没成、存了哪几天、为什么结束。"""
+    from server import homework
+
+    need(request, "parent")
+    return {"runs": homework.runs(max(1, min(limit, 200)))}
+
+
+@app.post("/api/homework/runs")
+def homework_run_log(request: Request, body: dict = Body(...)) -> dict:
+    from server import homework
+
+    need(request, "admin")
+    keep = {k: body[k] for k in ("since", "until", "ok", "saved", "rejected", "why", "secs", "steps", "model", "trigger")
+            if k in body}
+    return homework.log_run(keep)
+
+
 @app.put("/api/homework/{day}")
 def homework_put(request: Request, day: str, body: dict = Body(...)) -> dict:
     """采集脚本写一天的作业（按天幂等，覆盖这一天）。只有管理员能写。"""
