@@ -521,6 +521,38 @@ def worksheet_view(request: Request, wid: str) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- 班级作业（server/homework.py）
+
+@app.get("/api/homework")
+def homework_list(request: Request, date: str = "", since: str = "", until: str = "") -> dict:
+    """某天 / 某段时间的作业（界面上的作业卡）。不带参数给最近 14 天有记录的。"""
+    from server import homework
+
+    who(request)
+    try:
+        if date:
+            r = homework.get_day(date)
+            return {"days": [r] if r else []}
+        if since:
+            return {"days": homework.range_days(since, until), "missing": homework.missing(since, until)}
+        return {"days": [r for d in homework.days(14) if (r := homework.get_day(d))]}
+    except homework.HomeworkError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/homework/{day}")
+def homework_put(request: Request, day: str, body: dict = Body(...)) -> dict:
+    """采集脚本写一天的作业（按天幂等，覆盖这一天）。只有管理员能写。"""
+    from server import homework
+
+    need(request, "admin")
+    try:
+        return homework.save_day(day, body.get("items") or [], source=str(body.get("source") or "qq"),
+                                 note=str(body.get("note") or ""))
+    except homework.HomeworkError as e:
+        raise HTTPException(400, str(e))
+
+
 # ---------------------------------------------------------------- 练习模式（server/practice.py）
 
 def _practice_of(request: Request, pid: str) -> dict:

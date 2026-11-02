@@ -496,6 +496,10 @@ function showAction(row, a) {
     }
     return;
   }
+  if (a.name === "homework_report" && !/^失败/.test(a.result || "") && typeof homeworkCard === "function") {
+    try { homeworkCard(row, JSON.parse(a.arguments || "{}") || {}); } catch (_) { /* 参数坏了就只显示文字 */ }
+    return;
+  }
   if (a.name === "show_word_writing" && !/^失败/.test(a.result || "") && typeof englishCard === "function") {
     try {
       const args = JSON.parse(a.arguments || "{}");
