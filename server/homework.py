@@ -50,7 +50,8 @@ def save_day(day: str, items: list[dict], *, source: str = "qq", note: str = "")
                     "images": [str(x) for x in it.get("images") or []],      # store 里的文件 id
                     "files": [dict(x) for x in it.get("files") or []],        # 群文件：{name, fid}
                     "mentions": [str(x) for x in it.get("mentions") or []],   # 正文里提到的文件名（去聊天记录找）
-                    "notes": [str(x) for x in it.get("notes") or []]})        # 批评、提醒这类附加段
+                    "notes": [str(x) for x in it.get("notes") or []],         # 批评、提醒这类附加段（老师原话）
+                    "unsure": str(it.get("unsure") or "")[:200]})             # 采集时拿不准的地方（不显示，排查用）
     # 没有正文的条目丢掉：视觉模型有时看到学科色块就补一条空的（2026-11-03 实测 10/29、10/26 的「数学」
     # 其实那天没有数学作业）。它身上的附图并给当天第一条有正文的
     def _blank(it):

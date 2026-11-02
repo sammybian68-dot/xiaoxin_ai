@@ -59,7 +59,8 @@ SYSTEM = """你在操作一台安卓平板（屏幕已锁定横屏），用 QQ �
 - 从最新的往旧的读。**读完一天就马上调 save_day 交这一天**，再往下读下一天。别攒着最后一起交。
 - 一天里每个学科一条：subject、submit（卡片右上角的「无需提交 / 去完成 / 已完成」）、text（正文）。
 - 正文**原样抄**：保留 1. 2. 的编号和换行，错别字照抄，不改写、不补充、不漏行。卡片太长被折叠时先点「查看完整作业」展开。
-- 老师点名批评、友情提醒这类和作业条目并列的段落放 notes，学号串照抄。
+- 老师点名批评、友情提醒这类和作业条目并列的段落放 notes，学号串照抄。notes 里**只放老师写的原话**。
+- 你自己的疑虑（某个字看不清、图底部被切掉了）放 unsure，不要写进 text 或 notes——家长看到的是老师的作业，不是你的批注。
 - 只交截图里**真看到正文**的学科。那天只有语文和英语就只交两条，不要凭空补一条数学。
 - 有的学科作业**整个就是一张图**（数学老师常发黑板照，卡片里没有文字）：先把图点开全屏 capture_image，
   text 写「见附图：」再抄上图上能看清的字（如「见附图：10/29 数回 大册P43…」），不要因为没文字就不交这科。
@@ -104,8 +105,9 @@ ACTIONS = [
          "items": {"type": "array", "items": {"type": "object", "properties": {
              "subject": {"type": "string", "enum": ["chinese", "math", "english", "other"]},
              "submit": {"type": "string"}, "text": {"type": "string"},
-             "notes": {"type": "array", "items": {"type": "string"}},
-             "mentions": {"type": "array", "items": {"type": "string"}}},
+             "notes": {"type": "array", "items": {"type": "string"}, "description": "老师写的提醒、批评原话"},
+             "mentions": {"type": "array", "items": {"type": "string"}},
+             "unsure": {"type": "string", "description": "你自己拿不准的地方（只记录，不给家长看）"}},
            "required": ["subject", "text"]}}},
       "required": ["date", "items"]}}},
     {"type": "function", "function": {"name": "finish", "description": "目标范围读完了（或列表到底了），结束",
@@ -453,6 +455,7 @@ def check(args: dict, since: str, until: str) -> tuple[str, list[dict], str]:
         items.append({"subject": sub, "submit": str(it.get("submit") or ""), "text": text,
                       "notes": [str(x) for x in it.get("notes") or [] if str(x).strip()],
                       "mentions": [str(x) for x in it.get("mentions") or [] if str(x).strip()],
+                      "unsure": str(it.get("unsure") or "").strip()[:200],
                       "images": []})
     if not items:
         return day, [], "一条作业都没读到"
