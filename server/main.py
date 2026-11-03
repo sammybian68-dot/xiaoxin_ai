@@ -448,21 +448,61 @@ def stopwatch_act(request: Request, action: str) -> dict:
 
 # ---------------------------------------------------------------- 孩子线程（每个孩子一条）
 
+THREAD_PAGE = 80  # 打开群时先给最近这么多条，往上翻再要更早的（一个群几个月就上千条，全量画要好几秒）
+
+
+def _page(conv: dict, msgs_all: list[dict], lo: int, hi: int) -> dict:
+    """线程的一段：messages 是 [lo, hi)，offset 是这一段第一条在全量里的下标（界面按它对齐分界线 epochs），
+    has_more 表示更早还有。note（给模型看的 [system] 现状）界面不画，不算条数也不下发。"""
+    page = msgs_all[lo:hi]
+    return {**{k: v for k, v in conv.items() if k != "messages"}, "messages": page, "offset": lo,
+            "total": len(msgs_all), "has_more": lo > 0}
+
+
 @app.get("/api/thread")
-def kid_thread(request: Request, kid: str = "", since: str = "") -> dict:
+def kid_thread(request: Request, kid: str = "", since: str = "", before: str = "", limit: int = THREAD_PAGE) -> dict:
     """某个孩子的线程。孩子的 pad 拿到的永远是自己的；家长、管理员带 ?kid= 选（不带就第一个孩子）。
     第一次调时把阶段 1 那条线程认作第一个孩子的（members.ensure）。
-    ?since=<消息 id>：只要这条之后的（hub 断线重连补齐用）；找不到这条（被删、太老）就给全部。"""
+
+    默认只给最近 limit 条（懒加载，打开就快）；?before=<消息 id> 要这条之前的 limit 条（往上翻）；
+    ?since=<消息 id> 要这条之后的全部（hub 断线重连补齐用），找不到这条（被删、太老）就当首次打开给最近一页。"""
     from server.family import hub
 
     k = kid_for(request, kid)
     conv = {**store.get(k["thread"]), "kid": k["id"], "online": hub.online()}
-    if since:
-        ids = [m["id"] for m in conv["messages"]]
-        if since in ids:
-            conv["messages"] = conv["messages"][ids.index(since) + 1:]
-            conv["partial"] = True
-    return conv
+    msgs = conv["messages"]
+    n = max(10, min(int(limit or THREAD_PAGE), 500))
+    ids = [m["id"] for m in msgs]
+    if since and since in ids:
+        out = _page(conv, msgs, ids.index(since) + 1, len(msgs))
+        out["partial"] = True
+        return out
+    if before and before in ids:
+        hi = ids.index(before)
+        return _page(conv, msgs, max(0, hi - n), hi)
+    return _page(conv, msgs, max(0, len(msgs) - n), len(msgs))
+
+
+@app.get("/api/thread/files")
+def kid_thread_files(request: Request, kid: str = "") -> dict:
+    """这条线程里所有的附件（从旧到新），带是谁发的、哪条消息。界面只加载了最近一页消息，
+    但侧栏「爸妈发的」和看大图左右翻要的是全部图片。"""
+    k = kid_for(request, kid)
+    out = []
+    for m in store.get(k["thread"])["messages"]:
+        for f in m.get("files") or []:
+            out.append({**f, "from": m.get("from") or "", "at": m.get("created", 0), "msg": m["id"], "role": m["role"]})
+    return {"files": out}
+
+
+@app.get("/api/thread/summary")
+def kid_thread_summary(request: Request, kid: str = "") -> dict:
+    """聊天列表用：最后一条、某个时间之后有几条（未读），不下发整条线程。"""
+    k = kid_for(request, kid)
+    conv = store.get(k["thread"])
+    msgs = [m for m in conv["messages"] if m["role"] != "note"]
+    return {"id": conv["id"], "kid": k["id"], "last": msgs[-1] if msgs else None,
+            "times": [[m.get("created", 0), m.get("from") or ""] for m in msgs[-200:]]}
 
 
 @app.websocket("/api/hub")

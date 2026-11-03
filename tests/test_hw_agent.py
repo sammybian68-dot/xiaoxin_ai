@@ -170,3 +170,15 @@ def test_trim_keeps_tool_pairs():
     for i, m in enumerate(out):  # 每个 tool 前面紧跟着带同一个 id 的 assistant
         if m["role"] == "tool":
             assert out[i - 1]["tool_calls"][0]["id"] == m["tool_call_id"]
+
+
+def test_fix_year():
+    """模型把 2026-11-03 写成 2024-11-03：月日在范围里就按范围纠正。"""
+    assert ag.fix_year("2024-11-03", "2026-11-03", "2026-11-03") == "2026-11-03"
+    assert ag.fix_year("2026-11-03", "2026-11-03", "2026-11-03") == "2026-11-03"
+    assert ag.fix_year("2024-12-30", "2025-12-28", "2026-01-03") == "2025-12-30"   # 跨年
+    assert ag.fix_year("2024-01-02", "2025-12-28", "2026-01-03") == "2026-01-02"
+    assert ag.fix_year("2024-06-01", "2026-11-01", "2026-11-03") == "2024-06-01"   # 月日不在范围：不乱改
+    day, items, bad = ag.check({"date": "2024-11-02", "items": [{"subject": "chinese", "text": "x"}]},
+                               "2026-10-30", "2026-11-03")
+    assert day == "2026-11-02" and not bad

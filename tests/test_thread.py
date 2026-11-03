@@ -157,3 +157,55 @@ def test_talk_with_archived_id_joins_thread(call, fakes):
     assert old != tid and store.archived(old)
     c = call(f"?conversation={old}")
     assert c.msgs[0]["conversation"] == tid
+
+
+# ---------------------------------------------------------------- 懒加载：打开只给最近一页，往上翻再要
+
+def _fill(client, n):
+    tid = client.get("/api/thread").json()["id"]
+    from server import store
+
+    for i in range(n):
+        store.append(tid, {"role": "user", "text": f"第{i}条", "from": "admin"})
+    return tid
+
+
+def test_thread_pages(client):
+    from server import main
+
+    _fill(client, 200)
+    d = client.get("/api/thread").json()
+    assert len(d["messages"]) == main.THREAD_PAGE and d["has_more"] is True
+    assert d["messages"][-1]["text"] == "第199条" and d["offset"] == d["total"] - main.THREAD_PAGE
+    older = client.get(f"/api/thread?before={d['messages'][0]['id']}").json()
+    assert older["messages"][-1]["text"] == "第119条" and older["offset"] == d["offset"] - main.THREAD_PAGE
+    # 一直往前翻到头
+    first = older
+    while first["has_more"]:
+        first = client.get(f"/api/thread?before={first['messages'][0]['id']}").json()
+    assert first["offset"] == 0 and first["has_more"] is False
+
+
+def test_thread_since_still_full_delta(client):
+    _fill(client, 120)
+    d = client.get("/api/thread").json()
+    mid = d["messages"][-30]["id"]
+    inc = client.get(f"/api/thread?since={mid}").json()
+    assert inc["partial"] is True and len(inc["messages"]) == 29
+    gone = client.get("/api/thread?since=不存在").json()   # 找不到：当首次打开给最近一页
+    assert "partial" not in gone and len(gone["messages"]) <= 80
+
+
+def test_thread_files_and_summary(client):
+    from server import store
+
+    tid = _fill(client, 5)
+    fid = client.post("/api/files", content=b"\x89PNG", headers={"Content-Type": "image/png", "X-Filename": "a.png"}).json()["id"]
+    store.append(tid, {"role": "user", "text": "图", "files": [store.file_info(fid)[1]], "from": "admin"})
+    _fill(client, 100)  # 图被挤出最近一页了
+    page = client.get("/api/thread").json()
+    assert not any(m.get("files") for m in page["messages"])
+    files = client.get("/api/thread/files").json()["files"]
+    assert [f["id"] for f in files] == [fid] and files[0]["role"] == "user"   # 侧栏、看图照样拿得到
+    s = client.get("/api/thread/summary").json()
+    assert s["last"]["text"] == "第99条" and len(s["times"]) <= 200

@@ -626,3 +626,5 @@ a[data-fid] .orig { position: absolute; right: 6px; bottom: 6px; background: rgb
 .viewer-nav.prev { left: 8px; }
 .viewer-nav.next { right: 8px; }
 #viewer-count { color: #bbb; font-size: 13px; font-variant-numeric: tabular-nums; }
+.older { display: flex; justify-content: center; padding: 10px 0 16px; }
+.older button { background: none; border: 1px solid var(--line, #2a3446); color: var(--muted, #8a9ab0); border-radius: 16px; padding: 6px 16px; font-size: 13px; cursor: pointer; }

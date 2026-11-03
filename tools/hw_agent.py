@@ -473,9 +473,23 @@ def crop_preview(raw: bytes) -> bytes:
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def fix_year(day: str, since: str, until: str) -> str:
+    """模型偶尔把年份写错（2026-11-03 实测写成 2024-11-03，那张附图被当成范围外丢了）：
+    月日在范围里、只是年份不对的，按范围纠正。范围跨年时取能对上的那一年。"""
+    day = str(day or "").strip()
+    if not DAY.match(day) or since <= day <= until:
+        return day
+    md = day[5:]
+    for y in sorted({since[:4], until[:4]}):
+        cand = f"{y}-{md}"
+        if since <= cand <= until:
+            return cand
+    return day
+
+
 def check(args: dict, since: str, until: str) -> tuple[str, list[dict], str]:
     """校验 save_day 交上来的一天：不合格一律拒收（宁可没有，也不写错数据进库）。返回 (日期, 条目, 拒收原因)。"""
-    day = str(args.get("date") or "").strip()
+    day = fix_year(str(args.get("date") or "").strip(), since, until)
     if not DAY.match(day):
         return day, [], f"日期格式不对：{day}"
     if day > time.strftime("%Y-%m-%d"):
@@ -519,6 +533,8 @@ class Saver:
             return f"· {day} 不在要抓的范围（{self.since}～{self.until}），跳过。"
         if day in self.have:
             return f"· {day} 已经有记录，跳过。"
+        for x in pad.images:
+            x["date"] = fix_year(x["date"], self.since, self.until)
         imgs = [x for x in pad.images if x["date"] == day]
         pad.images = [x for x in pad.images if x["date"] != day]
         seen, n_img, notes = set(), 0, []

@@ -101,8 +101,13 @@ function esc(s) {
 
 // 小新是家里一个成员：全家只有一条线程（像微信里只有一个家庭群），没有「新对话」。
 // 上下文太长或乱了，在设置里「开始新篇章」换一个干净的记忆窗口，聊天记录一条不动，只多一条分界线。
+// 懒加载：打开只拉最近一页（服务端默认 80 条），滚到顶再要更早的。几个月的群上千条，全量拉 + 全画要好几秒。
+// 侧栏「爸妈发的」和看大图左右翻要的是全部附件，单独拉一份清单（api/thread/files），不靠已加载的那页。
 async function openThread(kid) {
-  state.conv = await api("api/thread" + (kid ? `?kid=${encodeURIComponent(kid)}` : "")).then(json);
+  const q = kid ? `?kid=${encodeURIComponent(kid)}` : "";
+  state.conv = await api("api/thread" + q).then(json);
+  state.threadFiles = [];
+  loadThreadFiles();
   markRead(state.conv);
   localSet("conv", state.conv.id);
   renderThread();
@@ -165,11 +170,13 @@ function renderSide() {
     $("input").focus();
     updateSend();
   });
-  // 爸妈发的文件（像微信「群文件」）：最近 5 个，新的在上
+  // 爸妈发的文件（像微信「群文件」）：最近 5 个，新的在上。从全量附件清单里挑（消息是懒加载的，只有最近一页）
   const files = [];
-  for (const m of [...conv.messages].reverse()) {
-    if (m.role !== "user" || !m.files?.length || (state.people?.[m.from]?.role !== "parent")) continue;
-    for (const f of m.files) files.push({ ...f, from: m.from, at: m.created });
+  const all = state.threadFiles?.length ? state.threadFiles
+    : conv.messages.flatMap((m) => (m.files || []).map((f) => ({ ...f, from: m.from, at: m.created, role: m.role })));
+  for (const f of [...all].reverse()) {
+    if (f.role !== "user" || state.people?.[f.from]?.role !== "parent") continue;
+    files.push(f);
     if (files.length >= 5) break;
   }
   $("side-files-sec").hidden = !files.length;
@@ -220,7 +227,10 @@ function hubMessage(m, kind) {
   const row = appendMessage(m);
   scrollDown();
   markRead(state.conv);
-  if (m.files?.length) renderSide();
+  if (m.files?.length) {
+    state.threadFiles = [...(state.threadFiles || []), ...m.files.map((f) => ({ ...f, from: m.from, at: m.created, msg: m.id, role: m.role }))];
+    renderSide();
+  }
   // 孩子的 pad：爸爸妈妈发来的话，用他们设的声音读一遍（docs/architecture.md 6.2 的 speak）
   if (m.role === "user" && m.text && m.speak !== false && state.me?.role !== "parent"
       && state.people?.[m.from]?.role === "parent" && prefs.autoread && !window.pracBusy?.()) sayLater(m, row);
@@ -251,9 +261,94 @@ async function hubCatchUp() {
   try {
     const d = await api(`api/thread?since=${encodeURIComponent(last)}${state.conv.kid ? "&kid=" + state.conv.kid : ""}`).then(json);
     if (d.id !== state.conv.id) return;
-    if (!d.partial) { state.conv = d; renderThread(); return; }  // 太久没连，直接整条重画
+    if (!d.partial) { state.conv = d; renderThread(); loadThreadFiles(); return; }  // 太久没连：重新给最近一页，整条重画
     for (const m of d.messages) hubMessage(m, "msg");
   } catch (_) { /* 下次重连再补 */ }
+}
+
+async function loadThreadFiles() {
+  const conv = state.conv;
+  if (!conv) return;
+  try {
+    const d = await api(`api/thread/files${conv.kid ? "?kid=" + encodeURIComponent(conv.kid) : ""}`).then(json);
+    if (state.conv?.id !== conv.id) return;
+    state.threadFiles = d.files || [];
+    renderSide();
+  } catch (_) { /* 拉不到就用已加载那页里的 */ }
+}
+
+// 最上面那一行：「往上翻加载更早的」。滚到顶自动加载，也能点。
+function olderRow() {
+  const el = document.createElement("div");
+  el.className = "older";
+  el.id = "older";
+  el.innerHTML = '<button type="button">加载更早的消息</button>';
+  el.querySelector("button").addEventListener("click", loadOlder);
+  return el;
+}
+
+const older = { busy: false };
+async function loadOlder() {
+  const conv = state.conv;
+  if (!conv?.has_more || older.busy) return;
+  const first = conv.messages[0]?.id;
+  if (!first) return;
+  older.busy = true;
+  const btn = $("older")?.querySelector("button");
+  if (btn) btn.textContent = "加载中…";
+  try {
+    const d = await api(`api/thread?before=${encodeURIComponent(first)}${conv.kid ? "&kid=" + encodeURIComponent(conv.kid) : ""}`).then(json);
+    if (state.conv?.id !== conv.id) return;
+    const box = $("messages");
+    const sc = $("chat");                          // 滚动的是外面这层 #chat，不是 #messages
+    // 插到上面以后眼前这条别跳走：记住现在眼前第一条的位置，插完把它挪回原位。
+    // 不用「总高度差」：smooth 滚动、图片异步撑高都会让高度差不准（实测跳了 700px）
+    const top = sc.getBoundingClientRect().top;
+    const anchor = [...box.querySelectorAll(".msg")].find((el) => el.getBoundingClientRect().bottom > top) || box.firstElementChild;
+    const y0 = anchor?.getBoundingClientRect().top ?? 0;
+    $("older")?.remove();
+    const frag = document.createDocumentFragment();
+    const marks = new Map((conv.epochs || []).filter((e) => e.start > 0).map((e) => [e.start, e]));
+    const holder = document.createElement("div");
+    if (d.has_more) holder.appendChild(olderRow());
+    state.replaying = true;
+    // appendMessage 往 #messages 末尾加：先临时加到末尾再挪到最上面
+    const startCount = box.children.length;
+    d.messages.forEach((m, i) => {
+      if (marks.has(d.offset + i)) appendDivider(marks.get(d.offset + i));
+      if (m.role !== "note") appendMessage(m);
+    });
+    const added = [...box.children].slice(startCount);
+    for (const el of added) holder.appendChild(el);
+    while (holder.firstChild) frag.appendChild(holder.firstChild);
+    box.insertBefore(frag, box.firstChild);
+    state.replaying = false;
+    conv.messages = [...d.messages, ...conv.messages];
+    conv.offset = d.offset;
+    conv.has_more = d.has_more;
+    if (anchor) sc.scrollTop += anchor.getBoundingClientRect().top - y0;
+    // 插进来的那批里有图片、卡片，加载完会撑高、把眼前这条往下推（实测 1 秒内推了 700px）。
+    // 接下来 1.5 秒里每帧把锚点拉回原位；用户自己一动就停。
+    if (anchor) {
+      const until = performance.now() + 1500;
+      let userMoved = false;
+      const stop = () => { userMoved = true; };
+      sc.addEventListener("wheel", stop, { once: true, passive: true });
+      sc.addEventListener("touchstart", stop, { once: true, passive: true });
+      const hold = () => {
+        if (userMoved || performance.now() > until || state.conv?.id !== conv.id) return;
+        const d = anchor.getBoundingClientRect().top - y0;
+        if (Math.abs(d) > 1) sc.scrollTop += d;
+        requestAnimationFrame(hold);
+      };
+      requestAnimationFrame(hold);
+    }
+  } catch (e) {
+    toast("没加载出来：" + e.message);
+    if (btn) btn.textContent = "加载更早的消息";
+  } finally {
+    older.busy = false;
+  }
 }
 
 function renderThread() {
@@ -264,13 +359,15 @@ function renderThread() {
   renderSide();
   $("messages").innerHTML = "";
   state.replaying = true;
+  const off = conv.offset || 0;  // 这一页第一条在全量里的下标：分界线（epochs.start 是全量下标）要按它对齐
   const marks = new Map((conv.epochs || []).filter((e) => e.start > 0).map((e) => [e.start, e]));
+  if (conv.has_more) $("messages").appendChild(olderRow());
   conv.messages.forEach((m, i) => {
-    if (marks.has(i)) appendDivider(marks.get(i));
+    if (marks.has(off + i)) appendDivider(marks.get(off + i));
     if (m.role === "note") return;  // [system] 现状消息只给模型看
     appendMessage(m);
   });
-  if (marks.has(conv.messages.length)) appendDivider(marks.get(conv.messages.length));  // 刚翻页、还没说话
+  if (marks.has(off + conv.messages.length)) appendDivider(marks.get(off + conv.messages.length));  // 刚翻页、还没说话
   if (!conv.messages.some((m) => m.role !== "note")) renderEmpty();
   scrollDown(true);
   requestAnimationFrame(() => { state.replaying = false; scrollDown(true); });
@@ -730,6 +827,7 @@ function revealRow(row) {
   // 拖滚动条、键盘翻页：scroll 事件兜底，只在不粘的时候看要不要重新粘
   c.addEventListener("scroll", () => {
     if (!chatStick.on && !touching && c.scrollHeight - c.scrollTop - c.clientHeight < 40) { chatStick.on = true; $("chat-latest").hidden = true; }
+    if (c.scrollTop < 300 && state.conv?.has_more && !state.replaying) loadOlder();  // 翻到顶附近：先把更早的接上
   }, { passive: true });
   // 内容变高（流式出字、TTS 念到后面、卡片、图片加载完）：粘着就补一下
   const ro = new ResizeObserver(() => { if (chatStick.on && !touching) chatToBottom(false); });
@@ -2672,11 +2770,11 @@ async function showChats() {
   hubConnect();
   const rows = await Promise.all((state.kids || []).map(async (k) => {
     try {
-      const t = await api(`api/thread?kid=${encodeURIComponent(k.id)}`).then(json);
-      const msgs = t.messages.filter((m) => m.role !== "note");
-      const last = msgs.at(-1);
-      if (!localGet("seen." + t.id)) markRead(t);  // 这台设备第一次见这个群：以前的不算未读（不然一装好就 99+）
-      const unread = msgs.filter((m) => m.created > lastSeen(t.id) && m.from !== state.me.id).length;
+      // 只要概要（最后一条 + 最近 200 条的时间和发送人），不拉整条线程：家长有几个孩子就要拉几条，全量太慢
+      const t = await api(`api/thread/summary?kid=${encodeURIComponent(k.id)}`).then(json);
+      const last = t.last;
+      if (!localGet("seen." + t.id) && last) localSet("seen." + t.id, String(last.created || 0));  // 这台设备第一次见这个群：以前的不算未读
+      const unread = (t.times || []).filter(([at, from]) => at > lastSeen(t.id) && from !== state.me.id).length;
       return { k, last, unread };
     } catch (_) { return { k, last: null, unread: 0 }; }
   }));
@@ -2739,7 +2837,8 @@ async function postOnly(text, files, via) {
 // 当前这组图：聊天里出现过的所有图片（新的在后），加上卡片的练习纸页。左右能翻的就是这一组
 function viewerList() {
   const out = [], seen = new Set();
-  for (const m of state.conv?.messages || []) for (const f of m.files || []) {
+  const all = state.threadFiles?.length ? state.threadFiles : (state.conv?.messages || []).flatMap((m) => m.files || []);
+  for (const f of all) {
     if (f.kind === "image" && !seen.has(f.id)) { seen.add(f.id); out.push(f); }
   }
   for (const f of Object.values(state.extraFiles || {})) if (f.kind === "image" && !seen.has(f.id)) { seen.add(f.id); out.push(f); }
@@ -2835,6 +2934,7 @@ document.addEventListener("click", (e) => {
 }, true);  // 捕获阶段：抢在任何 target=_blank 的默认行为之前
 function findFile(id) {
   for (const m of state.conv?.messages || []) for (const f of m.files || []) if (f.id === id) return f;
+  for (const f of state.threadFiles || []) if (f.id === id) return f;
   return state.extraFiles?.[id] || null;
 }
 
