@@ -89,7 +89,7 @@ def test_empty_items_dropped():
 
 def test_agent_settings(client):
     d = client.get("/api/agent").json()
-    assert d["on"] is True and d["model"] == "claude-opus-5-5" and d["at"][0] == "17:00"
+    assert d["on"] is True and d["model"] == "claude-opus-5-5" and d["at"] == ["16:50", "17:20", "17:45"]
     assert d["weekdays"] == [1, 2, 3, 4, 5] and d["max_tries"] == 4 and d["today_done"] is False
     d = client.put("/api/agent", json={"on": False, "model": "claude-sonnet-5-5", "at": ["19:00", "坏的", "16:30"],
                                        "weekdays": [1, 3, 5, 9], "max_tries": 99, "max_steps": 1}).json()
@@ -157,3 +157,61 @@ def test_runs_tolerates_old_format(client):
     assert [x["name"] for x in one["steps"]] == ["tap", "save_day"]
     old = client.get(f"/api/homework/runs?at={runs[1]['at']}").json()["runs"][0]
     assert old["steps"] == []
+
+
+def test_merge_day_is_incremental_per_subject():
+    """按学科增量：已有的学科不动，只补新的；【修改】版才替换那一科。"""
+    d = "2026-10-23"
+    rec, changed = homework.merge_day(d, [{"subject": "english", "text": "英语A"}, {"subject": "math", "text": "数学A"}])
+    assert changed == ["english", "math"]
+    # 17:20 再看：英语、数学读出来略有不同（重读的误差），语文新发了
+    rec, changed = homework.merge_day(d, [{"subject": "english", "text": "英语A（读得不一样）"},
+                                         {"subject": "math", "text": "数学A"}, {"subject": "chinese", "text": "语文B"}])
+    assert changed == ["chinese"]
+    got = {it["subject"]: it["text"] for it in rec["items"]}
+    assert got == {"chinese": "语文B", "math": "数学A", "english": "英语A"}   # 英语没被重读的版本盖掉
+    # 老师发了【修改】版语文（真改了内容）：替换语文，别的不动
+    new_zh = "1.抄词第12课；2.习字册；3.小册；4.继续完成竞赛卷；5.看课外书"
+    rec, changed = homework.merge_day(d, [{"subject": "chinese", "text": new_zh, "revised": True}])
+    assert changed == ["chinese"] and {it["subject"]: it["text"] for it in rec["items"]}["chinese"] == new_zh
+    # 模型标了 revised，但内容其实一样（只差标点）：不信它的标记，不动
+    rec, changed = homework.merge_day(d, [{"subject": "math", "text": "数学A。", "revised": True}])
+    assert changed == []
+    # 什么新的都没有：不写盘
+    before = homework.get_day(d)["collected"]
+    rec, changed = homework.merge_day(d, [{"subject": "math", "text": "数学A"}])
+    assert changed == [] and rec["collected"] == before
+    assert homework.subjects(d) == ["chinese", "math", "english"]
+
+
+@pytest.mark.parametrize("old,new,changed", [
+    ("1、试卷订正签字\n2、4☆P52\n3、自备本竖式", "1.试卷订正签字 2.4⊕P52 3.自备本竖式", False),   # 重读：标点换行、一个符号
+    ("1.习字册；\n2.小册；\n3.大册；\n4.看课外书。", "1.习字册；2.小册；3.大册；4.看课外书", False),
+    ("1.小册第10课;\n2.订正课堂默写", "1.小册第10课;\n2.订正课堂默写\n3.默第9课词语，给字加拼音，积累AABC的叠词3个", True),  # 加了一条
+    ("1.大册第32-33页", "1.大册第34-35页", False),                                            # 差 2 个字：分不清是改了还是读错，不动
+    ("1.抄词第12课；2.习字册；3.小册", "1.完成竞赛卷；2.预习第13课；3.看课外书", True),      # 整个换了
+])
+def test_changed_enough(old, new, changed):
+    assert homework.changed_enough(old, new) is changed
+
+
+def test_merge_day_verify_mode():
+    """最后一轮核对：重读的正文和库里比，代码判断；改得够多才替换并标 revised，图留着。"""
+    d = "2026-10-15"
+    homework.merge_day(d, [{"subject": "chinese", "text": "1.小册第10课;\\n2.订正课堂默写", "images": ["f1"]},
+                           {"subject": "math", "text": "1、大册第32-33页"}])
+    rec, changed = homework.merge_day(d, [
+        {"subject": "chinese", "text": "1.小册第10课;\\n2.订正课堂默写\\n3.默第9课词语，给字加拼音，积累AABC的叠词3个"},
+        {"subject": "math", "text": "1.大册第32-33页"}], verify=True)
+    assert changed == ["chinese"]
+    zh = next(x for x in rec["items"] if x["subject"] == "chinese")
+    assert zh["revised"] is True and "默第9课" in zh["text"] and zh["images"] == ["f1"]
+    ma = next(x for x in rec["items"] if x["subject"] == "math")
+    assert ma["text"] == "1、大册第32-33页" and not ma["revised"]   # 只差标点：原来那份不动
+    # 增量模式、没标 revised：变短了不收（多半这次没读全）
+    rec, changed = homework.merge_day(d, [{"subject": "chinese", "text": "1.小册第10课;"}])
+    assert changed == []
+    # 增量模式、没标 revised：比库里多出一大截才收（库里当时被截断了 / 老师补了内容没重新分享）
+    longer = next(x for x in rec["items"] if x["subject"] == "chinese")["text"] + "\n4.预习语文园地三；5.课堂默写订正签字"
+    rec, changed = homework.merge_day(d, [{"subject": "chinese", "text": longer}])
+    assert changed == ["chinese"]

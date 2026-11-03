@@ -74,9 +74,11 @@ ACTIONS = [
      "parameters": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"},
                                                      "why": {"type": "string", "description": "点这里是为了什么"}},
                     "required": ["x", "y", "why"]}}},
-    {"type": "function", "function": {"name": "swipe", "description": "滑动。往下看内容用 down（滑半屏），往上回看用 up",
+    {"type": "function", "function": {"name": "swipe",
+     "description": "滑动。往下看内容用 down，往上回看用 up。读正文时半屏（0.5）一滑，正文不会被切断；"
+                    "要找好几天前的日子、中间的日子不用读，就大步滑（2–3 屏），看到日期标题再放慢",
      "parameters": {"type": "object", "properties": {"dir": {"type": "string", "enum": ["down", "up"]},
-                                                     "amount": {"type": "number", "description": "滑多少屏，默认 0.5"}},
+                                                     "amount": {"type": "number", "description": "滑多少屏，默认 0.5，最多 3"}},
                     "required": ["dir"]}}},
     {"type": "function", "function": {"name": "back", "description": "按返回键（退出走错的页面）",
      "parameters": {"type": "object", "properties": {}}}},
@@ -98,6 +100,7 @@ ACTIONS = [
              "submit": {"type": "string"}, "text": {"type": "string"},
              "notes": {"type": "array", "items": {"type": "string"}, "description": "老师写的提醒、批评原话"},
              "mentions": {"type": "array", "items": {"type": "string"}},
+             "revised": {"type": "boolean", "description": "群里这一科有【修改】分享卡、你按修改后的重新读了，就写 true"},
              "unsure": {"type": "string", "description": "你自己拿不准的地方（只记录，不给家长看）"}},
            "required": ["subject", "text"]}}},
       "required": ["date", "items"]}}},
@@ -111,8 +114,9 @@ class Pad:
     """pad 那一头：动作经总线发给 pad 上的无障碍服务，回来的截图存在 last。坐标换算在这里做：
     模型看的是缩到 VIEW_W 宽的截图，报的坐标按「那一张」的实际尺寸换回屏幕像素（屏幕会转，横竖都对）。"""
 
-    def __init__(self):
+    def __init__(self, since: str = "", until: str = ""):
         self.n = 0
+        self.since, self.until = since, until
         self.images: list[dict] = []      # capture_image 存下的附图：{date, subject, what, raw}
         self.last: dict = {}               # 最近一次 pad 回的结果（shot、w、h、widgets）
         self.raw = b""
@@ -154,15 +158,25 @@ class Pad:
             x, y = round(int(args["x"]) * k), round(int(args["y"]) * k)
             return self._call("tap", {"x": x, "y": y}) + f" ({args['x']}, {args['y']})"
         if name == "swipe":
-            amt = max(0.2, min(float(args.get("amount") or 0.5), 1.0))
-            dy = int(h * amt * 0.72)
-            top, bot = int(h * 0.32), int(h * 0.78)   # 避开顶部标题栏和底部导航条
-            y1, y2 = (bot, bot - dy) if args.get("dir") != "up" else (top, top + dy)
-            self._call("swipe", {"x1": w // 2, "y1": y1, "x2": w // 2, "y2": y2, "ms": 420})
+            amt = max(0.2, min(float(args.get("amount") or 0.5), 3.0))
+            top, bot = int(h * 0.32), int(h * 0.92)   # 避开顶部标题栏；底部留出导航条
+            # 一下滑不了一屏以上：大于 1 屏的拆成几下快滑（找旧日子时用，读正文时还是半屏一滑）
+            left = amt
+            while left > 0.01:
+                one = min(left, 1.0)
+                dy = int((bot - top) * one)
+                y1, y2 = (bot, bot - dy) if args.get("dir") != "up" else (top, top + dy)
+                self._call("swipe", {"x1": w // 2, "y1": y1, "x2": w // 2, "y2": y2, "ms": 420 if one < 0.9 else 250})
+                left -= one
             return f"往{'下' if args.get('dir') != 'up' else '上'}滑了 {amt} 屏"
         if name == "back":
             return self._call("back")
         if name == "capture_image":
+            d = fix_year(str(args.get("date") or ""), self.since, self.until) if self.since else ""
+            if self.since and not (self.since <= d <= self.until):
+                # 不是要抓的日子的图：不存（实测找 10/15 时它先去抓了 11/3 的黑板照，白走好几步）
+                want = self.since if self.since == self.until else f"{self.since}～{self.until}"
+                return f"没存：这张图是 {args.get('date')} 的，要抓的是 {want}。别抓这一天的图，继续找 {want}"
             raw = self.raw or self.shot()
             self.images.append({"date": str(args.get("date") or ""), "subject": args.get("subject") or "other",
                                 "what": str(args.get("what") or ""), "raw": raw})
@@ -255,6 +269,7 @@ def day_range(since: str, until: str) -> list[str]:
     return out
 
 
+AFTER_SAVE = 6  # 只抓一天时，那天存上以后最多再走几步（补附图、再交一次）
 KEEP = 48  # 历史最多留多少条（一次滑到底抓几十天要走几百步，全留着又慢又贵）
 
 
@@ -279,19 +294,52 @@ def trim(msgs: list[dict], saved: list[str]) -> list[dict]:
             *msgs[cut + 1:]]
 
 
-def run(pad: Pad, since: str, until: str, max_steps: int, on_day) -> dict:
+SUBJECT_ZH = {"chinese": "语文", "math": "数学", "english": "英语", "other": "其他（劳动、美术等）"}
+
+
+def goal_text(since: str, until: str, mode: str, have: list[str]) -> str:
+    """这一轮要它做什么。三种：
+      full        抓一段（补历史）或今天第一次：每一科都读
+      incremental 今天已经有几科了：只读还没有的科目；再去群聊看一眼有没有今天带【修改】的作业分享卡
+      verify      截止前最后一轮：今天每一科都重读一遍交上来（比对是代码做的，它只管照常读）"""
+    today = time.strftime("%Y-%m-%d")
+    md = f"{int(since[5:7])}月{int(since[8:10])}日"   # 列表里写的就是「10月15日」：直接告诉它找这几个字
+    # 列表里的日期只有月日、没有年份，模型会自己补年份、还会补错（实测把今天 11月3日补成 2025 年，
+    # 然后断定「10月15日比列表里最新的还晚、不存在」直接结束）。所以：别让它碰年份，只用月日比
+    yr = (f"列表里的日期只写月日、都是 {today[:4]} 年的，**不要自己加年份去比大小**：列表最上面是最近发的那天"
+          f"（今天还没发的话就是前一个上学日），往下越来越早。交的时候 date 写 {today[:4]}-月-日。")
+    if since != until:
+        return (f"目标：抓 {since} 到 {until} 每一天的作业（今天是 {today}）。{yr}"
+                f"刚重开了 QQ，这是当前屏幕。走到作业列表，从新到旧读，读完一天 save_day 一天，读到 {since} 或更早就 finish。")
+    head = (f"目标：只抓 {since}（列表里写作「{md}」）这一天的作业（今天是 {today}）。{yr}"
+            + (f"这一天不是今天：作业列表从新到旧排，要往下滑很多屏才到「{md}」（大约每个工作日 3–5 屏）。"
+               f"比它新的日子都**跳过别读、别交**，用大步滑（swipe amount 2–3）往下找，看到「{md}」附近的日期标题再半屏慢滑。"
+               if since != today else ""))
+    tail = f"「{md}」交完就 finish，不要往下读更早的日子。刚重开了 QQ，这是当前屏幕。"
+    got = "、".join(SUBJECT_ZH.get(x, x) for x in have)
+    if mode == "incremental" and have:
+        return (head + f"这一天**已经存好了：{got}**，这几科不用再读正文。\n"
+                "要做两件事：\n"
+                "1. 去作业列表看这一天，有没有**还没存的学科**（老师下午陆续发）。有就读出来，只交新的那几科。\n"
+                "2. 回到群聊，看有没有这一天的作业分享卡标题带【修改】（比如「【修改】11月3日星期二语文作业」）。"
+                "有的话，回作业列表把那一科**重新读一遍**，交的时候那一科写 revised: true。\n"
+                "两件都没有：直接 finish，说「没有新的」。不要为了交而交。" + tail)
+    if mode == "verify" and have:
+        return (head + (f"这是今天最后一次核对。" if since == today else "这是一次核对。") + f"这一天已经存了：{got}。\n"
+                "去作业列表把这一天**每一科都重新读一遍**（包括已经存过的），原样抄，一起 save_day 交上来；"
+                "有新出现的学科也一起交。老师有没有改过不用你判断，照常读就行。"
+                "附图已经存过的不用再抓，新学科的图照常抓。" + tail)
+    return head + "去作业列表，读这一天每一科的作业，save_day 交上来。" + tail
+
+
+def run(pad: Pad, since: str, until: str, max_steps: int, on_day, *, mode: str = "full", have: list[str] = ()) -> dict:
     """agent 循环：从最新往旧读，读完一天就 save_day（on_day 立刻校验写库），直到 finish 或步数用完。
     中途失败也不丢已经存好的那几天。返回 {"saved": [...], "why": 结束原因}。"""
     pad._call("wake")            # 孩子房间里 pad 平时熄屏：先点亮、过掉锁屏
     pad.act("restart_qq", {})
     # 日期写全、强调年份：QQ 列表只写「11月3日」不带年份，模型会自己猜年份（实测猜成 2024、2025 都有）
-    today = time.strftime("%Y-%m-%d")
-    yr = f"年份一律是 {today[:4]} 年（列表里只写月日，别自己猜年份）。"
-    goal = (f"目标：抓 {since} 到 {until} 每一天的作业（今天是 {today}）。{yr}" if since != until
-            else f"目标：只抓 {since} 这一天的作业（今天是 {today}）。{yr}这一天交完就 finish，不要往下读更早的日子。")
     msgs = [{"role": "user", "content": [
-        {"type": "text", "text": goal + "刚重开了 QQ，这是当前屏幕。走到作业列表，从新到旧读，读完一天 save_day 一天，"
-                                        f"读到 {since} 或更早就 finish。" + hint(pad)},
+        {"type": "text", "text": goal_text(since, until, mode, list(have)) + hint(pad)},
         shot_part(pad.shot())]}]
     chain = models()
     log.info("hw agent %s~%s 用模型 %s", since, until, chain[0])
@@ -326,8 +374,12 @@ def run(pad: Pad, since: str, until: str, max_steps: int, on_day) -> dict:
         msgs.append({"role": "assistant", "content": m["content"], "tool_calls": [c]})
         if name == "finish":
             steps.append({"i": step + 1, "name": name, "why": str(args.get("why") or ""), "said": (m["content"] or "")[:300]})
-            return {"saved": saved, "why": str(args.get("why") or "读完了"), "steps": steps}
+            return {"saved": saved, "why": str(args.get("why") or "读完了"), "steps": steps, "finished": True}
         since_save += 1
+        # 只抓一天、那天已经存上了：再给几步补附图（交完以后它常去抓剩下的图），超过就收尾。
+        # 实测它交完还会一直往下翻、展开别的卡片看「还有没有文字」，把 40 步耗完
+        if since == until and saved and since_save > AFTER_SAVE and name != "save_day":
+            return {"saved": saved, "why": f"{since} 已经存好，收尾", "steps": steps, "finished": True}
         if name == "save_day":
             out = on_day(args, pad)
             if out.startswith("✓"):
@@ -337,7 +389,11 @@ def run(pad: Pad, since: str, until: str, max_steps: int, on_day) -> dict:
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out + " 继续往下读下一天。"})
             raw = pad.raw
             steps.append({"i": step + 1, "name": name, "why": tag, "out": out[:300], "said": (m["content"] or "")[:200],
-                          "args": {k: v for k, v in args.items() if k != "items"}, "shot": thumb(raw)})
+                          "args": {**{k: v for k, v in args.items() if k != "items"},
+                                   # 每科交了什么（排查「它到底读到了什么」用；正文只留前 200 字）
+                                   "items": [{"subject": x.get("subject"), "revised": bool(x.get("revised")),
+                                              "text": str(x.get("text") or "")[:200]} for x in args.get("items") or []]},
+                          "shot": thumb(raw)})
             msgs.append({"role": "user", "content": [{"type": "text", "text": "这是现在的屏幕。" + hint(pad)}, shot_part(raw)]})
         else:
             out = pad.act(name, args)
@@ -436,6 +492,7 @@ def check(args: dict, since: str, until: str) -> tuple[str, list[dict], str]:
                       "notes": [str(x) for x in it.get("notes") or [] if str(x).strip()],
                       "mentions": [str(x) for x in it.get("mentions") or [] if str(x).strip()],
                       "unsure": str(it.get("unsure") or "").strip()[:200],
+                      "revised": bool(it.get("revised")),
                       "images": []})
     if not items:
         return day, [], "一条作业都没读到"
@@ -447,8 +504,9 @@ def check(args: dict, since: str, until: str) -> tuple[str, list[dict], str]:
 class Saver:
     """save_day 的处理：校验 → 这天的附图核验、裁边、去重、上传 → 按天写库（幂等）。每交一天立刻落库。"""
 
-    def __init__(self, since: str, until: str, dry_run: bool, only_missing: bool):
-        self.since, self.until, self.dry, self.only_missing = since, until, dry_run, only_missing
+    def __init__(self, since: str, until: str, dry_run: bool, only_missing: bool, mode: str = "full"):
+        self.since, self.until, self.dry, self.only_missing, self.mode = since, until, dry_run, only_missing, mode
+        self.changed: dict[str, list[str]] = {}   # 每天这次新增 / 更新了哪几科
         self.chain = models()
         self.done: dict[str, int] = {}     # 存好的：日期 → 附图张数
         self.rejected: dict[str, str] = {}
@@ -462,7 +520,12 @@ class Saver:
         if not (self.since <= day <= self.until):
             if self.done and day < self.since:   # 范围里的都交了、已经读到更早的了：别再往下翻
                 return f"· {day} 比要抓的范围（{self.since}～{self.until}）还早，范围里的都存好了，现在调 finish。"
-            return f"· {day} 不在要抓的范围（{self.since}～{self.until}），跳过。"
+            want = self.since if self.since == self.until else f"{self.since}～{self.until}"
+            # 方向按「今年的这个月日」算：模型常把年份写错（11/3 写成 2025-11-03），按它写的比会把方向说反
+            real = (self.until[:4] + day[4:]) if DAY.match(day) else day
+            more = "继续往下滑找（列表是从新到旧）" if real > self.until else "已经滑过头了，往上滑回去找"
+            md = f"{int(want[5:7])}月{int(want[8:10])}日" if self.since == self.until else want
+            return f"· {day[5:]} 不是要抓的日子（要的是「{md}」），没存。{more}，别交别的日子。"
         if day in self.have:
             return f"· {day} 已经有记录，跳过。"
         for x in pad.images:
@@ -496,12 +559,21 @@ class Saver:
             self.rejected[day] = f"{'、'.join(empty)} 写的「见附图」，但没收到图"
             return (f"× {day} 没收：{'、'.join(empty)} 写的是「见附图」，可是这科没有抓到图（或图没过核验）。"
                     f"先把这科的图点开全屏 capture_image，再 save_day。")
+        changed = [x["subject"] for x in items]
         if not self.dry:
-            homework.save_day(day, items, source="qq-agent", note=f"agent 看屏抓的 {time.strftime('%m-%d %H:%M')}")
+            note = f"agent 看屏抓的 {time.strftime('%m-%d %H:%M')}"
+            if self.mode == "full" and self.since != self.until:
+                homework.save_day(day, items, source="qq-agent", note=note)   # 补一段历史：这天整天写
+                changed = [x["subject"] for x in items]
+            else:
+                _, changed = homework.merge_day(day, items, source="qq-agent", note=note, verify=self.mode == "verify")
         self.done[day] = n_img
+        self.changed[day] = changed
         self.rejected.pop(day, None)
-        subs = "、".join(x["subject"] for x in items)
-        return f"✓ {day} 存好了：{subs}，附图 {n_img} 张" + (f"（{'；'.join(notes)}）" if notes else "") + ("［dry-run］" if self.dry else "")
+        zh = lambda xs: "、".join(SUBJECT_ZH.get(x, x).split("（")[0] for x in xs)
+        what = (f"新增 / 更新了：{zh(changed)}" if changed else "都和已经存的一样，没有新的")
+        return (f"✓ {day} 收到 {zh([x['subject'] for x in items])}，{what}，附图 {n_img} 张"
+                + (f"（{'；'.join(notes)}）" if notes else "") + ("［dry-run］" if self.dry else ""))
 
 
 
@@ -514,7 +586,7 @@ def busy() -> bool:
 
 
 def grab(day: str = "", *, since: str = "", until: str = "", trigger: str = "manual",
-         max_steps: int = 0, only_missing: bool = False) -> dict:
+         max_steps: int = 0, only_missing: bool = False, mode: str = "") -> dict:
     """跑一轮：抓某一天（默认今天），或 since～until 一段。同步跑（几分钟），调用方放线程里。
     同一时间只跑一轮（pad 只有一台）。跑完写一条运行记录（带每一步和小截图，「作业 agent」面板看）。
     返回 {"ok", "saved", "rejected", "why", "secs"}。"""
@@ -526,12 +598,16 @@ def grab(day: str = "", *, since: str = "", until: str = "", trigger: str = "man
     until = until or day or today
     since = since or day or today
     days = day_range(since, until)
-    steps_max = max_steps or (40 if len(days) == 1 else 40 + 12 * len(days))
-    pad = Pad()
-    saver = Saver(since, until, False, only_missing)
+    have = homework.subjects(since) if since == until else []
+    mode = mode or ("incremental" if have else "full")   # 今天已经有几科了：默认只补新的
+    # 步数：核对要把每科重读一遍、还要找到那一天（补历史时要滑很久），给宽一点；增量没新的几步就完
+    base = {"verify": 60, "incremental": 40, "full": 45}.get(mode, 45)
+    steps_max = max_steps or (base if len(days) == 1 else 40 + 12 * len(days))
+    pad = Pad(since, until)
+    saver = Saver(since, until, False, only_missing, mode)
     t0 = time.monotonic()
     try:
-        res = run(pad, since, until, steps_max, saver)
+        res = run(pad, since, until, steps_max, saver, mode=mode, have=have)
     except PadOffline as e:
         res = {"saved": [], "why": str(e), "steps": []}
     except Exception as e:  # noqa: BLE001  抓作业出错不能把服务带崩
@@ -540,7 +616,11 @@ def grab(day: str = "", *, since: str = "", until: str = "", trigger: str = "man
     finally:
         _running = False
     secs = round(time.monotonic() - t0)
-    out = {"ok": bool(saver.done), "saved": sorted(saver.done), "rejected": saver.rejected, "why": res["why"], "secs": secs}
+    # 增量 / 核对：没有新的也算这一轮正常结束（它看过了、确实没变化）
+    nothing_new = mode in ("incremental", "verify") and bool(res.get("finished"))  # 它看完了、自己说结束：没新的也算正常
+    changed = sorted({s for xs in saver.changed.values() for s in xs})
+    out = {"ok": bool(saver.done) or nothing_new, "saved": sorted(saver.done), "changed": changed, "mode": mode,
+           "rejected": saver.rejected, "why": res["why"], "secs": secs}
     homework.log_run({"since": since, "until": until, **out, "shots": pad.n, "model": saver.chain[0],
                       "trigger": trigger, "steps": res.get("steps") or []})
     log.info("hw agent 结束 %s：存了 %s（%ss）", res["why"], out["saved"], secs)

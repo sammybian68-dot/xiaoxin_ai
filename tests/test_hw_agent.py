@@ -250,3 +250,141 @@ def test_grab_pad_offline(client, monkeypatch):
     r = ag.grab("2026-11-03", trigger="test")
     assert not r["ok"] and "没来领" in r["why"]
     assert homework.runs(1)[0]["why"] == r["why"]
+
+
+def _run_scripted(monkeypatch, day, script, mode=""):
+    """假模型按 script 走、假 pad 在总线上回截图，跑一轮 grab()。返回 (结果, 模型看到的第一句目标)。"""
+    import threading
+
+    from server.agent_bus import bus
+
+    it = iter(script)
+    seen = {}
+
+    def fake_ask(msgs, chain):
+        if "goal" not in seen:
+            seen["goal"] = msgs[0]["content"][0]["text"]
+        name, args = next(it)
+        return {"role": "assistant", "content": None, "tool_calls": [{"id": f"c{len(msgs)}", "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}]}
+
+    monkeypatch.setattr(ag, "ask", fake_ask)
+    monkeypatch.setattr(ag, "models", lambda: ["fake"])
+    stop = threading.Event()
+
+    def pad():
+        while not stop.is_set():
+            job = bus.next(wait=0.2)
+            if job:
+                bus.done(job["id"], {"ok": True, "out": "好了", "w": 2560, "h": 1600, "shot": _jpeg(2560, 1600)})
+
+    threading.Thread(target=pad, daemon=True).start()
+    try:
+        return ag.grab(day, trigger="test", mode=mode), seen["goal"]
+    finally:
+        stop.set()
+
+
+def test_incremental_adds_only_new_subject(client, monkeypatch):
+    """17:20：已经有英语、数学。模型被告知这一点；它交上来三科（英语读得略不一样），只有语文进库，英语原样不动。"""
+    from server import homework
+
+    d = "2026-10-23"
+    homework.save_day(d, [{"subject": "english", "text": "1.完成《同步》期中自我测评"}, {"subject": "math", "text": "1.大册P42"}])
+    r, goal = _run_scripted(monkeypatch, d, [
+        ("save_day", {"date": d, "items": [{"subject": "english", "text": "1.完成《同步》期中自我测评。"},
+                                           {"subject": "math", "text": "1.大册P42"},
+                                           {"subject": "chinese", "text": "1.抄词第12课；2.习字册"}]}),
+        ("finish", {"why": "补上了语文"})])
+    assert "已经存好了：数学、英语" in goal and "【修改】" in goal
+    assert r["ok"] and r["mode"] == "incremental" and r["changed"] == ["chinese"]
+    got = {x["subject"]: x["text"] for x in homework.get_day(d)["items"]}
+    assert got["english"] == "1.完成《同步》期中自我测评" and got["chinese"].startswith("1.抄词")
+
+
+def test_incremental_nothing_new_is_ok(client, monkeypatch):
+    from server import homework
+
+    d = "2026-10-23"
+    homework.save_day(d, [{"subject": "chinese", "text": "抄词"}])
+    r, _ = _run_scripted(monkeypatch, d, [("finish", {"why": "没有新的"})])
+    assert r["ok"] and r["changed"] == [] and r["saved"] == []
+
+
+def test_revised_card_replaces_subject(client, monkeypatch):
+    """群里有【修改】卡：模型重读那一科、标 revised，库里那一科被替换、标「已修改」，别的科不动。"""
+    from server import homework
+
+    d = "2026-10-15"
+    homework.save_day(d, [{"subject": "chinese", "text": "1.小册第10课"}, {"subject": "math", "text": "1.大册第32-33页"}])
+    r, _ = _run_scripted(monkeypatch, d, [
+        ("save_day", {"date": d, "items": [{"subject": "chinese", "text": "1.小册第10课；2.订正课堂默写", "revised": True}]}),
+        ("finish", {"why": "语文有修改，已更新"})])
+    assert r["changed"] == ["chinese"]
+    zh = next(x for x in homework.get_day(d)["items"] if x["subject"] == "chinese")
+    assert zh["revised"] and "订正课堂默写" in zh["text"]
+    assert next(x for x in homework.get_day(d)["items"] if x["subject"] == "math")["text"] == "1.大册第32-33页"
+
+
+def test_verify_mode_code_decides(client, monkeypatch):
+    """最后一轮核对：模型照常读每一科，不用它判断；代码比对，语文加了一整条 → 替换，数学只差标点 → 不动。"""
+    from server import homework
+
+    d = "2026-10-15"
+    homework.save_day(d, [{"subject": "chinese", "text": "1.小册第10课;\n2.订正课堂默写"},
+                          {"subject": "math", "text": "1、大册第32-33页，画一个计分格在33页上。"}])
+    r, goal = _run_scripted(monkeypatch, d, [
+        ("save_day", {"date": d, "items": [
+            {"subject": "chinese", "text": "1.小册第10课;\n2.订正课堂默写\n3.默第9课词语，给字加拼音，积累AABC的叠词3个"},
+            {"subject": "math", "text": "1.大册第32-33页 画一个计分格在33页上"}]}),
+        ("finish", {"why": "核对完了"})], mode="verify")
+    assert "每一科都重新读一遍" in goal and "不用你判断" in goal
+    assert r["changed"] == ["chinese"]
+    items = {x["subject"]: x for x in homework.get_day(d)["items"]}
+    assert items["chinese"]["revised"] and "默第9课" in items["chinese"]["text"]
+    assert items["math"]["text"] == "1、大册第32-33页，画一个计分格在33页上。" and not items["math"]["revised"]
+
+
+def test_big_swipe_is_split(monkeypatch):
+    """找旧日子大步滑：2.5 屏拆成 3 下（1 + 1 + 0.5），每下都在屏幕里。"""
+    sent = []
+    monkeypatch.setattr(ag.bus, "call", lambda name, args=None, **kw: sent.append(args) or {"out": "滑了"})
+    pad = ag.Pad()
+    pad.last = {"w": 2560, "h": 1600}
+    pad.act("swipe", {"dir": "down", "amount": 2.5})
+    assert len(sent) == 3 and all(0 < a["y2"] < a["y1"] <= 1600 for a in sent)
+    assert sent[0]["y1"] - sent[0]["y2"] > 2 * (sent[2]["y1"] - sent[2]["y2"]) - 5
+
+
+def test_capture_other_day_refused(monkeypatch):
+    """找 10/15 时去抓 11/3 的图：不存，告诉它继续找。"""
+    monkeypatch.setattr(ag.bus, "call", lambda name, args=None, **kw: {"out": "好"})
+    pad = ag.Pad("2026-10-15", "2026-10-15")
+    pad.raw = b"x"
+    out = pad.act("capture_image", {"date": "2025-11-03", "subject": "math", "what": "黑板照"})
+    assert "没存" in out and "2026-10-15" in out and pad.images == []
+    pad.act("capture_image", {"date": "2024-10-15", "subject": "chinese", "what": "订正范本"})   # 年份写错也认
+    assert len(pad.images) == 1
+
+
+def test_wrong_day_hint_direction(fake_saver):
+    """找 10/15 时交了 11/3（年份还写错成 2025）：提示「继续往下滑」，不能说成「滑过头了」。"""
+    saver = ag.Saver("2026-10-15", "2026-10-15", dry_run=False, only_missing=False)
+    out = saver({"date": "2025-11-03", "items": [{"subject": "math", "text": "x"}]}, ag.Pad())
+    assert "继续往下滑" in out and "10月15日" in out
+    out = saver({"date": "2026-10-09", "items": [{"subject": "math", "text": "x"}]}, ag.Pad())
+    assert "滑过头" in out
+
+
+def test_single_day_stops_after_save(client, monkeypatch):
+    """只抓一天：存上以后还一直翻（实测把 40 步耗完）——再给 AFTER_SAVE 步就自动收尾，算正常结束。"""
+    import time as _t
+
+    d = _t.strftime("%Y-%m-%d")
+    script = [("save_day", {"date": d, "items": [{"subject": "chinese", "text": "1.抄词"}]})] + [("swipe", {"dir": "down"})] * 30
+    r, _ = _run_scripted(monkeypatch, d, script)
+    assert r["ok"] and r["saved"] == [d] and "收尾" in r["why"]
+    from server import homework
+
+    steps = homework.runs(1, with_steps=True)[0]["steps"]
+    assert len(steps) <= 1 + ag.AFTER_SAVE + 1

@@ -22,6 +22,7 @@ async function homeworkCard(row, args) {
         .map((m) => `<span class="hw-miss">老师提到「${esc(m)}」，群里没找到</span>`).join("");
       return `<div class="hw-item"><div class="hw-head"><span class="hw-tag ${cls}">${tag}</span><b>${name}</b>`
         + `${it.teacher ? `<small>${esc(it.teacher)}</small>` : ""}`
+        + `${it.revised ? '<span class="hw-rev">已修改</span>' : ""}`
         + `${it.submit ? `<span class="hw-submit${it.submit.includes("无需") ? " ok" : ""}">${esc(it.submit)}</span>` : ""}</div>`
         + `<div class="hw-text">${esc(it.text || "（没抓到正文）")}</div>`
         + (it.notes || []).map((n) => `<div class="hw-note">${esc(n)}</div>`).join("")

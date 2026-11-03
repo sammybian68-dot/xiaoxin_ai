@@ -51,6 +51,7 @@ def save_day(day: str, items: list[dict], *, source: str = "qq", note: str = "")
                     "images": [str(x) for x in it.get("images") or []],      # store 里的文件 id
                     "files": [dict(x) for x in it.get("files") or []],        # 群文件：{name, fid}
                     "mentions": [str(x) for x in it.get("mentions") or []],   # 正文里提到的文件名（去聊天记录找）
+                    "revised": bool(it.get("revised")),                       # 这一科是老师发的【修改】版
                     "notes": [str(x) for x in it.get("notes") or []],         # 批评、提醒这类附加段（老师原话）
                     "unsure": str(it.get("unsure") or "")[:200]})             # 采集时拿不准的地方（不显示，排查用）
     # 没有正文的条目丢掉：视觉模型有时看到学科色块就补一条空的（2026-11-03 实测 10/29、10/26 的「数学」
@@ -68,6 +69,75 @@ def save_day(day: str, items: list[dict], *, source: str = "qq", note: str = "")
     _dir().mkdir(parents=True, exist_ok=True)
     store._write_json(_dir() / f"{day}.json", rec)
     return rec
+
+
+def _norm(t: str) -> str:
+    """比较用：去掉空白、标点、换行，全角半角统一。重读同一段作业时，这些地方最容易读得不一样。"""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKC", str(t or ""))
+    return re.sub(r"[\s\W_]+", "", t)
+
+
+def changed_enough(old: str, new: str, *, ratio: float = 0.12, chars: int = 6) -> bool:
+    """两份正文是不是「真的改了」，而不是重读的误差。代码比，不让模型比（模型比不稳）。
+
+    去掉空白和标点后，差的字数既超过 chars 个、又超过较长那份的 ratio，才算改了。
+    重读一般只差个标点或一两个字（实测「4☆P52」读成「4⊕P52」），老师改作业是整句增删。"""
+    import difflib
+
+    a, b = _norm(old), _norm(new)
+    if a == b:
+        return False
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    diff = sum(max(i2 - i1, j2 - j1) for op, i1, i2, j1, j2 in sm.get_opcodes() if op != "equal")
+    return diff > chars and diff > ratio * max(len(a), len(b))
+
+
+def merge_day(day: str, items: list[dict], *, source: str = "qq", note: str = "",
+              verify: bool = False) -> tuple[dict, list[str]]:
+    """按学科增量合并：已经存好的学科**不动**，只补新出现的学科。返回 (合并后的这一天, 这次新增 / 更新了哪几科)。
+
+    老师改了作业的两种情况：
+      - 群里重新分享了一张带【修改】的卡：那一科 revised=True，直接替换。
+      - verify=True（截止前最后一轮，把每科正文都重读了一遍）：和库里比，**代码判断**改得够多才替换
+        （changed_enough）；只差个标点、一两个字，当成重读的误差，留着原来那份。
+    替换的那一科标 revised，作业卡上显示「已修改」。
+
+    为什么不整天覆盖：老师下午陆续发（实测语文常常最后到，10/23 是 17:32），截止前要看好几次；
+    整天覆盖等于每次把读对的再读一遍，重读还可能读错盖掉对的。"""
+    old = get_day(day)
+    have = {it["subject"]: it for it in (old or {}).get("items") or []}
+    changed = []
+    for it in items:
+        sub = str(it.get("subject") or "other")
+        prev = have.get(sub)
+        if prev is not None:
+            # 这科已经有了：代码比对，改得够多才替换。增量模式下模型标了 revised（看到【修改】卡）也得过这一关——
+            # 实测它会把没改过的科目也标 revised、或者读了一半就交（「1.小册第10课」），不能光信它的标记。
+            # 核对模式（verify）一样走比对。差得少的当成重读的误差，留着原来那份
+            if (it.get("revised") or verify) and changed_enough(prev.get("text", ""), it.get("text", "")):
+                it = {**it, "revised": True}
+            elif not it.get("revised") and not verify and changed_enough(prev.get("text", ""), it.get("text", "")) \
+                    and len(_norm(it.get("text", ""))) > len(_norm(prev.get("text", ""))):
+                # 增量模式没标 revised，但重读出来比库里多出一大截（库里那份当时被截断了 / 老师补了内容没重新分享）：
+                # 只在「变长」时才收，变短不收（变短多半是这次没读全）
+                it = {**it, "revised": True}
+            else:
+                continue                               # 没改：不动（附图也不动）
+            if not it.get("images"):
+                it = {**it, "images": prev.get("images") or []}   # 这次没重抓图：留着原来的图
+        have[sub] = it
+        changed.append(sub)
+    if old and not changed:
+        return old, []
+    rec = save_day(day, list(have.values()), source=source, note=note)
+    return rec, changed
+
+
+def subjects(day: str) -> list[str]:
+    r = get_day(day)
+    return [it["subject"] for it in (r or {}).get("items") or []]
 
 
 def get_day(day: str) -> dict | None:
@@ -117,7 +187,7 @@ def describe(recs: list[dict], *, full: bool = True) -> str:
             continue
         lines.append(head)
         for it in r["items"]:
-            name = SUBJECTS[it["subject"]] + (f"（{it['teacher']}）" if it["teacher"] else "")
+            name = SUBJECTS[it["subject"]] + (f"（{it['teacher']}）" if it["teacher"] else "") + ("［老师改过］" if it.get("revised") else "")
             lines.append(f"- {name}" + (f"［{it['submit']}］" if it["submit"] else "") + "：")
             lines.append((it["text"] if full else it["text"][:60] + "…") or "（没抓到正文）")
             for n in it["notes"] if full else []:

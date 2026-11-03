@@ -568,9 +568,11 @@ def worksheet_view(request: Request, wid: str) -> dict:
 AGENT_DEFAULTS = {
     "on": True,                                    # 总开关：关了定时任务什么都不做
     "model": "claude-opus-5-5",                    # 看屏操作用哪个模型（要强模型）
-    "at": ["17:00", "18:00", "19:00", "20:30"],    # 每天几点各抓一次（抓到了就不再抓）
+    # 每天几点各看一次。老师 16:20–16:55 发齐居多，最晚一次是 10/23 语文 17:32（10/15–11/3 三周实测），
+    # 女儿 18:00 开始写：截止前看三次，前两次只补新出现的科目，最后一次把每科重读一遍核对有没有改
+    "at": ["16:50", "17:20", "17:45"],
     "weekdays": [1, 2, 3, 4, 5],                   # 哪几天抓（1=周一…7=周日）：默认只工作日
-    "max_tries": 4,                                # 一天最多尝试几次
+    "max_tries": 4,                                # 一天最多跑几轮（含「立即抓取」）
     "max_steps": 40,                               # 一轮最多走几步
     "notify": True,                                # 当天都没抓到，在群里告诉家长
 }
@@ -654,6 +656,21 @@ def agent_run_now(request: Request, body: dict = Body(default={})) -> dict:
     req = {"day": today, "at": time.time(), "by": who(request).id, "force": bool(body.get("force")), "taken": False}
     store.update_settings(agent_request=req)
     return {"ok": True, "started": True, "why": "开始抓了，一般三五分钟出结果", "day": today}
+
+
+@app.post("/api/agent/grab")
+def agent_grab(request: Request, body: dict = Body(...)) -> dict:
+    """管理员手动跑一轮（补历史、测试用）：{"day"} 或 {"since","until"}，可指定 mode（full / incremental / verify）。
+    后台跑，马上返回；结果看运行记录。"""
+    from server import hw_agent
+
+    need(request, "admin")
+    if hw_agent.busy():
+        raise HTTPException(409, "正在抓，等这一轮完了再来")
+    kw = {k: str(body[k]) for k in ("day", "since", "until", "mode") if body.get(k)}
+    threading.Thread(target=lambda: hw_agent.grab(kw.pop("day", ""), trigger="admin", **kw), name="hw-grab",
+                     daemon=True).start()
+    return {"ok": True, "started": True}
 
 
 @app.get("/api/agent/next")
