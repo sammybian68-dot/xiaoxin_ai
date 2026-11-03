@@ -494,6 +494,18 @@ public class TalkActivity extends Activity {
             }
         }
 
+        /** 抓作业的辅助功能开没开（设置 →「作业」显示用）。 */
+        @JavascriptInterface
+        public boolean agentEnabled() {
+            return AgentService.enabled(TalkActivity.this);
+        }
+
+        /** 跳到系统的辅助功能设置，让家长打开「小新 · 抓作业」。 */
+        @JavascriptInterface
+        public void openAgentSettings() {
+            runOnUiThread(() -> AgentService.openSettings(TalkActivity.this));
+        }
+
         /** 设置页试听「在」「拜拜」。 */
         @JavascriptInterface
         public void playCue(String name) {

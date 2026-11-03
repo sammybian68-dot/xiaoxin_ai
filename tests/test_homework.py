@@ -104,22 +104,19 @@ def test_agent_settings(client):
 def test_agent_run_now_is_idempotent(client):
     import time
 
+    from server.agent_bus import bus
+
+    bus.last_seen = time.time()   # pad 在线
     today = time.strftime("%Y-%m-%d")
     r = client.post("/api/agent/run", json={}).json()
-    assert r["started"] is True and "交给" in r["why"]
+    assert r["started"] is True
     assert client.get("/api/agent").json()["pending"]["day"] == today
     again = client.post("/api/agent/run", json={}).json()
     assert again["started"] is False and "排队" in again["why"]      # 重复点：不再下单
 
-    job = client.post("/api/agent/claim").json()["job"]              # Mac 上的脚本领走
-    assert job["day"] == today
-    assert client.post("/api/agent/claim").json()["job"] is None     # 不会被领两次
-    assert client.get("/api/agent").json()["pending"] is None
-
     client.put(f"/api/homework/{today}", json={"items": _items()})   # 今天已经抓到了
     done = client.post("/api/agent/run", json={}).json()
     assert done["started"] is False and "已经抓过" in done["why"] and done["items"] == 3
-    assert client.post("/api/agent/run", json={"force": True}).json()["started"] is True  # force 还能再抓
     assert client.get("/api/agent").json()["today_done"] is True
 
 

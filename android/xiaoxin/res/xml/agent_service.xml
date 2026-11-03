@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 抓作业要的能力：在别的 app 上点和滑（canPerformGestures）、截屏（canTakeScreenshot）、
+     读控件文字和位置（canRetrieveWindowContent：QQ 底部「作业」按钮这类能读到的就用精确坐标）。
+     不订阅任何事件（eventTypes 给最少的），只按小新服务的指令动。 -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/agent_desc"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="1000"
+    android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
+    android:canRetrieveWindowContent="true"
+    android:accessibilityFlags="flagDefault" />

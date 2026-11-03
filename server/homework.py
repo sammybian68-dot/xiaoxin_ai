@@ -3,8 +3,9 @@
 一天一个文件（DATA/homework/<YYYY-MM-DD>.json），按天幂等：同一天再抓一次就覆盖那天，不会出现两份。
 一天里每个学科一条：正文、老师、要不要提交、附件（图片、群文件）、提到的文件名。
 
-采集是 tools/hw_agent.py（模型看屏操作 pad：QQ 是自绘界面，uiautomator 读不到正文，只能截图 + 视觉读，
-见 docs/qq-homework.md）。这里只管存和查，小新的 homework_report 工具按这里的数据组织语言。
+采集是 server/hw_agent.py（小新服务自己跑，模型看屏、pad 上的无障碍服务执行：QQ 是自绘界面，
+uiautomator 读不到正文，只能截图 + 视觉读，见 docs/qq-homework.md）。这里只管存和查，
+小新的 homework_report 工具按这里的数据组织语言。
 """
 
 from __future__ import annotations

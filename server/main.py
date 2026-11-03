@@ -64,8 +64,9 @@ def _startup() -> None:
     import os
 
     if not os.environ.get("XIAOXIN_TEST"):
-        from server import holidays
+        from server import holidays, hw_schedule
         holidays.start_refresher()
+        hw_schedule.start()  # 抓作业的定时器（每天到点让 pad 去 QQ 群抓，docs/qq-homework.md）
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -563,7 +564,7 @@ def worksheet_view(request: Request, wid: str) -> dict:
 
 # ---------------------------------------------------------------- 后台 agent 任务的设置（抓作业等）
 
-# 抓作业 agent 的设置。家长在设置 →「作业」里改，Mac 上的定时任务每次跑之前读这里
+# 抓作业 agent 的设置。家长在设置 →「作业」里改，服务里的定时器（server/hw_schedule.py）每分钟读这里
 AGENT_DEFAULTS = {
     "on": True,                                    # 总开关：关了定时任务什么都不做
     "model": "claude-opus-5-5",                    # 看屏操作用哪个模型（要强模型）
@@ -587,9 +588,13 @@ def agent_settings(request: Request) -> dict:
     who(request)
     today = time.strftime("%Y-%m-%d")
     pend = store.settings().get("agent_request") or {}
+    from server import hw_agent
+    from server.agent_bus import bus
+
     return {**agent_cfg(), "models": [m["id"] for m in MODELS],
             "today": today, "today_done": bool(homework.get_day(today)),
             "pending": pend if pend.get("day") == today and not pend.get("taken") else None,
+            "pad_online": bus.online(), "running": hw_agent.busy(),
             "last_runs": homework.runs(5)}
 
 
@@ -625,8 +630,11 @@ def agent_update(request: Request, body: dict = Body(...)) -> dict:
 
 @app.post("/api/agent/run")
 def agent_run_now(request: Request, body: dict = Body(default={})) -> dict:
-    """设置页「立即抓取当天」：服务端在 gpu2、碰不到 pad，所以这里只下一张任务单，
-    Mac 上的脚本（tools/hw_schedule.py --watch）领走去跑。幂等：今天已经抓到了就直接说一声，不下单。"""
+    """设置页「立即抓取当天」：下一张单，服务里的定时器（server/hw_schedule.py）5 秒内接手，
+    让 pad 上的无障碍服务去 QQ 群抓。幂等：今天已经抓到了就直接说一声，不下单；在抓的时候再点也不重复。"""
+    from server import hw_agent
+    from server.agent_bus import bus
+
     from server import homework
 
     need(request, "parent")
@@ -635,24 +643,39 @@ def agent_run_now(request: Request, body: dict = Body(default={})) -> dict:
     if have and not body.get("force"):
         return {"ok": True, "started": False, "why": f"今天（{today}）已经抓过作业了，{len(have['items'])} 科",
                 "day": today, "items": len(have["items"])}
+    if hw_agent.busy():
+        return {"ok": True, "started": False, "why": "正在抓，等一会儿（一般三五分钟）", "day": today}
     pend = store.settings().get("agent_request") or {}
     if pend.get("day") == today and not pend.get("taken") and time.time() - pend.get("at", 0) < 1800:
-        return {"ok": True, "started": False, "why": "已经在排队了，等 Mac 上的任务领走（最多一分钟）", "day": today}
+        return {"ok": True, "started": False, "why": "已经在排队了，马上开始", "day": today}
+    if not bus.online():
+        return {"ok": False, "started": False, "day": today,
+                "why": "pad 现在不在线（没联网、关机，或者没开「辅助功能 → 小新 · 抓作业」），开了再点"}
     req = {"day": today, "at": time.time(), "by": who(request).id, "force": bool(body.get("force")), "taken": False}
     store.update_settings(agent_request=req)
-    return {"ok": True, "started": True, "why": "交给 Mac 上的抓取任务了，一般三五分钟出结果", "day": today}
+    return {"ok": True, "started": True, "why": "开始抓了，一般三五分钟出结果", "day": today}
 
 
-@app.post("/api/agent/claim")
-def agent_claim(request: Request) -> dict:
-    """Mac 上的脚本每分钟问一次：有没有人点了「立即抓取」。领走就标记 taken，不会被领两次。"""
-    need(request, "admin")
-    pend = store.settings().get("agent_request") or {}
-    today = time.strftime("%Y-%m-%d")
-    if pend.get("day") != today or pend.get("taken"):
-        return {"job": None}
-    store.update_settings(agent_request={**pend, "taken": True, "taken_at": time.time()})
-    return {"job": {"day": pend["day"], "force": bool(pend.get("force"))}}
+@app.get("/api/agent/next")
+async def agent_next(request: Request, wait: int = 50) -> dict:
+    """pad 上的无障碍服务（AgentService.java）长轮询：有动作就领走（{id, name, args}），没有等 wait 秒回 {}。
+    只有孩子的 pad 能领（家长手机、网页不该去操作 QQ）。"""
+    from server.agent_bus import bus
+
+    w = who(request)
+    if not (w.kind == "member" and w.member["role"] == "kid") and not w.at_least("admin"):
+        raise HTTPException(403, "只有孩子的 pad 能执行抓作业的动作")
+    return await asyncio.to_thread(bus.next, max(0, min(wait, 55)))
+
+
+@app.post("/api/agent/done/{jid}")
+def agent_done(request: Request, jid: str, body: dict = Body(...)) -> dict:
+    """pad 执行完一个动作：结果 + 截图（JPEG base64）+ 能读到的控件。"""
+    from server.agent_bus import bus
+
+    who(request)
+    bus.done(jid, body)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- 班级作业（server/homework.py）

@@ -45,6 +45,18 @@
             android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="家用闹钟和计时，熄屏后到点响铃" />
         </service>
+        <!-- 抓作业的「手」（docs/qq-homework.md）：小新服务到点跑 agent，这里在 pad 上替它点 QQ、截屏。
+             要在 设置 → 辅助功能 里手动打开一次。只按服务端指令动，不监听别的 app 的内容。 -->
+        <service
+            android:name=".AgentService"
+            android:exported="true"
+            android:label="小新 · 抓作业"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/agent_service" />
+        </service>
         <!-- 开机、升级后把闹钟服务拉起来（夜里重启过闹钟也要响） -->
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>

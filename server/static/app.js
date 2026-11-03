@@ -2503,10 +2503,17 @@ async function loadHomeworkSettings() {
 
 function hwTodayTip() {
   const d = hwCfg.data || {};
-  const tip = d.today_done ? `${d.today} 已经抓到了`
-    : d.pending ? `${d.today} 排队中，等 pad 那边领走` : `${d.today} 还没抓到`;
+  const tip = d.running ? `${d.today} 正在抓…（一般三五分钟）` : d.today_done ? `${d.today} 已经抓到了`
+    : d.pending ? `${d.today} 排队中，马上开始` : `${d.today} 还没抓到`;
   $("hw-today-tip").textContent = tip;
   $("hw-run").textContent = d.today_done ? "再抓一次（覆盖今天）" : "立即抓取当天";
+  $("hw-run").disabled = !!d.running;
+  // pad 上要开「辅助功能 → 小新 · 抓作业」，它才能替小新点 QQ、截屏。这台就是 pad 的话直接给个按钮跳过去
+  const here = native?.agentEnabled ? native.agentEnabled() : null;
+  $("hw-pad-tip").textContent = d.pad_online ? "在线（辅助功能已打开，可以抓）"
+    : here === false ? "这台 pad 还没打开辅助功能：设置 → 辅助功能 → 小新 · 抓作业 → 开"
+    : "不在线：pad 没联网、关机，或者没打开「辅助功能 → 小新 · 抓作业」";
+  $("hw-a11y").hidden = !(native?.openAgentSettings && here === false);
 }
 
 function hwRunsList() {
@@ -2549,6 +2556,7 @@ function wireHomeworkSettings() {
     if (!weekdays.length) { b.classList.add("on"); toast("至少留一天"); return; }
     saveHomeworkSettings({ weekdays });
   });
+  $("hw-a11y").addEventListener("click", () => native?.openAgentSettings?.());
   $("hw-run").addEventListener("click", async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
@@ -2557,6 +2565,14 @@ function wireHomeworkSettings() {
         body: JSON.stringify({ force: !!hwCfg.data?.today_done }) }).then(json);
       toast(r.why, 4000);
       await loadHomeworkSettings();
+      // 抓起来了：每 5 秒刷新一次，直到抓完（设置页还开着才刷）
+      const poll = async () => {
+        if ($("settings").open && document.querySelector('.pane[data-pane="homework"]:not([hidden])')) {
+          await loadHomeworkSettings();
+          if (hwCfg.data?.running || hwCfg.data?.pending) setTimeout(poll, 5000);
+        }
+      };
+      if (r.started) setTimeout(poll, 5000);
     } catch (err) { toast(err.message); }
     btn.disabled = false;
   });
@@ -2572,7 +2588,7 @@ async function renderHwRuns(body) {
     body.innerHTML = '<p class="voice-tip">读取中…</p>';
     try { dbg.hwRuns = (await api("api/homework/runs?limit=20").then(json)).runs || []; } catch (e) { body.innerHTML = `<p class="voice-tip">${esc(e.message)}</p>`; return; }
   }
-  if (!dbg.hwRuns.length) { body.innerHTML = '<p class="voice-tip">还没有抓过作业。定时任务每天下午跑，也可以在 Mac 上手动跑 tools.hw_agent。</p>'; return; }
+  if (!dbg.hwRuns.length) { body.innerHTML = '<p class="voice-tip">还没有抓过作业。到了「设置 → 作业」里的时刻小新会自己去抓，也可以在那里点「立即抓取当天」。</p>'; return; }
   body.innerHTML = dbg.hwRuns.map((r) => {
     const when = new Date(r.at * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
     const range = r.since === r.until ? r.since : `${r.since} ~ ${r.until}`;
