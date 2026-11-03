@@ -13,11 +13,15 @@ from tools import hw_schedule as hs
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     st = {"have": [], "runs": [], "told": [], "adb": f"List of devices attached\n{hs.PAD}\tdevice\n", "agent_rc": 1,
-          "now": "18:00", "agent_called": 0}
+          "now": "18:00", "agent_called": 0, "on": True, "weekdays": list(range(1, 8)), "max_tries": 4,
+          "notify": True, "job": None}
 
     def fake_api(method, path, body=None, **kw):
         if path == "api/agent":
-            return {"at": ["17:00", "18:00", "19:00", "20:30"]}
+            return {"on": st["on"], "at": ["17:00", "18:00", "19:00", "20:30"], "weekdays": st["weekdays"],
+                    "max_tries": st["max_tries"], "max_steps": 40, "notify": st["notify"]}
+        if path == "api/agent/claim":
+            return {"job": st["job"]}
         if path.startswith("api/homework?date="):
             return {"days": st["have"]}
         if path.startswith("api/homework/runs?"):
@@ -70,3 +74,35 @@ def test_pad_offline(env):
     env["now"] = "20:31"
     assert hs.main() == 1 and env["agent_called"] == 0
     assert any("没连上" in r.get("why", "") for r in env["runs"]) and "没连上" in env["told"][0]
+
+
+def test_off_switch(env):
+    env["on"] = False
+    assert hs.main() == 0 and env["agent_called"] == 0
+
+
+def test_not_a_weekday(env):
+    env["weekdays"] = [9]  # 今天肯定不在里面
+    assert hs.main() == 0 and env["agent_called"] == 0
+
+
+def test_max_tries(env):
+    import time
+
+    env["max_tries"] = 2
+    env["runs"] = [{"trigger": "schedule", "at": time.time()}, {"trigger": "schedule", "at": time.time()}]
+    assert hs.main() == 1 and env["agent_called"] == 0
+
+
+def test_notify_can_be_off(env):
+    env["now"] = "20:31"
+    env["notify"] = False
+    assert hs.main() == 1 and not env["told"]
+
+
+def test_claim_runs_once(env, monkeypatch):
+    """--watch：领到任务单就抓一次（这里只跑一轮循环体，不真的常驻）。"""
+    env["job"] = {"day": "2026-11-03", "force": True}
+    env["agent_rc"] = 0
+    assert hs.once(env and {"max_steps": 40}, "now", "2026-11-03", True) == 0
+    assert env["agent_called"] == 1

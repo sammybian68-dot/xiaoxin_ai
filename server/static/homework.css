@@ -20,3 +20,29 @@
 .hw-nav { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 4px; }
 .hw-nav button { border: 0; background: #f4ece0; color: #2b2420; border-radius: 14px; padding: 6px 12px; font-size: 14px; display: inline-flex; gap: 6px; align-items: baseline; }
 .hw-nav small { color: #8a7d72; font-size: 12px; }
+
+/* 调试面板的「作业」标签：agent 每轮跑了什么，一步步带小截图回看 */
+.hwr { border: 1px solid var(--line, #2a3446); border-radius: 12px; margin-bottom: 8px; padding: 8px 10px; }
+.hwr.ok > summary b { color: #3f8a5c; }
+.hwr.bad > summary b { color: #d23b31; }
+.hwr > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; font-size: 14px; }
+.hwr > summary small { color: var(--muted, #8a9ab0); margin-left: auto; }
+.hwr-why { font-size: 13px; color: var(--muted, #8a9ab0); margin: 6px 0; }
+.hwr-steps { display: grid; gap: 10px; }
+.hws { border-top: 1px solid var(--line, #2a3446); padding-top: 8px; font-size: 13px; }
+.hws-t b { display: inline-block; min-width: 2em; color: var(--muted, #8a9ab0); }
+.hws-t code { font-size: 11px; opacity: .8; }
+.hws-said { color: #c2691f; margin: 4px 0; }
+.hws-out { color: var(--muted, #8a9ab0); margin: 4px 0; }
+.hws img { width: 100%; max-width: 420px; border-radius: 8px; border: 1px solid var(--line, #2a3446); display: block; margin-top: 6px; }
+
+/* 设置 →「作业」 */
+.hw-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.hw-chip { border: 1px solid var(--line, #2a3446); background: none; color: inherit; border-radius: 14px; padding: 5px 12px; font-size: 14px; cursor: pointer; }
+.hw-chip.on { background: #2f6fe4; border-color: #2f6fe4; color: #fff; }
+.wake-input.num { width: 90px; }
+.hw-runs { display: grid; gap: 6px; }
+.hw-run { display: flex; gap: 10px; align-items: baseline; font-size: 14px; }
+.hw-run.ok b { color: #3f8a5c; }
+.hw-run.bad b { color: #d23b31; }
+.hw-run small { color: var(--muted, #8a9ab0); }

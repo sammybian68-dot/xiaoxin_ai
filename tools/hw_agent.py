@@ -262,6 +262,22 @@ def shot_part(raw: bytes) -> dict:
     return {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}}
 
 
+def thumb(raw: bytes, w: int = 420) -> str:
+    """给「作业 agent」面板看的小截图（data URL）。420 宽、质量 55，一步约 20–30 KB。"""
+    import io
+
+    from PIL import Image
+
+    try:
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        im = im.resize((w, max(1, round(im.height * w / im.width))))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=55)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def hint(pad: Pad) -> str:
     w = pad.widgets()
     out = (f"\n能读到的控件（坐标是这张截图里的，点它们用这个坐标最准）：{w}" if w else "")
@@ -348,20 +364,23 @@ def run(pad: Pad, since: str, until: str, max_steps: int, on_day) -> dict:
     chain = models()
     print(f"  用模型：{chain[0]}" + (f"（失败换 {chain[1]}）" if len(chain) > 1 else ""))
     saved: list[str] = []
+    steps: list[dict] = []
     idle = 0
+    since_save = 0       # 距离上一次 save_day 走了几步：一天里打转太久就提醒它先交（实测 10/15 一天走了 30 多步）
     for step in range(max_steps):
         try:
             m = ask(msgs, chain)
         except RuntimeError as e:
-            return {"saved": saved, "why": str(e)}
+            return {"saved": saved, "why": str(e), "steps": steps}
         calls = m["tool_calls"]
         if not calls:
             # 没调工具：提醒一次，再不调就算这一步空转
             idle += 1
             msgs.append({"role": "assistant", "content": m["content"] or "（没说话）"})
             msgs.append({"role": "user", "content": "请调一个工具（look / tap / swipe / back / restart_qq / capture_image / save_day / finish），不要只回文字。"})
+            steps.append({"i": step + 1, "name": "（没调工具）", "said": (m["content"] or "")[:300]})
             if idle >= 3:
-                return {"saved": saved, "why": "模型连着三次不调工具"}
+                return {"saved": saved, "why": "模型连着三次不调工具", "steps": steps}
             continue
         idle = 0
         c = calls[0]
@@ -374,24 +393,36 @@ def run(pad: Pad, since: str, until: str, max_steps: int, on_day) -> dict:
         print(f"  [{step + 1}] {name} {tag}")
         msgs.append({"role": "assistant", "content": m["content"], "tool_calls": [c]})
         if name == "finish":
-            return {"saved": saved, "why": str(args.get("why") or "读完了")}
+            steps.append({"i": step + 1, "name": name, "why": str(args.get("why") or ""), "said": (m["content"] or "")[:300]})
+            return {"saved": saved, "why": str(args.get("why") or "读完了"), "steps": steps}
+        since_save += 1
         if name == "save_day":
             out = on_day(args, pad)
             if out.startswith("✓"):
                 saved.append(str(args.get("date")))
+                since_save = 0
             print(f"      {out}")
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out + " 继续往下读下一天。"})
-            msgs.append({"role": "user", "content": [{"type": "text", "text": "这是现在的屏幕。" + hint(pad)}, shot_part(pad.shot())]})
+            raw = pad.shot()
+            steps.append({"i": step + 1, "name": name, "why": tag, "out": out[:300], "said": (m["content"] or "")[:200],
+                          "args": {k: v for k, v in args.items() if k != "items"}, "shot": thumb(raw)})
+            msgs.append({"role": "user", "content": [{"type": "text", "text": "这是现在的屏幕。" + hint(pad)}, shot_part(raw)]})
         else:
             out = pad.act(name, args)
+            if since_save == 25:
+                out += ("。（这一天已经走了 25 步：附图抓够了就先 save_day 交掉。正文最重要，"
+                        "实在抓不到的图不抓了，别在同一天里来回翻。）")
             msgs.append({"role": "tool", "tool_call_id": c["id"], "content": out})
-            msgs.append({"role": "user", "content": [{"type": "text", "text": "这是现在的屏幕。" + hint(pad)}, shot_part(pad.shot())]})
+            raw = pad.shot()
+            steps.append({"i": step + 1, "name": name, "why": tag, "out": out[:300], "said": (m["content"] or "")[:200],
+                          "args": args, "shot": thumb(raw)})
+            msgs.append({"role": "user", "content": [{"type": "text", "text": "这是现在的屏幕。" + hint(pad)}, shot_part(raw)]})
         # 只留最近 3 张截图（图很贵），更早的换成一句话；tool 消息和 assistant 的 tool_calls 必须成对留着
         imgs = [i for i, x in enumerate(msgs) if x["role"] == "user" and isinstance(x.get("content"), list)]
         for i in imgs[:-3]:
             msgs[i] = {"role": "user", "content": "（这一步的截图省略了）"}
         msgs = trim(msgs, saved)
-    return {"saved": saved, "why": f"走了 {max_steps} 步，没走完"}
+    return {"saved": saved, "why": f"走了 {max_steps} 步，没走完", "steps": steps}
 
 
 SUBJECTS = {"chinese", "math", "english", "other"}
@@ -568,7 +599,8 @@ def main() -> int:
         try:
             api("POST", "api/homework/runs", {"since": since, "until": until, "ok": bool(saver.done),
                                               "saved": sorted(saver.done), "rejected": saver.rejected, "why": res["why"],
-                                              "secs": secs, "steps": pad.n, "model": saver.chain[0], "trigger": a.trigger})
+                                              "secs": secs, "shots": pad.n, "model": saver.chain[0], "trigger": a.trigger,
+                                              "steps": res.get("steps") or []})
         except Exception as e:  # noqa: BLE001  记不上不影响结果
             print(f"（运行记录没写上：{e}）")
     return 0 if saver.done else 1

@@ -523,34 +523,96 @@ def worksheet_view(request: Request, wid: str) -> dict:
 
 # ---------------------------------------------------------------- 后台 agent 任务的设置（抓作业等）
 
-AGENT_DEFAULTS = {"model": "claude-opus-5-5", "at": ["17:00", "18:00", "19:00", "20:30"], "max_steps": 30}
+# 抓作业 agent 的设置。家长在设置 →「作业」里改，Mac 上的定时任务每次跑之前读这里
+AGENT_DEFAULTS = {
+    "on": True,                                    # 总开关：关了定时任务什么都不做
+    "model": "claude-opus-5-5",                    # 看屏操作用哪个模型（要强模型）
+    "at": ["17:00", "18:00", "19:00", "20:30"],    # 每天几点各抓一次（抓到了就不再抓）
+    "weekdays": [1, 2, 3, 4, 5],                   # 哪几天抓（1=周一…7=周日）：默认只工作日
+    "max_tries": 4,                                # 一天最多尝试几次
+    "max_steps": 40,                               # 一轮最多走几步
+    "notify": True,                                # 当天都没抓到，在群里告诉家长
+}
+
+
+def agent_cfg() -> dict:
+    return {**AGENT_DEFAULTS, **(store.settings().get("agent") or {})}
 
 
 @app.get("/api/agent")
 def agent_settings(request: Request) -> dict:
-    """后台 agent（现在只有「抓作业」）用哪个模型、几点跑、最多走几步。看屏操作要强模型，默认 opus。"""
+    """抓作业 agent 的设置 + 今天抓到没有 + 有没有在等着抓（设置页「作业」要显示的）。"""
+    from server import homework
+
     who(request)
-    return {**AGENT_DEFAULTS, **(store.settings().get("agent") or {}),
-            "models": [m["id"] for m in MODELS]}
+    today = time.strftime("%Y-%m-%d")
+    pend = store.settings().get("agent_request") or {}
+    return {**agent_cfg(), "models": [m["id"] for m in MODELS],
+            "today": today, "today_done": bool(homework.get_day(today)),
+            "pending": pend if pend.get("day") == today and not pend.get("taken") else None,
+            "last_runs": homework.runs(5)}
 
 
 @app.put("/api/agent")
 def agent_update(request: Request, body: dict = Body(...)) -> dict:
     need(request, "admin")
-    cur = {**AGENT_DEFAULTS, **(store.settings().get("agent") or {})}
+    cur = agent_cfg()
+    if "on" in body:
+        cur["on"] = bool(body["on"])
+    if "notify" in body:
+        cur["notify"] = bool(body["notify"])
     if body.get("model"):
         if body["model"] not in {m["id"] for m in MODELS}:
             raise HTTPException(400, f"不支持的模型 {body['model']}")
         cur["model"] = body["model"]
     if isinstance(body.get("at"), list):
-        at = [t for t in (str(x).strip() for x in body["at"]) if re.fullmatch(r"[0-2]\d:[0-5]\d", t)]
+        at = sorted({t for t in (str(x).strip() for x in body["at"]) if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t)})
         if not at:
-            raise HTTPException(400, "时刻要写成 17:00 这样")
+            raise HTTPException(400, "时刻要写成 17:00 这样（24 小时制）")
         cur["at"] = at[:8]
+    if isinstance(body.get("weekdays"), list):
+        wd = sorted({int(x) for x in body["weekdays"] if str(x).isdigit() and 1 <= int(x) <= 7})
+        if not wd:
+            raise HTTPException(400, "至少要选一天")
+        cur["weekdays"] = wd
+    if body.get("max_tries"):
+        cur["max_tries"] = max(1, min(int(body["max_tries"]), 12))
     if body.get("max_steps"):
-        cur["max_steps"] = max(10, min(int(body["max_steps"]), 60))
+        cur["max_steps"] = max(10, min(int(body["max_steps"]), 80))
     store.update_settings(agent=cur)
     return agent_settings(request)
+
+
+@app.post("/api/agent/run")
+def agent_run_now(request: Request, body: dict = Body(default={})) -> dict:
+    """设置页「立即抓取当天」：服务端在 gpu2、碰不到 pad，所以这里只下一张任务单，
+    Mac 上的脚本（tools/hw_schedule.py --watch）领走去跑。幂等：今天已经抓到了就直接说一声，不下单。"""
+    from server import homework
+
+    need(request, "parent")
+    today = time.strftime("%Y-%m-%d")
+    have = homework.get_day(today)
+    if have and not body.get("force"):
+        return {"ok": True, "started": False, "why": f"今天（{today}）已经抓过作业了，{len(have['items'])} 科",
+                "day": today, "items": len(have["items"])}
+    pend = store.settings().get("agent_request") or {}
+    if pend.get("day") == today and not pend.get("taken") and time.time() - pend.get("at", 0) < 1800:
+        return {"ok": True, "started": False, "why": "已经在排队了，等 Mac 上的任务领走（最多一分钟）", "day": today}
+    req = {"day": today, "at": time.time(), "by": who(request).id, "force": bool(body.get("force")), "taken": False}
+    store.update_settings(agent_request=req)
+    return {"ok": True, "started": True, "why": "交给 Mac 上的抓取任务了，一般三五分钟出结果", "day": today}
+
+
+@app.post("/api/agent/claim")
+def agent_claim(request: Request) -> dict:
+    """Mac 上的脚本每分钟问一次：有没有人点了「立即抓取」。领走就标记 taken，不会被领两次。"""
+    need(request, "admin")
+    pend = store.settings().get("agent_request") or {}
+    today = time.strftime("%Y-%m-%d")
+    if pend.get("day") != today or pend.get("taken"):
+        return {"job": None}
+    store.update_settings(agent_request={**pend, "taken": True, "taken_at": time.time()})
+    return {"job": {"day": pend["day"], "force": bool(pend.get("force"))}}
 
 
 # ---------------------------------------------------------------- 班级作业（server/homework.py）
@@ -573,11 +635,17 @@ def homework_list(request: Request, date: str = "", since: str = "", until: str 
 
 
 @app.get("/api/homework/runs")
-def homework_runs(request: Request, limit: int = 30) -> dict:
-    """最近几轮采集的记录（新的在前）：成没成、存了哪几天、为什么结束。"""
+def homework_runs(request: Request, limit: int = 30, at: float = 0) -> dict:
+    """最近几轮采集的记录（新的在前）：成没成、存了哪几天、为什么结束。
+    带 ?at=时间戳 就只给那一轮，连每一步做了什么和小截图一起（「作业 agent」面板一步步回看用）。"""
     from server import homework
 
     need(request, "parent")
+    if at:
+        r = homework.run_at(at)
+        if r is None:
+            raise HTTPException(404, "没有这一轮的记录")
+        return {"runs": [r]}
     return {"runs": homework.runs(max(1, min(limit, 200)))}
 
 
@@ -586,8 +654,8 @@ def homework_run_log(request: Request, body: dict = Body(...)) -> dict:
     from server import homework
 
     need(request, "admin")
-    keep = {k: body[k] for k in ("since", "until", "ok", "saved", "rejected", "why", "secs", "steps", "model", "trigger")
-            if k in body}
+    keep = {k: body[k] for k in ("since", "until", "ok", "saved", "rejected", "why", "secs", "shots", "model",
+                                 "trigger", "steps") if k in body}
     return homework.log_run(keep)
 
 

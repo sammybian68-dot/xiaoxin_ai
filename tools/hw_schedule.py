@@ -63,40 +63,83 @@ def tell_parents(text: str) -> None:
         log(f"告诉家长没成功：{e}")
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--force", action="store_true")
-    a = ap.parse_args()
+def tries_today() -> int:
+    """今天已经试过几次（按运行记录里 trigger=schedule 的条数算）。"""
     today = time.strftime("%Y-%m-%d")
-    cfg = api("GET", "api/agent")
-    at = cfg.get("at") or ["17:00", "18:00", "19:00", "20:30"]
+    runs = api("GET", "api/homework/runs?limit=40")["runs"]
+    return sum(1 for r in runs if r.get("trigger") in ("schedule", "now")
+               and time.strftime("%Y-%m-%d", time.localtime(r.get("at", 0))) == today)
+
+
+def grab(day: str, steps: int, trigger: str) -> bool:
+    log(f"开始抓 {day}（最多 {steps} 步）")
+    r = subprocess.run([sys.executable, "-u", "-m", "tools.hw_agent", "--day", day,
+                        "--max-steps", str(steps), "--trigger", trigger],
+                       cwd=ROOT, capture_output=True, text=True, timeout=2400)
+    for x in [x for x in (r.stdout + r.stderr).splitlines() if x.strip()][-6:]:
+        log("  " + x)
+    return r.returncode == 0
+
+
+def once(cfg: dict, trigger: str, day: str = "", force: bool = False) -> int:
+    """跑一次。返回 0 = 抓到了（或本来就有），1 = 没抓到。"""
+    today = day or time.strftime("%Y-%m-%d")
     have = api("GET", f"api/homework?date={today}")["days"]
-    if have and not a.force:
-        log(f"今天（{today}）已经抓到了，{len(have[0]['items'])} 科，不用再抓")
+    if have and not force:
+        log(f"{today} 已经抓到了（{len(have[0]['items'])} 科），不用再抓")
         return 0
     bad = pad_ok()
     if bad:
         log(bad)
-        api("POST", "api/homework/runs", {"since": today, "until": today, "ok": False, "why": bad, "trigger": "schedule"})
-    else:
-        log(f"开始抓 {today}")
-        r = subprocess.run([sys.executable, "-u", "-m", "tools.hw_agent", "--day", today, "--trigger", "schedule"],
-                           cwd=ROOT, capture_output=True, text=True, timeout=1800)
-        tail = [x for x in (r.stdout + r.stderr).splitlines() if x.strip()][-6:]
-        for x in tail:
-            log("  " + x)
-        if r.returncode == 0:
-            log("✓ 抓到了")
-            return 0
-    if is_last(at):
+        api("POST", "api/homework/runs", {"since": today, "until": today, "ok": False, "why": bad, "trigger": trigger})
+    elif grab(today, cfg.get("max_steps") or 40, trigger):
+        log("✓ 抓到了")
+        return 0
+    # 今天的机会用完了、而且家长要通知：小新在群里说一句（一天只说一次）
+    at = cfg.get("at") or ["17:00"]
+    used = tries_today()
+    last = now_hm() >= max(at) or used >= (cfg.get("max_tries") or len(at))
+    if last and cfg.get("notify", True):
         runs = api("GET", "api/homework/runs?limit=20")["runs"]
-        told = any(x.get("trigger") == "told" and time.strftime("%Y-%m-%d", time.localtime(x["at"])) == today for x in runs)
+        told = any(x.get("trigger") == "told" and time.strftime("%Y-%m-%d", time.localtime(x.get("at", 0))) == today for x in runs)
         if not told:
             why = (bad or (runs[0].get("why") if runs else "") or "不知道为什么")[:80]
-            tell_parents(f"今天的作业我没抓到（{why}）。今天 {len(at)} 次都没成，麻烦去 QQ 群「勤惜2024级3班」看一眼。")
+            tell_parents(f"今天的作业我没抓到（{why}）。今天试了 {used} 次都没成，麻烦去 QQ 群「勤惜2024级3班」看一眼。")
             api("POST", "api/homework/runs", {"since": today, "until": today, "ok": False, "why": "已告诉家长", "trigger": "told"})
-            log("今天最后一次也没抓到，已经在群里告诉家长")
+            log(f"今天试了 {used} 次都没抓到，已经在群里告诉家长")
     return 1
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--force", action="store_true", help="今天抓过也再抓一次")
+    ap.add_argument("--watch", action="store_true", help="常驻：每分钟问一次有没有人点了「立即抓取」")
+    a = ap.parse_args()
+    cfg = api("GET", "api/agent")
+    if a.watch:
+        log("盯着「立即抓取」（每分钟问一次）")
+        while True:
+            try:
+                job = api("POST", "api/agent/claim").get("job")
+                if job:
+                    log(f"收到立即抓取：{job['day']}")
+                    once(api("GET", "api/agent"), "now", job["day"], bool(job.get("force")))
+            except Exception as e:  # noqa: BLE001  网断一下别退出
+                log(f"问任务单出错：{e}")
+            time.sleep(60)
+    if not cfg.get("on", True) and not a.force:
+        log("自动抓关掉了（设置 → 作业），这次不跑")
+        return 0
+    wd = cfg.get("weekdays") or [1, 2, 3, 4, 5]
+    today_wd = time.localtime().tm_wday + 1
+    if today_wd not in wd and not a.force:
+        log(f"今天星期{'一二三四五六日'[today_wd - 1]}不在抓取日（{wd}），不跑")
+        return 0
+    used = tries_today()
+    if used >= (cfg.get("max_tries") or 4) and not a.force:
+        log(f"今天已经试了 {used} 次，到上限了")
+        return 1
+    return once(cfg, "schedule")
 
 
 if __name__ == "__main__":

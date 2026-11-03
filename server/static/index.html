@@ -170,6 +170,7 @@
       <button type="button" data-dv="ctx">上下文</button>
       <button type="button" data-dv="prompt">提示词</button>
       <button type="button" data-dv="tools">工具</button>
+      <button type="button" data-dv="hw">作业</button>
     </div>
     <button id="debug-refresh" class="icon-btn" type="button" title="刷新" aria-label="刷新">⟳</button>
     <button id="debug-close" class="icon-btn" type="button" aria-label="关闭">✕</button>
@@ -245,6 +246,7 @@
     <nav class="settings-nav" role="tablist" aria-label="设置分类">
       <button type="button" role="tab" data-pane="general">对话</button>
       <button type="button" role="tab" data-pane="model">模型</button>
+      <button type="button" role="tab" data-pane="homework">作业</button>
       <button type="button" role="tab" data-pane="talk">语音对话</button>
       <button type="button" role="tab" data-pane="wake">唤醒</button>
       <button type="button" role="tab" data-pane="voice">音色</button>
@@ -258,6 +260,46 @@
       <p class="voice-tip">打字和语音对话都用这里选的。选好马上生效，正在自由对话的话下一句起换。</p>
       <div id="model-list" class="model-list" role="radiogroup" aria-label="模型"></div>
       <p id="set-routing" class="voice-tip"></p>
+    </section>
+
+    <section class="pane" role="tabpanel" data-pane="homework" hidden>
+      <h3>抓班级作业</h3>
+      <p class="voice-tip">小新每天自己去 QQ 班级群把作业抓下来，按天存着。女儿回家问「今天作业是什么」就直接答。
+        抓不到的话，在「🔍 调试 → 作业」里能一步步看它在 pad 上做了什么。</p>
+      <div class="row">
+        <label for="hw-on"><b>每天自动抓</b><small>关了就只能手动点下面的「立即抓取」</small></label>
+        <input id="hw-on" type="checkbox" class="switch">
+      </div>
+      <div class="row">
+        <label><b>今天</b><small id="hw-today-tip">读取中…</small></label>
+        <button id="hw-run" type="button" class="primary">立即抓取当天</button>
+      </div>
+      <div class="row rd">
+        <label><b>几点抓</b><small>老师一般下午到晚上发。抓到了当天就不再抓；没抓到按下一个时刻再试</small></label>
+        <div id="hw-at" class="hw-chips"></div>
+      </div>
+      <div class="row rd">
+        <label><b>哪几天抓</b><small>周末和假期一般没作业</small></label>
+        <div id="hw-weekdays" class="hw-chips"></div>
+      </div>
+      <div class="row">
+        <label for="hw-tries"><b>一天最多试几次</b><small>到次数还没抓到就不再试了</small></label>
+        <input id="hw-tries" type="number" min="1" max="12" class="wake-input num">
+      </div>
+      <div class="row">
+        <label for="hw-notify"><b>一天都没抓到就告诉家长</b><small>小新在群里说一句，让家长去 QQ 群看一眼</small></label>
+        <input id="hw-notify" type="checkbox" class="switch">
+      </div>
+      <div class="row rd">
+        <label for="hw-model"><b>用哪个模型看屏操作</b><small>要能看懂 QQ 的各种弹窗，建议 Opus</small></label>
+        <select id="hw-model" class="wake-input"></select>
+      </div>
+      <div class="row">
+        <label for="hw-steps"><b>一轮最多走几步</b><small>一天的作业正常十来步；步数用完就算这次没成</small></label>
+        <input id="hw-steps" type="number" min="10" max="80" class="wake-input num">
+      </div>
+      <h4>最近几轮</h4>
+      <div id="hw-runs" class="hw-runs"></div>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="general" hidden>

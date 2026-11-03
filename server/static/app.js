@@ -1624,6 +1624,7 @@ function showPane(name) {
   if (name === "prompt") loadPrompts();
   if (name === "members") loadMembers();
   if (name === "model") renderModels();
+  if (name === "homework") loadHomeworkSettings();
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
     loadEngines();
@@ -1632,6 +1633,7 @@ function showPane(name) {
   history.replaceState(null, "", "#settings/" + name);
 }
 
+wireHomeworkSettings();
 for (const b of document.querySelectorAll(".settings-nav button")) b.addEventListener("click", () => showPane(b.dataset.pane));
 $("open-settings").addEventListener("click", () => openSettings());
 $("settings-close").addEventListener("click", () => $("settings").close());
@@ -2380,6 +2382,131 @@ async function dbgFull(btn) {
   } catch (e) { toast(e.message); }
 }
 
+// ---------------------------------------------------------------- 设置 →「作业」：抓班级作业的 agent
+// 家长每天都靠它，所以做成设置里的一级页：开关、几点抓、哪几天、试几次、用哪个模型、立即抓一次、最近几轮怎么样。
+// 真正操作 pad 的那一步在 pad 自己身上（见 docs/qq-homework.md），这里只管配置和下单。
+const HW_AT_CHOICES = ["15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30", "19:00", "20:00", "20:30", "21:00"];
+const WEEK_NAMES = ["一", "二", "三", "四", "五", "六", "日"];
+const hwCfg = { data: null };
+
+async function loadHomeworkSettings() {
+  try { hwCfg.data = await api("api/agent").then(json); } catch (e) { toast(e.message); return; }
+  const d = hwCfg.data;
+  $("hw-on").checked = d.on !== false;
+  $("hw-notify").checked = d.notify !== false;
+  $("hw-tries").value = d.max_tries;
+  $("hw-steps").value = d.max_steps;
+  $("hw-model").innerHTML = (d.models || []).map((m) => `<option value="${esc(m)}"${m === d.model ? " selected" : ""}>${esc(state.models?.find((x) => x.id === m)?.label || m)}</option>`).join("");
+  $("hw-at").innerHTML = HW_AT_CHOICES.map((t) => `<button type="button" class="hw-chip${(d.at || []).includes(t) ? " on" : ""}" data-at="${t}">${t}</button>`).join("");
+  $("hw-weekdays").innerHTML = WEEK_NAMES.map((n, i) => `<button type="button" class="hw-chip${(d.weekdays || []).includes(i + 1) ? " on" : ""}" data-wd="${i + 1}">${n}</button>`).join("");
+  hwTodayTip();
+  hwRunsList();
+}
+
+function hwTodayTip() {
+  const d = hwCfg.data || {};
+  const tip = d.today_done ? `${d.today} 已经抓到了`
+    : d.pending ? `${d.today} 排队中，等 pad 那边领走` : `${d.today} 还没抓到`;
+  $("hw-today-tip").textContent = tip;
+  $("hw-run").textContent = d.today_done ? "再抓一次（覆盖今天）" : "立即抓取当天";
+}
+
+function hwRunsList() {
+  const runs = (hwCfg.data || {}).last_runs || [];
+  $("hw-runs").innerHTML = runs.length ? runs.map((r) => {
+    const when = new Date(r.at * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+    const saved = (r.saved || []).length ? `存了 ${r.saved.join("、")}` : (r.why || "");
+    return `<div class="hw-run${r.ok ? " ok" : " bad"}"><b>${r.ok ? "✓" : "×"}</b><span>${esc(when)}</span><small>${esc(saved)}</small></div>`;
+  }).join("") : '<p class="voice-tip">还没抓过。</p>';
+}
+
+async function saveHomeworkSettings(patch) {
+  try {
+    hwCfg.data = await api("api/agent", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then(json);
+    toast("改好了");
+    hwTodayTip();
+  } catch (e) { toast(e.message); loadHomeworkSettings(); }
+}
+
+function wireHomeworkSettings() {
+  $("hw-on").addEventListener("change", (e) => saveHomeworkSettings({ on: e.target.checked }));
+  $("hw-notify").addEventListener("change", (e) => saveHomeworkSettings({ notify: e.target.checked }));
+  $("hw-model").addEventListener("change", (e) => saveHomeworkSettings({ model: e.target.value }));
+  for (const id of ["hw-tries", "hw-steps"]) {
+    $(id).addEventListener("change", (e) => saveHomeworkSettings(id === "hw-tries" ? { max_tries: +e.target.value } : { max_steps: +e.target.value }));
+  }
+  $("hw-at").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-at]");
+    if (!b) return;
+    b.classList.toggle("on");
+    const at = [...$("hw-at").querySelectorAll(".hw-chip.on")].map((x) => x.dataset.at);
+    if (!at.length) { b.classList.add("on"); toast("至少留一个时刻"); return; }
+    saveHomeworkSettings({ at });
+  });
+  $("hw-weekdays").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-wd]");
+    if (!b) return;
+    b.classList.toggle("on");
+    const weekdays = [...$("hw-weekdays").querySelectorAll(".hw-chip.on")].map((x) => +x.dataset.wd);
+    if (!weekdays.length) { b.classList.add("on"); toast("至少留一天"); return; }
+    saveHomeworkSettings({ weekdays });
+  });
+  $("hw-run").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const r = await api("api/agent/run", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: !!hwCfg.data?.today_done }) }).then(json);
+      toast(r.why, 4000);
+      await loadHomeworkSettings();
+    } catch (err) { toast(err.message); }
+    btn.disabled = false;
+  });
+}
+
+// 「作业」标签：抓作业的 agent 最近跑了哪几轮、成没成，点开一轮能一步步看它在 pad 上做了什么（带那一步的小截图）。
+// 作业抓不到时就看这里：是 pad 没连上、QQ 弹了广告、还是哪一天的正文没读到。
+const HW_ACT = { look: "👀 看一眼", tap: "👆 点", swipe: "↕ 滑", back: "↩ 返回", restart_qq: "🔄 重开 QQ",
+                 capture_image: "📷 存附图", save_day: "💾 交这一天", finish: "🏁 结束" };
+
+async function renderHwRuns(body) {
+  if (!dbg.hwRuns) {
+    body.innerHTML = '<p class="voice-tip">读取中…</p>';
+    try { dbg.hwRuns = (await api("api/homework/runs?limit=20").then(json)).runs || []; } catch (e) { body.innerHTML = `<p class="voice-tip">${esc(e.message)}</p>`; return; }
+  }
+  if (!dbg.hwRuns.length) { body.innerHTML = '<p class="voice-tip">还没有抓过作业。定时任务每天下午跑，也可以在 Mac 上手动跑 tools.hw_agent。</p>'; return; }
+  body.innerHTML = dbg.hwRuns.map((r) => {
+    const when = new Date(r.at * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+    const range = r.since === r.until ? r.since : `${r.since} ~ ${r.until}`;
+    const saved = (r.saved || []).length ? `存了 ${r.saved.length} 天：${r.saved.join("、")}` : "一天也没存上";
+    const bad = Object.entries(r.rejected || {}).map(([d, w]) => `${d} ${w}`).join("；");
+    return `<details class="hwr${r.ok ? " ok" : " bad"}" data-hw-at="${r.at}">`
+      + `<summary><b>${r.ok ? "✓" : "×"} ${esc(when)}</b><span>${esc(range)}</span><span>${esc(saved)}</span>`
+      + `<small>${esc(r.trigger || "")}${r.model ? " · " + esc(r.model) : ""}${r.secs ? ` · ${r.secs}s` : ""}${r.n_steps ? ` · ${r.n_steps} 步` : ""}</small></summary>`
+      + `<div class="hwr-why">${esc(r.why || "")}${bad ? `<br>拒收：${esc(bad)}` : ""}</div>`
+      + `<div class="hwr-steps">点开加载每一步…</div></details>`;
+  }).join("");
+  for (const d of body.querySelectorAll(".hwr")) {
+    d.addEventListener("toggle", async () => {
+      const box = d.querySelector(".hwr-steps");
+      if (!d.open || box.dataset.done) return;
+      box.dataset.done = "1";
+      try {
+        const r = (await api(`api/homework/runs?at=${encodeURIComponent(d.dataset.hwAt)}`).then(json)).runs[0];
+        const steps = r.steps || [];
+        box.innerHTML = steps.length ? steps.map((s) => {
+          const act = HW_ACT[s.name] || esc(s.name);
+          const args = s.args && Object.keys(s.args).length ? `<code>${esc(JSON.stringify(s.args, null, 0).slice(0, 120))}</code>` : "";
+          return `<div class="hws"><div class="hws-t"><b>${s.i}</b> ${act} ${esc(s.why || "")} ${args}</div>`
+            + (s.said ? `<div class="hws-said">${esc(s.said)}</div>` : "")
+            + (s.out ? `<div class="hws-out">${esc(s.out)}</div>` : "")
+            + (s.shot ? `<img src="${s.shot}" alt="第 ${s.i} 步的屏幕" loading="lazy">` : "") + `</div>`;
+        }).join("") : '<p class="voice-tip">这一轮没有逐步记录（旧版本抓的）。</p>';
+      } catch (e) { box.innerHTML = `<p class="voice-tip">${esc(e.message)}</p>`; }
+    });
+  }
+}
+
 function renderDebug() {
   const body = $("debug-body"), d = dbg.data, p = dbg.prompts;
   for (const b of document.querySelectorAll("[data-dv]")) b.setAttribute("aria-selected", String(b.dataset.dv === dbg.view));
@@ -2394,6 +2521,8 @@ function renderDebug() {
     wireDbgFull(body);
     body.scrollTop = body.scrollHeight;
     body.onscroll = () => { if (body.scrollTop < 120) dbgLoadOlder(); };
+  } else if (dbg.view === "hw") {
+    renderHwRuns(body);
   } else if (dbg.view === "ctx") {
     const c = d.ctx || {};
     body.innerHTML = `<div class="dk"><span>已用</span><b>${(c.tokens || 0).toLocaleString()} token</b><span>阈值</span><b>${(c.limit || 0).toLocaleString()}</b>`
@@ -2441,7 +2570,7 @@ function openDebug() {
 function closeDebug() { $("debug").hidden = true; document.body.classList.remove("debug-on"); clearInterval(dbg.timer); }
 $("open-debug").addEventListener("click", () => ($("debug").hidden ? openDebug() : closeDebug()));
 $("debug-close").addEventListener("click", closeDebug);
-$("debug-refresh").addEventListener("click", () => { dbg.prompts = null; loadDebug(); });
+$("debug-refresh").addEventListener("click", () => { dbg.prompts = null; dbg.hwRuns = null; if (dbg.view === "hw") renderHwRuns($("debug-body")); loadDebug(); });
 for (const b of document.querySelectorAll("[data-dv]")) b.addEventListener("click", () => { dbg.view = b.dataset.dv; renderDebug(); });
 
 

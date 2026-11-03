@@ -74,41 +74,6 @@ def test_tool_card_in_chat(client, fakes):
     assert acts[0]["name"] == "homework_report" and "抄词第12课" in acts[0]["result"]
 
 
-# ---------------------------------------------------------------- 采集：分批读出来的结果怎么合并（tools/qq_homework.py）
-
-def test_merge_keeps_longest_text(monkeypatch, tmp_path):
-    """同一条作业在相邻几批里都读到：正文被屏幕切断的那份短，要留最全的；notes / mentions 取并集、附图标记取或。"""
-    from tools import qq_homework as q
-
-    batches = [
-        [{"date": "2026-10-23", "items": [{"subject": "chinese", "text": "1.抄词第12课；\n2.习字", "notes": ["甲"]}]}],
-        [{"date": "2026-10-23", "items": [{"subject": "chinese", "text": "1.抄词第12课；\n2.习字册；\n3.小册", "notes": ["乙"],
-                                           "mentions": ["练习卷.pdf"], "has_image": True}]}],
-        [{"date": "2026-10-23", "items": [{"subject": "math", "text": "正反打印作业纸"}]}],
-    ]
-    monkeypatch.setattr(q, "CHUNK", 1)
-    monkeypatch.setattr(q, "OVERLAP", 0)
-    monkeypatch.setattr(q, "read_chunk", lambda shots, today: batches[int(shots[0].stem)])
-    shots = []
-    for i in range(3):
-        p = tmp_path / f"{i}.png"
-        p.write_bytes(b"x")
-        shots.append(p)
-
-    days, where = q.read_shots(shots, "2026-10-25")
-    assert len(days) == 1 and days[0]["date"] == "2026-10-23"
-    items = {it["subject"]: it for it in days[0]["items"]}
-    assert items["chinese"]["text"].endswith("3.小册") and items["chinese"]["notes"] == ["甲", "乙"]
-    # 「（看不清）」那份不能盖掉完整的（屏幕切断时模型会这么读）
-    from tools.qq_homework import _score
-
-    assert _score({"text": "1.完成《同步》期中自我测评\n2.订正2号本"}) > _score({"text": "1.完成《同步》\n（看不清）\n还有一行"})
-    assert _score({"text": "（看不清）"}) > _score({"text": ""})
-    assert items["chinese"]["mentions"] == ["练习卷.pdf"] and items["chinese"]["has_image"] is True
-    assert items["math"]["text"] == "正反打印作业纸"
-    assert where[("2026-10-23", "chinese")] == ["0", "1"]  # 这条出现在第 0、1 屏：附图按屏归属认领
-
-
 def test_empty_items_dropped():
     """视觉模型有时看到学科色块就补一条空的（实测 10/29 其实没有数学作业）：没有正文的条目不存，附图并给第一条。"""
     r = homework.save_day("2026-10-29", [{"subject": "chinese", "text": "1.默第13课词语", "images": ["a"]},
@@ -124,12 +89,38 @@ def test_empty_items_dropped():
 
 def test_agent_settings(client):
     d = client.get("/api/agent").json()
-    assert d["model"] == "claude-opus-5-5" and d["at"][0] == "17:00" and "claude-opus-5-5" in d["models"]
-    d = client.put("/api/agent", json={"model": "claude-sonnet-5-5", "at": ["17:30", "坏的", "19:00"], "max_steps": 99}).json()
-    assert d["model"] == "claude-sonnet-5-5" and d["at"] == ["17:30", "19:00"] and d["max_steps"] == 60
+    assert d["on"] is True and d["model"] == "claude-opus-5-5" and d["at"][0] == "17:00"
+    assert d["weekdays"] == [1, 2, 3, 4, 5] and d["max_tries"] == 4 and d["today_done"] is False
+    d = client.put("/api/agent", json={"on": False, "model": "claude-sonnet-5-5", "at": ["19:00", "坏的", "16:30"],
+                                       "weekdays": [1, 3, 5, 9], "max_tries": 99, "max_steps": 1}).json()
+    assert d["on"] is False and d["model"] == "claude-sonnet-5-5" and d["at"] == ["16:30", "19:00"]
+    assert d["weekdays"] == [1, 3, 5] and d["max_tries"] == 12 and d["max_steps"] == 10
     assert client.put("/api/agent", json={"model": "gpt-9"}).status_code == 400
     assert client.put("/api/agent", json={"at": ["明天"]}).status_code == 400
-    assert client.get("/api/agent").json()["model"] == "claude-sonnet-5-5"  # 存住了
+    assert client.put("/api/agent", json={"weekdays": []}).status_code == 400
+    assert client.get("/api/agent").json()["on"] is False  # 存住了
+
+
+def test_agent_run_now_is_idempotent(client):
+    import time
+
+    today = time.strftime("%Y-%m-%d")
+    r = client.post("/api/agent/run", json={}).json()
+    assert r["started"] is True and "交给" in r["why"]
+    assert client.get("/api/agent").json()["pending"]["day"] == today
+    again = client.post("/api/agent/run", json={}).json()
+    assert again["started"] is False and "排队" in again["why"]      # 重复点：不再下单
+
+    job = client.post("/api/agent/claim").json()["job"]              # Mac 上的脚本领走
+    assert job["day"] == today
+    assert client.post("/api/agent/claim").json()["job"] is None     # 不会被领两次
+    assert client.get("/api/agent").json()["pending"] is None
+
+    client.put(f"/api/homework/{today}", json={"items": _items()})   # 今天已经抓到了
+    done = client.post("/api/agent/run", json={}).json()
+    assert done["started"] is False and "已经抓过" in done["why"] and done["items"] == 3
+    assert client.post("/api/agent/run", json={"force": True}).json()["started"] is True  # force 还能再抓
+    assert client.get("/api/agent").json()["today_done"] is True
 
 
 def test_run_log(client):
@@ -151,3 +142,21 @@ def test_notify_as_xiaoxin(client):
     last = store.get(kid["thread"])["messages"][-1]
     assert last["role"] == "assistant" and last["via"] == "homework" and "没抓到" in last["text"]
     assert client.post("/api/homework/notify", json={"text": " "}).status_code == 400
+
+
+def test_runs_tolerates_old_format(client):
+    """老记录里 steps 是个数字（截图张数），不是逐步记录：别让它把接口搞崩。"""
+    from server import homework
+
+    import time
+
+    homework.log_run({"since": "2026-10-01", "until": "2026-10-01", "ok": True, "steps": 42})
+    time.sleep(1.1)  # 错开一秒：面板按时间戳取某一轮
+    homework.log_run({"since": "2026-10-02", "until": "2026-10-02", "ok": True,
+                      "steps": [{"i": 1, "name": "tap"}, {"i": 2, "name": "save_day"}]})
+    runs = client.get("/api/homework/runs").json()["runs"]
+    assert [r["n_steps"] for r in runs] == [2, 0] and "steps" not in runs[0]
+    one = client.get(f"/api/homework/runs?at={runs[0]['at']}").json()["runs"][0]
+    assert [x["name"] for x in one["steps"]] == ["tap", "save_day"]
+    old = client.get(f"/api/homework/runs?at={runs[1]['at']}").json()["runs"][0]
+    assert old["steps"] == []

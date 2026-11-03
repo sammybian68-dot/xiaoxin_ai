@@ -3,7 +3,7 @@
 一天一个文件（DATA/homework/<YYYY-MM-DD>.json），按天幂等：同一天再抓一次就覆盖那天，不会出现两份。
 一天里每个学科一条：正文、老师、要不要提交、附件（图片、群文件）、提到的文件名。
 
-采集是 tools/qq_homework.py（pad 上的 QQ 是自绘界面，uiautomator 读不到正文，只能截图 + 视觉读，
+采集是 tools/hw_agent.py（模型看屏操作 pad：QQ 是自绘界面，uiautomator 读不到正文，只能截图 + 视觉读，
 见 docs/qq-homework.md）。这里只管存和查，小新的 homework_report 工具按这里的数据组织语言。
 """
 
@@ -137,16 +137,27 @@ def _runs_path() -> Path:
     return _dir() / "runs.jsonl"
 
 
+MAX_RUNS = 60     # runs.jsonl 里留最近几轮（每轮带几十张缩略图，别无限长）
+
+
 def log_run(rec: dict) -> dict:
-    """记一轮采集：什么时候、抓哪几天、成没成、存了哪几天、为什么结束、用了多久。只追加。"""
+    """记一轮采集：什么时候、抓哪几天、成没成、存了哪几天、为什么结束、用了多久，以及每一步做了什么
+    （steps：动作、参数、结果，和那一步的小截图——「作业 agent」面板按这个一步步回看）。只追加，超了裁掉最早的。"""
     rec = {"at": time.time(), **rec}
     _dir().mkdir(parents=True, exist_ok=True)
     with _runs_path().open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    try:  # 裁掉最早的几轮（带缩略图，文件会很大）
+        lines = _runs_path().read_text(encoding="utf-8").splitlines()
+        if len(lines) > MAX_RUNS:
+            _runs_path().write_text("\n".join(lines[-MAX_RUNS:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
     return rec
 
 
-def runs(limit: int = 30) -> list[dict]:
+def runs(limit: int = 30, *, with_steps: bool = False) -> list[dict]:
+    """最近几轮，新的在前。默认不带 steps（列表只要概要，一轮几十张缩略图太大），要看某一轮再单独取。"""
     try:
         lines = _runs_path().read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -154,7 +165,25 @@ def runs(limit: int = 30) -> list[dict]:
     out = []
     for line in lines[-limit:]:
         try:
-            out.append(json.loads(line))
+            r = json.loads(line)
         except ValueError:
-            pass
+            continue
+        st = r.get("steps")
+        if not isinstance(st, list):
+            st = []          # 老记录里 steps 是个数字（截图张数），不是逐步记录
+        if not with_steps:
+            r = {**{k: v for k, v in r.items() if k != "steps"}, "n_steps": len(st)}
+        else:
+            r = {**r, "steps": st}
+        out.append(r)
     return list(reversed(out))
+
+
+def run_at(at: float) -> dict | None:
+    """某一轮的完整记录（含 steps）。at 是它的时间戳，同一秒有多轮时取最晚的那条
+    （面板是按 at 请求的，秒级精度足够；同秒只会出现在测试里）。"""
+    best = None
+    for r in runs(MAX_RUNS, with_steps=True):
+        if abs(float(r.get("at") or 0) - at) < 1.0 and (best is None or r.get("at", 0) >= best.get("at", 0)):
+            best = r
+    return best
