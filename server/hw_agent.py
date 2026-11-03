@@ -318,7 +318,7 @@ def goal_text(since: str, until: str, mode: str, have: list[str]) -> str:
     tail = f"「{md}」交完就 finish，不要往下读更早的日子。刚重开了 QQ，这是当前屏幕。"
     got = "、".join(SUBJECT_ZH.get(x, x) for x in have)
     if mode == "incremental" and have:
-        return (head + f"这一天**已经存好了：{got}**，这几科不用再读正文。\n"
+        return (head + f"这一天**已经存好了：{got}**，这几科不用再读正文、**附图也已经存过，别再点开抓**。\n"
                 "要做两件事：\n"
                 "1. 去作业列表看这一天，有没有**还没存的学科**（老师下午陆续发）。有就读出来，只交新的那几科。\n"
                 "2. 回到群聊，看有没有这一天的作业分享卡标题带【修改】（比如「【修改】11月3日星期二语文作业」）。"
