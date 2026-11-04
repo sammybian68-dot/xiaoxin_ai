@@ -67,9 +67,11 @@ def _play(kid: str, args: dict) -> str:
         return f"失败：没有这个档位 {lv}"
     color = args.get("color") or cfg["color"]
     cur = go.current(kid)
-    tip = f"（还有一盘没下完：对 {go.LEVEL_NAME[cur['level']]}，第 {len(cur['moves'])} 手，卡片上可以接着下）" if cur else ""
+    if cur:   # 暂停着的那盘：屏幕上直接打开接着下（界面看到这个 id 就开）
+        return (f"上一盘还没下完（对 {go.LEVEL_NAME[cur['level']]}，下到第 {len(cur['moves'])} 手），已在屏幕上打开接着下。"
+                f"要开新的，得先在棋盘上认输。[go:{cur['id']}]\n播报：上次那盘还没下完，我们接着下。")
     return (f"已在屏幕上出了开局卡片：对手 {go.LEVEL_NAME[lv]}，你执{'黑' if color == 'B' else '白'}"
-            + (f"，让 {args['handicap']} 子" if args.get("handicap") else "") + f"。{tip}\n"
+            + (f"，让 {args['handicap']} 子" if args.get("handicap") else "") + "。\n"
             "播报：好呀，点「开始」就来一盘。")
 
 

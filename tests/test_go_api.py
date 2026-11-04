@@ -56,11 +56,17 @@ def test_u3_undo_hint_resign_count(family, kata):
     assert kid.post(f"/api/go/{g2['id']}/resign", json={}).json()["result"]["by"] == "resign"
 
 
-def test_new_game_resigns_unfinished(family, kata):
+def test_paused_game_blocks_new_until_resign(family, kata):
+    """暂停不算结束：还有没下完的就不能直接开新的（409），只有明确 replace（界面上「再来一盘」）才把旧的算认输。"""
     kid = family["儿子"]
     a = kid.post("/api/go", json={}).json()
-    b = kid.post("/api/go", json={}).json()
+    r = kid.post("/api/go", json={})
+    assert r.status_code == 409 and "没下完" in r.json()["detail"]
+    assert kid.get("/api/go/current").json()["id"] == a["id"] and go.get(a["id"])["result"] is None
+    b = kid.post("/api/go", json={"replace": True}).json()
     assert go.get(a["id"])["result"]["by"] == "resign" and kid.get("/api/go/current").json()["id"] == b["id"]
+    kid.post(f"/api/go/{b['id']}/resign", json={})
+    assert kid.get("/api/go/current").json() == {} and kid.post("/api/go", json={}).status_code == 200
 
 
 def test_settings_toggle_undo_and_hint(family, kata):
@@ -132,6 +138,9 @@ def test_tool_play_go_card(as_kid, kata):
     out = _tool("play_go", level="1d", color="W")
     assert "对手 1 段，你执白" in out and "播报：" in out
     assert "对手 2 级" in _tool("play_go")      # 默认档
+    g = go.new("k1", level="3k")               # 有一盘暂停着：不出新卡，直接接着下
+    out = _tool("play_go", level="1d")
+    assert f"[go:{g['id']}]" in out and "接着下" in out and "认输" in out
     assert _tool("play_go", level="99d").startswith("失败")
 
 

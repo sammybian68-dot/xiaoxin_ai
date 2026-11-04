@@ -175,7 +175,7 @@ async function goOpen(g) {
     el.id = "go"; el.className = "gogame"; el.setAttribute("role", "dialog"); el.setAttribute("aria-label", "下围棋");
     el.innerHTML = `<div class="go-board-wrap"><canvas class="go-board" aria-label="19 路棋盘，点两下落子"></canvas></div>
       <div class="go-side">
-        <button type="button" class="go-close" data-go="close">收起棋盘</button>
+        <button type="button" class="go-pause" data-go="close">⏸ 暂停，先去和小新聊</button>
         <div class="go-players"></div>
         <div class="go-winbar"><div class="bar"><i></i></div><div class="lab"><span></span><span></span></div></div>
         <div class="go-status" aria-live="polite"></div>
@@ -195,14 +195,38 @@ async function goOpen(g) {
     window.addEventListener("resize", () => { if (!el.hidden) goRender(); });
   }
   el.hidden = false;
+  if ($("go-resume-top")) $("go-resume-top").hidden = true;
   goRender();
-  if (g.thinking) goWait();
+  if (g.thinking || g.error) goWait();
 }
 
 function goClose() {
   go.gen++;
   const el = $("go");
   if (el) el.hidden = true;
+  goResumeBtn();
+}
+
+// 顶栏「♟ 继续下棋」：有一盘暂停着（没认输、没下完）就显示，点了回到那盘。只在孩子的群里看
+async function goResumeBtn() {
+  let b = $("go-resume-top");
+  if (!b) {
+    const anchor = $("open-history");
+    if (!anchor) return;
+    b = document.createElement("button");
+    b.id = "go-resume-top"; b.type = "button"; b.className = "go-resume-top"; b.hidden = true;
+    b.textContent = "⚫⚪ 继续下棋";
+    b.addEventListener("click", async () => {
+      try { const g = await goApi("api/go/current"); if (g.id) goOpen(g); else b.hidden = true; } catch (e) { toast(e.message); }
+    });
+    anchor.parentNode.insertBefore(b, anchor);
+  }
+  if ($("go") && !$("go").hidden) { b.hidden = true; return; }
+  try {
+    const g = await goApi("api/go/current");
+    b.hidden = !g.id;
+    if (g.id) b.title = `对 ${g.level_name}，下到第 ${g.moves.length} 手`;
+  } catch (_) { b.hidden = true; }
 }
 
 function goRender() {
@@ -248,6 +272,7 @@ function goRender() {
   btn("resign").classList.toggle("danger", !g.error);
   const res = el.querySelector(".go-result");
   res.hidden = !g.result;
+  el.querySelector(".go-pause").textContent = g.result ? "回到小新" : "⏸ 暂停，先去和小新聊";
   if (g.result) {
     const won = g.result.winner === me;
     res.innerHTML = `<b>${won ? "你赢了 🎉" : "小新赢了"}</b><div>${esc(g.result.text)}</div>`
@@ -296,7 +321,7 @@ async function goButton(ev) {
   if (!b || b.disabled) return;
   const g = go.g, k = b.dataset.go;
   try {
-    if (k === "close") { goClose(); return; }
+    if (k === "close") { goClose(); return; }   // 暂停：只是收起来，这盘还在（顶栏「继续下棋」、说「接着下」都能回来）
     if (k === "undo") { go.g = await goApi(`api/go/${g.id}/undo`, {}); go.hints = []; }
     if (k === "hint") { go.hints = (await goApi(`api/go/${g.id}/hint`, {})).hints.map((h) => h.move); }
     if (k === "pass") { go.pending = null; await goMove("pass"); return; }
@@ -310,7 +335,7 @@ async function goButton(ev) {
       go.g = await goApi(`api/go/${g.id}/resign`, {});
     }
     if (k === "review") { goClose(); goReviewOpen(g.id); return; }
-    if (k === "again") { go.g = await goApi("api/go", { level: g.level, color: g.kid_color, handicap: g.handicap }); go.openAt = Date.now(); goRender(); if (go.g.thinking) goWait(); return; }
+    if (k === "again") { go.g = await goApi("api/go", { level: g.level, color: g.kid_color, handicap: g.handicap, replace: !g.result }); go.openAt = Date.now(); goRender(); if (go.g.thinking) goWait(); return; }
   } catch (e) { toast(e.message); }
   goRender();
 }
@@ -329,14 +354,17 @@ async function goCard(row, args) {
       <label>你执（黑先下）<div class="seg" data-k="color"><button type="button" data-v="B"${color === "B" ? ' class="on"' : ""}>黑</button><button type="button" data-v="W"${color === "W" ? ' class="on"' : ""}>白</button></div></label>
       <label>让子<select data-k="handicap">${[0, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<option value="${n}"${n === +hc ? " selected" : ""}>${n ? n + " 子" : "不让"}</option>`).join("")}</select></label>
     </div>
-    <button type="button" class="go-start">开始</button>
-    ${cur?.id && cur.moves.length ? `<button type="button" class="go-resume">接着下没下完的（对 ${esc(cur.level_name)}，第 ${cur.moves.length} 手）</button>` : ""}
+    ${cur?.id ? `<button type="button" class="go-start go-resume">接着下上次那盘（对 ${esc(cur.level_name)}，第 ${cur.moves.length} 手）</button>
+      <small>上次那盘还没下完。想开新的，先在棋盘上认输。</small>`
+      : `<button type="button" class="go-start">开始</button>`}
     ${s.engine && !s.engine.running ? `<small>小新的棋盘大脑正在启动，开始后第一步可能要等十几秒</small>` : ""}`;
   card.querySelector(".seg").addEventListener("click", (e) => {
     const b = e.target.closest("[data-v]"); if (!b) return;
     card.querySelectorAll(".seg button").forEach((x) => x.classList.toggle("on", x === b));
   });
+  if (cur?.id) card.querySelectorAll("select, .seg button").forEach((x) => { x.disabled = true; });
   card.querySelector(".go-start").addEventListener("click", async (e) => {
+    if (cur?.id) { goOpen(cur); return; }
     const btn = e.currentTarget;   // await 之后 currentTarget 就成 null 了，先存下
     btn.disabled = true;
     const body = { level: card.querySelector('[data-k="level"]').value, color: card.querySelector(".seg .on").dataset.v,
@@ -344,7 +372,6 @@ async function goCard(row, args) {
     try { goOpen(await goApi("api/go", body)); } catch (err) { toast(err.message); }
     btn.disabled = false;
   });
-  card.querySelector(".go-resume")?.addEventListener("click", () => goOpen(cur));
   row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text"));
   requestAnimationFrame(() => revealRow(row));
 }
@@ -598,7 +625,12 @@ function goAction(row, a) {
   if (/^失败/.test(a.result || "")) return false;
   let args = {};
   try { args = JSON.parse(a.arguments || "{}") || {}; } catch (_) { /* 用默认 */ }
-  if (a.name === "play_go") { goCard(row, args); return true; }
+  if (a.name === "play_go") {
+    const gid = /\[go:([0-9a-f]{16})\]/.exec(a.result || "")?.[1];
+    if (gid && a.live) goApi(`api/go/${gid}`).then((g) => { if (!g.result) goOpen(g); }).catch(() => {});
+    goCard(row, args);
+    return true;
+  }
   if (a.name === "go_stats") { goStatsCard(row, args); return true; }
   if (a.name === "go_review") {
     const ids = [...(a.result || "").matchAll(/\[go:([0-9a-f]{16})\]/g)].map((m) => m[1]);
@@ -658,3 +690,6 @@ function wireGamesSettings() {
   });
 }
 if ($("go-level")) wireGamesSettings();
+
+// 进群、刷新后：有暂停着的那盘就在顶栏亮「继续下棋」
+setTimeout(goResumeBtn, 1500);

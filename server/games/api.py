@@ -82,11 +82,15 @@ def go_current(request: Request, kid: str = "") -> dict:
 
 @router.post("/api/go")
 def go_new(request: Request, body: dict = Body(default={})) -> dict:
-    """开一盘：level / color / handicap / komi 不给就用设置里的默认。还有没下完的那盘就先认输结束（只能有一盘在下）。"""
+    """开一盘：level / color / handicap / komi 不给就用设置里的默认。
+    只能有一盘在下：还有没下完的（暂停着的）就 409，界面让孩子接着下；他明确点了「开新的」才带 replace=true，
+    那盘算认输（暂停不算结束，只有认输或下完才结束）。"""
     k = _kid(request, str(body.get("kid") or ""))
     cfg = registry.settings("go")
     old = go.current(k["id"])
     if old:
+        if not body.get("replace"):
+            raise HTTPException(409, "上一盘还没下完，先接着下，或者认输了再开新的")
         go.resign(old["id"], k["id"])
     try:
         g = go.new(k["id"], level=str(body.get("level") or cfg["level"]), color=str(body.get("color") or cfg["color"]),

@@ -114,6 +114,7 @@ async function openThread(kid) {
   loadCtx();
   syncStandbyUrl();
   hubConnect();
+  if (typeof goResumeBtn === "function") goResumeBtn();   // 这个孩子有暂停着的棋：顶栏「继续下棋」
 }
 
 // ---------------------------------------------------------------- 实时总线：别的设备说的话马上出现（server/family/hub.py）
