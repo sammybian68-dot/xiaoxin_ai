@@ -122,13 +122,53 @@ function goFit(canvas, wrap) {
   canvas.style.width = canvas.style.height = s + "px";
   wrap.style.width = land ? s + 28 + "px" : "";
 }
+// ---------------------------------------------------------------- 落子声
+// 合成：一段很短的噪声（石头碰木头的「嗒」）+ 一个衰减很快的低频（棋盘的共鸣），提子时再加几下轻的「咔」。
+// 不用音频文件：离线也能响、没有加载延迟。WebView 要先有一次触摸才让出声：开棋盘时 unlock 一下。
+const goSnd = { ctx: null };
+function goAudioUnlock() {
+  try {
+    goSnd.ctx = goSnd.ctx || new (window.AudioContext || window.webkitAudioContext)();
+    if (goSnd.ctx.state === "suspended") goSnd.ctx.resume();
+  } catch (_) { /* 没有 WebAudio 就不响 */ }
+}
+function goClack(capture = 0, when = 0) {
+  if (go.cfg && go.cfg.sound === false) return;
+  const ac = goSnd.ctx;
+  if (!ac) return;
+  const t = ac.currentTime + when;
+  const hit = (at, gain, freq, len) => {
+    const n = Math.floor(ac.sampleRate * len), buf = ac.createBuffer(1, n, ac.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 4);
+    const src = ac.createBufferSource(); src.buffer = buf;
+    const bp = ac.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = freq; bp.Q.value = 1.4;
+    const g = ac.createGain(); g.gain.setValueAtTime(gain, at); g.gain.exponentialRampToValueAtTime(0.001, at + len);
+    src.connect(bp).connect(g).connect(ac.destination); src.start(at);
+  };
+  hit(t, 0.9, 2600, 0.05);                           // 「嗒」
+  const o = ac.createOscillator(), og = ac.createGain();   // 棋盘「咚」
+  o.type = "sine"; o.frequency.setValueAtTime(190, t); o.frequency.exponentialRampToValueAtTime(110, t + 0.12);
+  og.gain.setValueAtTime(0.35, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+  o.connect(og).connect(ac.destination); o.start(t); o.stop(t + 0.18);
+  for (let i = 0; i < Math.min(capture, 6); i++) hit(t + 0.12 + i * 0.06, 0.35, 4200, 0.03);  // 提子：几下「咔」
+}
+// 盘面变了：新落下的子响一声；提了子再多响几下
+function goSoundDiff(prev, next) {
+  if (!prev || !next || next.moves.length <= prev.moves.length) return;
+  const added = next.moves.slice(prev.moves.length).filter((m) => m[1] !== "pass");
+  const cap = (g) => (g.captures?.B || 0) + (g.captures?.W || 0);
+  const took = Math.max(0, cap(next) - cap(prev));
+  added.forEach((_, i) => goClack(i === added.length - 1 ? took : 0, i * 0.35));
+}
+
 // ---------------------------------------------------------------- 全屏对局
 function goIsKid() { return state.me?.role === "kid" || (state.me?.kind === "admin" && !!window.native); }
 
 async function goOpen(g) {
   go.g = g; go.pending = null; go.hints = []; go.openAt = Date.now(); go.gen++;
   if (typeof pracHushXiaoxin === "function") pracHushXiaoxin();   // 和练习一样：小新先闭嘴
-  try { go.cfg = (await goApi("api/games")).go; } catch (_) { go.cfg = go.cfg || { undo: true, hint: true, winbar: true }; }
+  try { go.cfg = (await goApi("api/games")).go; } catch (_) { go.cfg = go.cfg || { undo: false, hint: false, winbar: false, warn: false, sound: true }; }
+  goAudioUnlock();
   let el = $("go");
   if (!el) {
     el = document.createElement("div");
@@ -181,7 +221,7 @@ function goRender() {
   ].map(([c, name, sub]) => `<div class="go-player${turn === c ? " turn" : ""}"><span class="go-stone-ico ${c}"></span>`
     + `<div><b>${name}</b><small>${c === "B" ? "执黑" : "执白"}${sub ? " · " + sub : ""}</small></div><span class="cap">提 ${cap(c)}</span></div>`).join("");
   const wb = el.querySelector(".go-winbar");
-  wb.hidden = go.cfg?.winbar === false;
+  wb.hidden = !go.cfg?.winbar;   // 辅助：默认关
   const black = me === "B" ? g.winrate : 1 - g.winrate;
   wb.querySelector("i").style.width = `${Math.round(black * 100)}%`;
   const lead = g.score >= 0 ? `你领先 ${g.score.toFixed(1)} 目` : `你落后 ${(-g.score).toFixed(1)} 目`;
@@ -196,8 +236,8 @@ function goRender() {
   else st.textContent = `第 ${g.moves.length + 1} 手，轮到你`;
   const busy = !!g.thinking || !!g.result;
   const btn = (k) => el.querySelector(`[data-go="${k}"]`);
-  btn("undo").hidden = go.cfg?.undo === false;
-  btn("hint").hidden = go.cfg?.hint === false;
+  btn("undo").hidden = !go.cfg?.undo;   // 辅助：默认关，设置里开
+  btn("hint").hidden = !go.cfg?.hint;
   btn("undo").disabled = busy || !g.moves.some((m) => m[0] === me);
   btn("hint").disabled = busy;
   btn("pass").disabled = busy;
@@ -217,6 +257,7 @@ function goRender() {
 }
 
 function goTap(ev) {
+  goAudioUnlock();
   const g = go.g;
   if (!g || g.thinking || g.result || g.to_move !== g.kid_color) return;
   if (Date.now() - go.openAt < 600) return;   // 刚弹出来那一下不认（练习模式里踩过：抬手误点）
@@ -233,6 +274,7 @@ async function goMove(mv) {
   try {
     go.g = await goApi(`api/go/${g.id}/move`, { move: mv });
   } catch (e) { toast(e.message); goRender(); return; }
+  goSoundDiff(g, go.g);
   goRender();
   goWait();
 }
@@ -240,9 +282,11 @@ async function goMove(mv) {
 async function goWait() {
   const my = go.gen;
   while (go.g && go.g.thinking && my === go.gen) {
+    const before = go.g;
     try {
       go.g = await goApi(`api/go/${go.g.id}?wait=${go.g.moves.length}`);
     } catch (e) { await new Promise((r) => setTimeout(r, 1500)); continue; }
+    if (my === go.gen) goSoundDiff(before, go.g);
     if (my === go.gen) goRender();
   }
 }
@@ -409,7 +453,7 @@ function goReplay(stones, moves, upto) {
   return b.map((r) => r.join(""));
 }
 
-const gor = { r: null, n: 0, pv: 0, key: null };
+const gor = { r: null, n: 0, pv: 0, key: null, saying: null, sayseq: 0, audio: null };
 
 async function goReviewOpen(gid) {
   goClose();
@@ -451,14 +495,39 @@ async function goReviewOpen(gid) {
   el.querySelector(".gor-keys").innerHTML = r.keys.map((k) => `<button type="button" class="${k.grade}" data-key="${k.n}">第 ${k.n} 手 ${k.decided ? `-${k.loss_score} 目` : `-${Math.round(k.loss_wr * 100)}%`}</button>`).join("")
     || "<small>这盘没有明显下坏的手 👍</small>";
   gorGo(r.keys.length ? r.keys[0].n : r.moves.length);
+  if (gor.key) gorSay();   // 一打开就念第一个关键步（孩子不认字）。浏览器拦了自动播放就等他点「听小新讲」
 }
+
+// 念讲解（儿子还不认字）：用小新平时的声音（/api/tts），念完按钮变回来。再点一下停
+async function gorSay() {
+  const k = gor.key;
+  if (!k?.text) return;
+  if (gor.saying === gor.n) { gorHush(); gorRender(); return; }
+  gorHush();
+  if (typeof pracHushXiaoxin === "function") pracHushXiaoxin();
+  const n = gor.n, seq = ++gor.sayseq;
+  gor.saying = n; gorRender();
+  try {
+    const r = await api("api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: k.text }) });
+    const blob = await r.blob();
+    if (seq !== gor.sayseq) return;
+    const a = new Audio(URL.createObjectURL(blob));
+    gor.audio = a;
+    a.onended = a.onerror = () => { if (seq === gor.sayseq) { gor.saying = null; gor.audio = null; gorRender(); } };
+    await a.play();
+  } catch (e) { if (seq === gor.sayseq) { gor.saying = null; gorRender(); toast(e.message); } }
+}
+function gorHush() { gor.sayseq = (gor.sayseq || 0) + 1; gor.audio?.pause(); gor.audio = null; gor.saying = null; }
 
 function gorGo(n) {
   const r = gor.r;
+  const wasSaying = gor.saying != null;
+  gorHush();
   gor.n = Math.max(0, Math.min(r.moves.length, n));
   gor.pv = 0;
   gor.key = r.keys.find((k) => k.n === gor.n) || null;
   gorRender();
+  if (wasSaying && gor.key) gorSay();   // 在听的时候跳到下一个关键步：接着念新的
 }
 
 function gorRender() {
@@ -502,7 +571,8 @@ function gorRender() {
   const pvLen = (r.pv[n - 1] || []).length;
   box.innerHTML = head
     + `<div class="gor-text">${esc(k.text || "")}</div>`
-    + `<div class="gor-pv"><button type="button" data-r="pv"${gor.pv ? ' class="on"' : ""}>${gor.pv ? `AI 的下法 ${gor.pv} / ${pvLen}（再点一手）` : "看 AI 的下法"}</button>`
+    + `<div class="gor-pv"><button type="button" class="gor-say" data-r="say">${gor.saying === n ? "⏹ 停" : "🔊 听小新讲"}</button>`
+    + `<button type="button" data-r="pv"${gor.pv ? ' class="on"' : ""}>${gor.pv ? `AI 的下法 ${gor.pv} / ${pvLen}（再点一手）` : "看 AI 的下法"}</button>`
     + (gor.pv ? `<button type="button" data-r="pv0">回到实战</button>` : "") + `</div>`
     + (k.source === "template" ? `<div class="src">（讲解没通过核对，换成了固定说法）</div>` : "");
 }
@@ -511,9 +581,10 @@ function gorButton(ev) {
   const b = ev.target.closest("[data-r],[data-key]");
   if (!b) return;
   const r = gor.r;
-  if (b.dataset.key) { gorGo(+b.dataset.key); return; }
+  if (b.dataset.key) { gorGo(+b.dataset.key); if (gor.key && gor.saying == null) gorSay(); return; }
   const k = b.dataset.r;
-  if (k === "close") { $("gor").hidden = true; return; }
+  if (k === "close") { gorHush(); $("gor").hidden = true; return; }
+  if (k === "say") { gorSay(); return; }
   if (k === "first") gorGo(0);
   if (k === "prev") gorGo(gor.n - 1);
   if (k === "next") gorGo(gor.n + 1);
@@ -554,7 +625,8 @@ async function loadGamesSettings() {
   $("go-color").value = g.color;
   $("go-handicap").value = String(g.handicap);
   $("go-komi").value = g.komi;
-  for (const k of ["undo", "hint", "winbar", "warn"]) $("go-" + k).checked = !!g[k];
+  for (const k of ["undo", "hint", "winbar", "warn", "sound"]) $("go-" + k).checked = !!g[k];
+  $("go-clear").hidden = !admin;
   const e = d.engine;
   $("go-engine").textContent = !e.installed ? "这台服务器上没装 KataGo"
     : e.running ? `在线（${e.human_model ? "带人类模型，段级档可用" : "没有人类模型，只有冠军档"}）` : `没在跑${e.error ? "：" + e.error : "，第一盘开始时会自动拉起（约 10 秒）"}`;
@@ -573,6 +645,16 @@ function wireGamesSettings() {
   $("go-color").addEventListener("change", (e) => saveGamesSettings({ color: e.target.value }));
   $("go-handicap").addEventListener("change", (e) => saveGamesSettings({ handicap: +e.target.value }));
   $("go-komi").addEventListener("change", (e) => saveGamesSettings({ komi: +e.target.value }));
-  for (const k of ["undo", "hint", "winbar", "warn"]) $("go-" + k).addEventListener("change", (e) => saveGamesSettings({ [k]: e.target.checked }));
+  for (const k of ["undo", "hint", "winbar", "warn", "sound"]) $("go-" + k).addEventListener("change", (e) => saveGamesSettings({ [k]: e.target.checked }));
+  // 清空所有下棋记录：先确认一次，再输密码（服务端核对，错了不删）
+  $("go-clear").addEventListener("click", async () => {
+    if (!confirm("要删掉所有下棋记录吗？看板和复盘都会没有，删了不能恢复。")) return;
+    const pw = prompt("请输入密码确认删除：");
+    if (pw == null) return;
+    try {
+      const r = await api("api/games/go/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: pw }) }).then(json);
+      toast(`删掉了 ${r.deleted} 盘`);
+    } catch (e) { toast(e.message); }
+  });
 }
 if ($("go-level")) wireGamesSettings();

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import time
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -52,6 +54,22 @@ def games_update(request: Request, game: str, body: dict = Body(...)) -> dict:
     except ValueError as e:
         raise _err(e)
     return games_settings(request)
+
+
+# 清空下棋记录要输家长定的密码。代码里只放 sha256，不放明文；比较用 compare_digest
+CLEAR_PW_SHA256 = "961be95f6fe770b1682729bea5d2e63f97c7ff0a6100818794ee90953a01ed2b"
+
+
+@router.post("/api/games/go/clear")
+def games_clear(request: Request, body: dict = Body(...)) -> dict:
+    """设置 →「下棋」→「清空所有下棋记录」：界面先二次确认，再输密码；密码在服务端核对，错了不删。"""
+    from server.main import need
+
+    need(request, "admin")
+    pw = str(body.get("password") or "")
+    if not hmac.compare_digest(hashlib.sha256(pw.encode()).hexdigest(), CLEAR_PW_SHA256):
+        raise HTTPException(403, "密码不对，没有删")
+    return {"deleted": go.clear_all()}
 
 
 # ------------------------------------------------------------ 对局
@@ -166,7 +184,7 @@ def summary_row(g: dict) -> dict:
 def stats(kid: str, days: int = 90) -> dict:
     since = time.time() - days * 86400
     rows = [summary_row(g) for g in go.all_games(kid) if g["created"] >= since]
-    done = [r for r in rows if r["won"] is not None and r["moves"] >= 20]   # 下了不到 20 手就认输的不算
+    done = [r for r in rows if r["won"] is not None]   # 认输的也算（早先「不到 20 手不算」，孩子认输了看板却是 0:0）
     by: dict[str, dict] = {}
     for r in done:
         b = by.setdefault(r["level"], {"level": r["level"], "name": r["level_name"], "won": 0, "lost": 0})

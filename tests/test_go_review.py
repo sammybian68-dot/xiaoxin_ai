@@ -124,7 +124,7 @@ def test_v6_made_up_coord_rejected_then_fixed():
 def test_v7_wrong_number_rejected_twice_uses_template():
     r = V.explain(_fx(), chat=lambda msgs: "R10 那 6 颗只剩 1 口气。")
     assert r["source"] == "template" and r["problems"] == ["数字 6 在事实里没有"]
-    assert r["text"] == "第 47 手你下在 Q16，胜率从 62% 掉到 31%。AI 建议下在 R14，可以点「看 AI 的下法」一步步看。"
+    assert r["text"] == "红圈这一手下完，胜率从 62% 掉到了 31%。AI 建议下在绿圈那里，可以点「看 AI 的下法」一步步看。"
 
 
 def test_model_down_uses_template():
@@ -166,13 +166,13 @@ def test_best_saves_and_ataris():
     for p in ("J7", "K6"):
         x, y = R.to_xy(p); b.grid[y][x] = "W"
     # J6 黑一颗，气在 J5、H6：AI 建议 J5 → 两颗连起来
-    assert V._best_saves(b, "J5", "B") == ["AI 建议的 J5 是给你的J6长气：原来只有 2 口气，下了以后有 4 口"]  # H6 H5 K5 J4
+    assert V._best_saves(b, "J5", "B") == ["AI 建议的 J5（绿圈）紧挨着你下边的J6，是给这块棋长气：原来只有 2 口气，下了以后有 4 口"]  # H6 H5 K5 J4
     c = R.Board()
     for p in ("A1", "B1"):
         x, y = R.to_xy(p); c.grid[y][x] = "W"
     x, y = R.to_xy("A2"); c.grid[y][x] = "B"
     # A2 黑只有 2 口气（A3、B2）：B2 同时是给它长气、又叫吃白两子
-    assert V._best_saves(c, "B2", "B") == ["AI 建议的 B2 是给你的A2长气：原来只有 2 口气，下了以后有 3 口",
+    assert V._best_saves(c, "B2", "B") == ["AI 建议的 B2（绿圈）紧挨着你左下角的A2，是给这块棋长气：原来只有 2 口气，下了以后有 3 口",
                                            "AI 建议的 B2 能把小新的A1 那 2 颗紧到只剩 1 口气（叫吃）"]
     x, y = R.to_xy("C1"); c.grid[y][x] = "B"
     assert "AI 建议的 B2 能直接提掉小新的A1 那 2 颗" in V._best_saves(c, "B2", "B")

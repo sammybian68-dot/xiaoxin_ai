@@ -45,6 +45,7 @@ def test_u2_current_game_survives_reload(family, kata):
 
 
 def test_u3_undo_hint_resign_count(family, kata):
+    family["admin"].put("/api/games/go", json={"undo": True, "hint": True})
     kid = family["儿子"]
     g = _settle(kid, kid.post(f"/api/go/{kid.post('/api/go', json={'level': '3k'}).json()['id']}/move", json={"move": "C3"}).json())
     assert len(kid.post(f"/api/go/{g['id']}/hint", json={}).json()["hints"]) >= 1
@@ -66,6 +67,8 @@ def test_settings_toggle_undo_and_hint(family, kata):
     admin, kid = family["admin"], family["儿子"]
     s = admin.get("/api/games").json()
     assert [x["id"] for x in s["games"]][0] == "go" and s["go"]["level"] == "2k"
+    # 辅助（胜率、提示、悔棋、提醒）默认全关：开着孩子会依赖；落子声默认开
+    assert [s["go"][k] for k in ("winbar", "hint", "undo", "warn", "sound")] == [False, False, False, False, True]
     assert s["levels"][0] == {"id": "world", "name": "世界冠军"} and s["levels"][1]["name"] == "中国冠军"
     s = admin.put("/api/games/go", json={"undo": False, "hint": False, "level": "1d"}).json()
     assert s["go"]["undo"] is False and s["go"]["level"] == "1d"
@@ -96,7 +99,7 @@ def test_review_and_stats(family, kata):
     r = kid.get(f"/api/go/{g['id']}/review").json()
     assert len(r["curve"]) == len(r["moves"]) + 1 and r["level_name"] == "3 级" and r["result"]["by"] == "resign"
     st = kid.get("/api/go-stats").json()
-    assert st["games"][0]["id"] == g["id"] and st["total"] == 0   # 不到 20 手认输的不算胜负
+    assert st["games"][0]["id"] == g["id"] and (st["total"], st["won"], st["lost"]) == (1, 0, 1)   # 下了几手就认输也算一盘输
 
 
 def test_engine_down_gives_503(family, monkeypatch):
@@ -151,8 +154,24 @@ def test_tool_stats_and_review(as_kid, kata, monkeypatch):
     two = _tool("go_review", date=today)
     assert "下了 2 盘" in two and f"[go:{g['id']}]" in two and f"[go:{h['id']}]" in two
     assert "没有下过棋" in _tool("go_review", date="2020-01-01")
-    assert "下完 0 盘" in _tool("go_stats")   # 12 手都是停一手：不到 20 手，不算胜负
+    assert "下完 1 盘：1 胜 0 负" in _tool("go_stats")
 
 
 def test_tool_needs_kid(kata):
     assert _tool("play_go").startswith("失败：这里不能下棋")
+
+
+def test_clear_all_needs_password(family, kata, monkeypatch):
+    import hashlib
+
+    from server.games import api as games_api
+
+    # 真密码不写进仓库：测试里换成一个测试密码的哈希
+    monkeypatch.setattr(games_api, "CLEAR_PW_SHA256", hashlib.sha256(b"test-pw").hexdigest())
+    admin, kid = family["admin"], family["儿子"]
+    kid.post("/api/go", json={})
+    assert admin.post("/api/games/go/clear", json={"password": "123"}).status_code == 403
+    assert len(go.all_games()) == 1
+    assert kid.post("/api/games/go/clear", json={"password": "test-pw"}).status_code == 403   # 只有管理员
+    assert admin.post("/api/games/go/clear", json={"password": "test-pw"}).json() == {"deleted": 1}
+    assert go.all_games() == [] and kid.get("/api/go-stats").json()["games"] == []

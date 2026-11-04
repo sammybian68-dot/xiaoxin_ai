@@ -325,10 +325,16 @@
       <div class="row"><label for="go-handicap"><b>默认让子</b><small>让子棋黑先摆好星位，白先下，贴 0.5 目</small></label>
         <select id="go-handicap" class="wake-input"><option value="0">不让</option><option value="2">2 子</option><option value="3">3 子</option><option value="4">4 子</option><option value="5">5 子</option><option value="6">6 子</option><option value="7">7 子</option><option value="8">8 子</option><option value="9">9 子</option></select></div>
       <div class="row"><label for="go-komi"><b>贴目</b><small>中国规则 7.5</small></label><input id="go-komi" type="number" step="0.5" min="-10" max="20" class="wake-input num"></div>
-      <div class="row"><label for="go-undo"><b>允许悔棋</b><small>正式练习时可以关掉</small></label><input id="go-undo" type="checkbox" class="switch"></div>
-      <div class="row"><label for="go-hint"><b>允许提示</b><small>标出 AI 推荐的 3 个点</small></label><input id="go-hint" type="checkbox" class="switch"></div>
-      <div class="row"><label for="go-winbar"><b>下棋时显示胜率条</b><small>关掉就看不到形势，像真对局</small></label><input id="go-winbar" type="checkbox" class="switch"></div>
-      <div class="row"><label for="go-warn"><b>下坏了提醒一句</b><small>一手亏了很多时提示「要不要悔一步再想想」</small></label><input id="go-warn" type="checkbox" class="switch"></div>
+      <div class="row"><label for="go-sound"><b>落子声</b><small>下子「嗒」一声，提子再响几下</small></label><input id="go-sound" type="checkbox" class="switch"></div>
+      <h4>辅助（默认都关）</h4>
+      <p class="voice-tip">开着孩子容易依赖。关掉的项，棋盘上就没有那个按钮。</p>
+      <div class="row"><label for="go-winbar"><b>显示胜率</b><small>下棋时看得到「你的胜率 xx%、领先几目」</small></label><input id="go-winbar" type="checkbox" class="switch"></div>
+      <div class="row"><label for="go-hint"><b>提示</b><small>标出 AI 推荐的 3 个点</small></label><input id="go-hint" type="checkbox" class="switch"></div>
+      <div class="row"><label for="go-undo"><b>悔棋</b></label><input id="go-undo" type="checkbox" class="switch"></div>
+      <div class="row"><label for="go-warn"><b>下坏了提醒一句</b><small>一手亏了很多时提示「要不要悔一步再想想」（要同时开悔棋）</small></label><input id="go-warn" type="checkbox" class="switch"></div>
+      <h4>记录</h4>
+      <div class="row"><label><b>清空所有下棋记录</b><small>看板、复盘都会清掉，不能恢复。要输密码</small></label>
+        <button id="go-clear" type="button" class="danger-btn">清空</button></div>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="general" hidden>

@@ -86,7 +86,7 @@ def _stats(kid: str, days: int) -> str:
 
 
 def _review(kid: str, date: str) -> str:
-    games = [g for g in go.all_games(kid) if len(g["moves"]) >= 10]
+    games = [g for g in go.all_games(kid) if any(m[0] == g["kid_color"] for m in g["moves"])]   # 孩子下过就能复盘
     if date:
         try:
             day = dt.date.fromisoformat(date)
@@ -98,7 +98,7 @@ def _review(kid: str, date: str) -> str:
     elif games:
         games = games[:1]
     else:
-        return "还没有能复盘的棋（下满 10 手的）。\n播报：还没有下过能复盘的棋。"
+        return "还没有能复盘的棋。\n播报：还没有下过能复盘的棋。"
     if len(games) == 1:
         g = games[0]
         return (f"已在屏幕上打开复盘：{dt.datetime.fromtimestamp(g['created']):%m-%d %H:%M} 对 {go.LEVEL_NAME[g['level']]}，"

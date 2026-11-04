@@ -29,8 +29,9 @@ CHAMP_VISITS = {"world": 3000, "china": 1500}
 ANALYZE_VISITS = 400      # 每手分析（复盘用）：A100 上 ~0.3 秒
 HUMAN_VISITS = 60         # 段级档落子前搜一下：只用来判断该不该 pass
 KOMI = 7.5
-DEFAULTS = {"level": "2k", "color": "B", "komi": KOMI, "handicap": 0, "undo": True, "hint": True,
-            "winbar": True, "warn": False}
+# 胜率条、提示、悔棋、下坏了提醒是辅助，默认全关：开着孩子会依赖（家长 2026-11-04 要求），要用在设置里开
+DEFAULTS = {"level": "2k", "color": "B", "komi": KOMI, "handicap": 0,
+            "undo": False, "hint": False, "winbar": False, "warn": False, "sound": True}
 
 _locks: dict[str, threading.Lock] = {}
 _changed = threading.Condition()   # 有对局变了（小新下完、出错）：叫醒 wait() 的
@@ -87,6 +88,16 @@ def current(kid: str) -> dict | None:
         if g.get("result") is None:
             return g
     return None
+
+
+def clear_all() -> int:
+    """删掉所有下棋记录（设置里「清空下棋记录」，接口那边校验过密码）。返回删了几盘。正在算应手的那盘也删。"""
+    n = 0
+    for p in _dir().glob("*.json"):
+        p.unlink(missing_ok=True)
+        n += 1
+    _active.clear()
+    return n
 
 
 def lock(gid: str) -> threading.Lock:
