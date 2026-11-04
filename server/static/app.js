@@ -221,7 +221,8 @@ function hubMessage(m, kind) {
   else if (kind === "msg") state.conv.messages.push(m);
   if (kind !== "msg" || m.role === "note") return;
   if ($("messages").querySelector(`[data-mid="${CSS.escape(m.id)}"]`)) return;  // 本地已经画了
-  if (m.role === "assistant" && m.via !== "print" && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
+  // 打印结果、画好的图是后台发来的，不是这台正在出字的那条
+  if (m.role === "assistant" && m.via !== "print" && m.via !== "draw" && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
   if (m.role === "user" && m.via === "talk" && talk.on) return;      // 自己这台在自由对话：那句由 heard 画（带原声小喇叭）
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
   const row = appendMessage(m);
@@ -231,6 +232,8 @@ function hubMessage(m, kind) {
     state.threadFiles = [...(state.threadFiles || []), ...m.files.map((f) => ({ ...f, from: m.from, at: m.created, msg: m.id, role: m.role }))];
     renderSide();
   }
+  // 孩子的 pad：小新后台画好的图，念一句「XX，图片画好了，请看」（排在正在说的话后面，不打断）
+  if (m.role === "assistant" && m.via === "draw" && m.text && state.me?.role !== "parent" && prefs.autoread && !window.pracBusy?.()) sayLater(m, row, true);
   // 孩子的 pad：爸爸妈妈发来的话，用他们设的声音读一遍（docs/architecture.md 6.2 的 speak）
   if (m.role === "user" && m.text && m.speak !== false && state.me?.role !== "parent"
       && state.people?.[m.from]?.role === "parent" && prefs.autoread && !window.pracBusy?.()) sayLater(m, row);
@@ -445,7 +448,7 @@ function appendMessage(m) {
       + `${m.via === "voice" ? '<div class="via">🎤 语音输入</div>' : m.via === "talk" ? '<div class="via">📞 自由对话</div>' : ""}</div>`;
     if (replay) row.querySelector(".replay").addEventListener("click", (e) => replayUtterance(m, row, e.currentTarget));
   } else {
-    row.innerHTML = `<img src="static/icon.png" alt="" class="avatar sm"><div class="bubble"><div class="text"></div>`
+    row.innerHTML = `<img src="static/icon.png" alt="" class="avatar sm"><div class="bubble">${attachmentsHtml(m.files)}<div class="text"></div>`
       + `<div class="sources" hidden></div>`
       + `<div class="actions"><button type="button" data-act="copy">复制</button><button type="button" data-act="read">朗读</button></div>`
       + `<div class="meta"></div></div>`;
@@ -609,6 +612,14 @@ function showAction(row, a) {
   if (a.name === "show_stroke_order") {  // 笔顺：直接插一张能动的卡（hanzi.js）
     const card = typeof strokeCardFor === "function" ? strokeCardFor(a) : null;
     if (card) { row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text")); requestAnimationFrame(() => revealRow(row)); return; }
+  }
+  if (a.name === "draw_image") {  // 画图在后台跑，画好了小新会另发一条带图的消息；这里只出一条状态
+    const ok = !/^失败/.test(a.result || "");
+    const chip = document.createElement("div");
+    chip.className = "action-chip" + (ok ? "" : " bad");
+    chip.textContent = ok ? "🎨 在画了，画好会发上来" : "⚠ " + a.result.replace(/^失败：/, "没画成：");
+    row.querySelector(".bubble").insertBefore(chip, row.querySelector(".bubble .text"));
+    return;
   }
   const ok = !a.result.startsWith("失败");
   const chip = document.createElement("button");
