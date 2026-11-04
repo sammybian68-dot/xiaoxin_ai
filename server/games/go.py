@@ -29,6 +29,11 @@ CHAMP_VISITS = {"world": 3000, "china": 1500}
 ANALYZE_VISITS = 400      # 每手分析（复盘用）：A100 上 ~0.3 秒
 HUMAN_VISITS = 60         # 段级档落子前搜一下：只用来判断该不该 pass
 KOMI = 7.5
+RESIGN_WR, RESIGN_RUN, RESIGN_MIN = 0.02, 10, 60   # 小新认输：自己的胜率连续 10 次分析都 < 2%，且下满 60 手
+# 申请数棋（全由 KataGo + 代码判，不用大模型）
+DONE_GAIN = 1.5      # 双方「下一手最好的点」比「停一手」都多不到 1.5 目：棋下完了
+DECIDED_WR, DECIDED_MIN = 0.03, 100   # 下满 100 手，孩子胜率连续 3 次 < 3% 或 > 97%：胜负已定
+COUNT_VISITS = 400
 # 胜率条、提示、悔棋、下坏了提醒是辅助，默认全关：开着孩子会依赖（家长 2026-11-04 要求），要用在设置里开
 DEFAULTS = {"level": "2k", "color": "B", "komi": KOMI, "handicap": 0,
             "undo": False, "hint": False, "winbar": False, "warn": False, "sound": True}
@@ -221,6 +226,10 @@ def _respond(gid: str) -> None:
                 g["last_loss"] = _loss_of_last(g)
             if _passed_twice(g):
                 finish_by_count(g)
+            elif mv is not None and g["result"] is None and _engine_should_resign(g):
+                g["result"] = {"winner": g["kid_color"], "by": "resign", "engine_resigned": True,
+                               "text": f"{'黑' if g['kid_color'] == 'B' else '白'}中盘胜（小新认输）"}
+                g["ended"] = time.time()
             elif mv is not None and g["result"] is None:
                 _apply(g, g["engine"], mv)
                 g["analysis"].append(None)
@@ -246,6 +255,17 @@ def _fail(gid: str, msg: str) -> None:
         g = get(gid)
         g["thinking"], g["error"] = False, msg
         save(g)
+
+
+def _engine_should_resign(g: dict) -> bool:
+    """低档位时孩子大优，小新别一直硬下到底。冠军档基本碰不到。"""
+    if len(g["moves"]) < RESIGN_MIN:
+        return False
+    recent = [a for a in g["analysis"] if a][-RESIGN_RUN:]
+    if len(recent) < RESIGN_RUN:
+        return False
+    mine = [(a["winrate"] if g["engine"] == "B" else 1 - a["winrate"]) for a in recent]
+    return all(w < RESIGN_WR for w in mine)
 
 
 def _passed_twice(g: dict) -> bool:
@@ -357,53 +377,113 @@ def resign(gid: str, kid: str) -> dict:
         return g
 
 
+def _zi(x: float) -> str:
+    """目数 / 2 = 子数，按 ¼ 子写：3.75 → 「3¾」，0.5 → 「¼」……"""
+    q = round(abs(x) / 2 * 4)
+    whole, frac = divmod(q, 4)
+    return (str(whole) if whole or not frac else "") + ["", "¼", "½", "¾"][frac]
+
+
 def finish_by_count(g: dict) -> None:
-    """数子结束：死子按最后一次分析的归属拿掉（归属 ≥ 0.6 判给对方的子当死子），再按中国规则数。"""
+    """数子结束：死子按最后一次分析的归属拿掉（归属 ≥ 0.6 判给对方的子当死子），空点按归属给到一方，再按中国规则数。
+    结果里存每个点归谁（owner，界面画地盘）和死子（dead），文字按子说：「黑 185 子，白 176 子，黑贴 3¾ 子，黑胜 ¾ 子」。"""
     board = R.replay(g["moves"], g.get("stones"))
     own = next((a for a in reversed(g["analysis"]) if a), {}).get("ownership") or []
-    dead = []
-    if len(own) == R.N * R.N:
-        for y in range(R.N):
-            for x in range(R.N):
-                v = board.grid[y][x]
-                o = own[y * R.N + x]
-                if (v == "B" and o <= -0.6) or (v == "W" and o >= 0.6):
-                    dead.append((x, y))
-        for x, y in dead:
-            board.grid[y][x] = "."
-    # 数子：空点按归属算（比「只挨一方」更贴近真实终局：没收完官的单官也给到该得的一方）
-    area = {"B": 0, "W": 0}
+    dead, owner = [], []
     for y in range(R.N):
         for x in range(R.N):
             v = board.grid[y][x]
+            o = own[y * R.N + x] if len(own) == R.N * R.N else 0.0
+            if (v == "B" and o <= -0.6) or (v == "W" and o >= 0.6):
+                dead.append(R.to_gtp(x, y))
+                v = "."
             if v in ("B", "W"):
-                area[v] += 1
-            elif own:
-                o = own[y * R.N + x]
-                if o >= 0.3:
-                    area["B"] += 1
-                elif o <= -0.3:
-                    area["W"] += 1
-    if not own:
-        area = board.area()
+                owner.append(v)
+            elif not own:
+                owner.append(".")
+            else:
+                owner.append("B" if o >= 0.3 else "W" if o <= -0.3 else ".")
+    if not own:   # 没有分析（不该发生）：按「只挨一方的空」数
+        a = board.area()
+        area = {"B": a["B"], "W": a["W"]}
+    else:
+        area = {"B": owner.count("B"), "W": owner.count("W")}
     diff = area["B"] - area["W"] - g["komi"]
     winner = "B" if diff > 0 else "W"
-    g["result"] = {"winner": winner, "by": "count", "margin": round(abs(diff), 1), "area": area, "dead": len(dead),
-                   "text": f"{'黑' if winner == 'B' else '白'}胜 {abs(diff):g} 目"}
+    wn = "黑" if winner == "B" else "白"
+    text = (f"黑 {area['B']} 子，白 {area['W']} 子，黑贴 {_zi(g['komi'])} 子，{wn}胜 {_zi(diff)} 子")
+    g["result"] = {"winner": winner, "by": "count", "margin": round(abs(diff), 1), "area": area, "dead": dead,
+                   "owner": "".join(owner), "text": text}
     g["ended"] = time.time()
 
 
-def count(gid: str, kid: str) -> dict:
-    """孩子点「数子结束」：直接按现在的局面数。"""
+def _area_name(x: int, y: int) -> str:
+    h = "左" if x < 6 else "右" if x > 12 else ""
+    v = "上" if y < 6 else "下" if y > 12 else ""
+    return f"{h}{v}角" if h and v else f"{h or v}边" if h or v else "中间"
+
+
+def count_check(g: dict) -> dict:
+    """孩子「申请数棋」：能不能数，由 KataGo 和代码判（不用大模型）。
+    返回 {ok, reason（念给孩子听）, area: [没下完那片的点]}。
+    - 胜负已定：下满 100 手，孩子胜率连续 3 次 < 3% 或 > 97%。
+    - 棋下完了：轮到谁都一样——「下最好的一手」比「停一手」多不到 DONE_GAIN 目（双方各算一次，allowMoves 只许 pass）。
+    - 都不是：说哪里没下完、谁在那里下一手还能多几目，标出那一片还没定归属的空点。"""
+    me = g["kid_color"]
+    recent = [a for a in g["analysis"] if a][-3:]
+    mine = [(a["winrate"] if me == "B" else 1 - a["winrate"]) for a in recent]
+    if len(g["moves"]) >= DECIDED_MIN and len(mine) == 3 and (all(w < DECIDED_WR for w in mine) or all(w > 1 - DECIDED_WR for w in mine)):
+        return {"ok": True, "why": "decided", "reason": "胜负已经定了，可以数棋。", "area": []}
+
+    def gain(moves: list, who: str) -> tuple[float, str]:
+        base = _query(g, moves, maxVisits=COUNT_VISITS)
+        ps = _query(g, moves, maxVisits=COUNT_VISITS, allowMoves=[{"player": who, "moves": ["pass"], "untilDepth": 1}])
+        best = min(base["moveInfos"], key=lambda m: m["order"])["move"]
+        return base["rootInfo"]["scoreLead"] - ps["rootInfo"]["scoreLead"], best
+
+    g_me, best_me = gain(g["moves"], me)
+    g_op, best_op = gain(g["moves"] + [[me, "pass"]], R.other(me))
+    if max(g_me, g_op) < DONE_GAIN:
+        return {"ok": True, "why": "finished", "reason": "棋已经下完了，可以数棋。", "area": []}
+    who, val, best = ("你", g_me, best_me) if g_me >= g_op else ("小新", g_op, best_op)
+    if best.lower() == "pass":
+        return {"ok": True, "why": "finished", "reason": "棋已经下完了，可以数棋。", "area": []}
+    bx, by = R.to_xy(best)
+    # 没下完的那一片：最佳点附近（横竖 2 路内，5×5）还没定归属的空点（|归属| < 0.4），从最佳点连着的那些。
+    # 原来 9×9、门槛 0.5：中盘时一标就是 60 多个点，孩子看不出是哪（2026-11-04 实测 69 点）
+    board = R.replay(g["moves"], g.get("stones"))
+    own = (g["analysis"][-1] or {}).get("ownership") or []
+    near = {(x, y) for y in range(max(0, by - 2), min(R.N, by + 3)) for x in range(max(0, bx - 2), min(R.N, bx + 3))
+            if board.grid[y][x] == "." and (len(own) != R.N * R.N or abs(own[y * R.N + x]) < 0.4)}
+    zone, todo = {(bx, by)}, [(bx, by)]
+    while todo:
+        for nb in R.neighbors(*todo.pop()):
+            if nb in near and nb not in zone:
+                zone.add(nb)
+                todo.append(nb)
+    area = [R.to_gtp(*p) for p in sorted(zone)]
+    n = max(1, round(val))
+    return {"ok": False, "why": "unfinished",
+            "reason": f"还不能数棋。{_area_name(bx, by)}这里还没下完，{who}在这里下一手还能多大约 {n} 目。下完了再申请数棋吧。",
+            "area": area, "gain": round(val, 1)}
+
+
+def count(gid: str, kid: str) -> tuple[dict, dict]:
+    """孩子「申请数棋」：小新（KataGo）同意就数子结束，不同意原样返回并说原因。返回 (对局, 判定)。"""
     with lock(gid):
         g = _own(gid, kid)
         if g["result"] is not None:
             raise GameError("这盘已经结束了")
         if g.get("thinking") or g["analysis"][-1] is None:
             raise GameError("小新在想，等一下")
-        finish_by_count(g)
+        if _to_move(g) != g["kid_color"]:
+            raise GameError("轮到你下的时候才能申请数棋")
+        check = count_check(g)
+        g.setdefault("count_requests", []).append({"n": len(g["moves"]), "ok": check["ok"], "why": check["why"]})
+        if check["ok"]:
+            finish_by_count(g)
         save(g)
-        return g
+        return g, check
 
 
 def _own(gid: str, kid: str) -> dict:

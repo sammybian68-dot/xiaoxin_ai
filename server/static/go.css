@@ -118,3 +118,26 @@
   .go-side, .gor-side { border-left: 0; border-top: 1px solid #3a3228; }
   .go-btns { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ---------------- 赢了：皇冠从上面落下、发光、弹一下；彩带从顶上飘下来 */
+.go-win { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: rgba(0,0,0,0);
+  transition: background .4s ease; pointer-events: auto; }
+.go-win.show { background: rgba(0,0,0,.55); }
+.go-win-card { display: grid; justify-items: center; gap: 10px; padding: 26px 46px 24px; border-radius: 28px;
+  background: radial-gradient(circle at 50% 0%, #fff4c7, #ffd36a 60%, #e9a93a); color: #4a2a00; text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5), 0 0 0 6px rgba(255,255,255,.25); transform: scale(.6); opacity: 0;
+  transition: transform .5s cubic-bezier(.2,1.6,.4,1), opacity .3s ease; }
+.go-win.show .go-win-card { transform: scale(1); opacity: 1; }
+.go-crown { font-size: 120px; line-height: 1; filter: drop-shadow(0 6px 18px rgba(255,190,40,.9));
+  animation: go-crown-drop .9s cubic-bezier(.2,1.5,.4,1) both, go-crown-glow 1.6s ease-in-out .9s infinite; }
+@keyframes go-crown-drop { 0% { transform: translateY(-220px) rotate(-25deg) scale(.4); opacity: 0; } 100% { transform: none; opacity: 1; } }
+@keyframes go-crown-glow { 50% { transform: scale(1.08) rotate(3deg); filter: drop-shadow(0 6px 30px rgba(255,220,80,1)); } }
+.go-win-card b { font-size: 44px; letter-spacing: 4px; }
+.go-win-card span { font-size: 20px; }
+.go-win-card button { margin-top: 6px; height: 56px; padding: 0 40px; border-radius: 28px; border: 0; background: #e0452b; color: #fff;
+  font-size: 22px; font-weight: 700; box-shadow: 0 6px 0 #a52f1b; }
+.go-confetti { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.go-confetti i { position: absolute; top: -20px; width: 12px; height: 18px; border-radius: 3px; animation-name: go-fall;
+  animation-timing-function: linear; animation-iteration-count: 2; opacity: .95; }
+@keyframes go-fall { to { transform: translateY(110vh) rotate(720deg); } }
+@media (prefers-reduced-motion: reduce) { .go-crown, .go-confetti i { animation: none; } .go-confetti { display: none; } }

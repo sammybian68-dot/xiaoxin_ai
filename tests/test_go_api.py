@@ -51,7 +51,8 @@ def test_u3_undo_hint_resign_count(family, kata):
     assert len(kid.post(f"/api/go/{g['id']}/hint", json={}).json()["hints"]) >= 1
     assert kid.post(f"/api/go/{g['id']}/undo", json={}).json()["moves"] == []
     g = _settle(kid, kid.post(f"/api/go/{g['id']}/move", json={"move": "C3"}).json())
-    assert kid.post(f"/api/go/{g['id']}/count", json={}).json()["result"]["by"] == "count"
+    r = kid.post(f"/api/go/{g['id']}/count", json={}).json()   # 假引擎：停一手不亏 → 同意数
+    assert r["count"]["ok"] and r["result"]["by"] == "count"
     g2 = kid.post("/api/go", json={"level": "1d"}).json()
     assert kid.post(f"/api/go/{g2['id']}/resign", json={}).json()["result"]["by"] == "resign"
 

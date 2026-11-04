@@ -149,7 +149,14 @@ def go_resign(request: Request, gid: str, body: dict = Body(default={})) -> dict
 
 @router.post("/api/go/{gid}/count")
 def go_count(request: Request, gid: str, body: dict = Body(default={})) -> dict:
-    return go.view(_act(request, gid, body, go.count))
+    """申请数棋：{...对局, count: {ok, reason, area}}。不同意时 reason 念给孩子听，area 在棋盘上标黄。"""
+    try:
+        g, check = _act(request, gid, body, go.count)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 引擎挂了
+        raise HTTPException(503, str(e))
+    return {**go.view(g), "count": check}
 
 
 @router.post("/api/go/{gid}/retry")

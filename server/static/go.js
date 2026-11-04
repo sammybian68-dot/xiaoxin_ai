@@ -70,9 +70,23 @@ function goDraw(canvas, opts) {
     c.globalAlpha = 1;
   };
   const board = opts.board || [];
+  const deadSet = new Set(opts.dead || []);
   for (let y = 0; y < 19; y++) for (let x = 0; x < 19; x++) {
     const v = board[y]?.[x];
-    if (v === "B" || v === "W") stone(x, y, v);
+    if (v === "B" || v === "W") stone(x, y, v, deadSet.has(goName(x, y)) ? 0.45 : 1);   // 死子半透明
+  }
+  for (const p of opts.zone || []) {   // 申请数棋没同意：没下完的那片标黄
+    const [x, y] = goXY(p);
+    c.fillStyle = "rgba(255,210,60,.45)";
+    c.fillRect(pad + x * step - step / 2, pad + y * step - step / 2, step, step);
+  }
+  if (opts.owner) {   // 数子结束：每个点归谁画小方块，死子打叉
+    for (let i = 0; i < 361; i++) {
+      const v = opts.owner[i], x = i % 19, y = Math.floor(i / 19);
+      if (v !== "B" && v !== "W" || board[y]?.[x] === v) continue;
+      c.fillStyle = v === "B" ? "rgba(20,20,20,.75)" : "rgba(250,250,250,.85)";
+      c.fillRect(pad + x * step - step * 0.17, pad + y * step - step * 0.17, step * 0.34, step * 0.34);
+    }
   }
   if (opts.ghost) stone(opts.ghost.x, opts.ghost.y, opts.ghost.c, 0.55);
   if (opts.last && opts.last !== "pass") {   // 最后一手：棋子上一个小圈
@@ -161,6 +175,65 @@ function goSoundDiff(prev, next) {
   added.forEach((_, i) => goClack(i === added.length - 1 ? took : 0, i * 0.35));
 }
 
+// 用小新的声音念一句（/api/tts）；再念就把上一句掐掉
+async function goSay(text) {
+  try {
+    go.voice?.pause();
+    if (typeof pracHushXiaoxin === "function") pracHushXiaoxin();
+    const r = await api("api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    const a = new Audio(URL.createObjectURL(await r.blob()));
+    go.voice = a;
+    await a.play();
+  } catch (_) { /* 念不出来就只看字 */ }
+}
+
+// ---------------------------------------------------------------- 赢了：皇冠 + 彩带 + 胜利音乐（给孩子一点情绪价值）
+// 音乐用 WebAudio 合成：一段上行的大调琶音 + 一个明亮的和弦（像游戏通关），约 2 秒；不用音频文件
+function goFanfare() {
+  const ac = goSnd.ctx;
+  if (!ac || (go.cfg && go.cfg.sound === false)) return;
+  const t0 = ac.currentTime + 0.05;
+  const note = (f, at, len, gain = 0.18, type = "triangle") => {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(gain, at + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + len);
+    o.connect(g).connect(ac.destination); o.start(at); o.stop(at + len + 0.05);
+  };
+  const C5 = 523.25, E5 = 659.25, G5 = 783.99, C6 = 1046.5;
+  [C5, E5, G5, C6].forEach((f, i) => note(f, t0 + i * 0.13, 0.25));        // 嗒嗒嗒嗒 往上走
+  [G5, C6].forEach((f, i) => note(f, t0 + 0.6 + i * 0.1, 0.18, 0.15));
+  [C5, E5, G5, C6].forEach((f) => note(f, t0 + 0.85, 1.3, 0.12, "sawtooth"));   // 最后一个大和弦
+  [C5 / 2, C5].forEach((f) => note(f, t0 + 0.85, 1.4, 0.16, "sine"));
+}
+
+function goCelebrate(g) {
+  const old = $("go-win"); if (old) old.remove();
+  const el = document.createElement("div");
+  el.id = "go-win"; el.className = "go-win"; el.setAttribute("role", "status");
+  const how = g.result.engine_resigned ? "小新认输了" : g.result.by === "count" ? g.result.text.split("，").pop() : "";
+  const pieces = Array.from({ length: 46 }, (_, i) => {
+    const colors = ["#ffd34d", "#ff6b6b", "#5ed3ff", "#7be37b", "#c38bff", "#ffffff"];
+    return `<i style="left:${Math.random() * 100}%;background:${colors[i % colors.length]};animation-delay:${(Math.random() * 0.8).toFixed(2)}s;`
+      + `animation-duration:${(2.2 + Math.random() * 1.6).toFixed(2)}s;transform:rotate(${Math.round(Math.random() * 360)}deg)"></i>`;
+  }).join("");
+  el.innerHTML = `<div class="go-confetti" aria-hidden="true">${pieces}</div>
+    <div class="go-win-card"><div class="go-crown" aria-hidden="true">👑</div><b>你赢了！</b>
+      <span>${esc(how || "太棒了")}</span><button type="button">好耶！</button></div>`;
+  document.body.appendChild(el);
+  el.querySelector("button").addEventListener("click", () => el.remove());
+  setTimeout(() => el.classList.add("show"), 20);
+  goFanfare();
+  setTimeout(() => goSay(g.result.engine_resigned ? "你赢了！小新认输了，你太厉害了！" : "你赢了！太棒了！"), 1600);
+}
+
+// 一盘刚结束（这次渲染前还没结果）：赢了庆祝，输了念一句鼓励
+function goEnded(prev, next) {
+  if (!next?.result || prev?.result) return;
+  if (next.result.winner === next.kid_color) goCelebrate(next);
+  else if (next.result.by === "count") goSay(`这盘小新赢了，${next.result.text.split("，").pop()}。没关系，我们复盘看看哪里可以下得更好。`);
+}
+
 // ---------------------------------------------------------------- 全屏对局
 function goIsKid() { return state.me?.role === "kid" || (state.me?.kind === "admin" && !!window.native); }
 
@@ -184,8 +257,8 @@ async function goOpen(g) {
           <button type="button" data-go="undo">↶ 悔棋</button>
           <button type="button" data-go="hint">💡 提示</button>
           <button type="button" data-go="pass">停一手</button>
-          <button type="button" data-go="count">数子结束</button>
-          <button type="button" class="danger wide" data-go="resign">认输</button>
+          <button type="button" data-go="count">申请数棋</button>
+          <button type="button" class="danger wide go-resign" data-go="resign">认输</button>
         </div>
       </div>`;
     document.body.appendChild(el);
@@ -235,7 +308,8 @@ function goRender() {
   const cv = el.querySelector("canvas");
   goFit(cv, el.querySelector(".go-board-wrap"));
   const last = g.moves.length ? g.moves[g.moves.length - 1][1] : null;
-  goDraw(cv, { board: g.board, last, ghost: go.pending ? { ...go.pending, c: g.kid_color } : null, hints: go.hints });
+  goDraw(cv, { board: g.board, last, ghost: go.pending ? { ...go.pending, c: g.kid_color } : null, hints: go.hints,
+    zone: go.zone || [], owner: g.result?.owner, dead: g.result?.dead });
   const me = g.kid_color, xin = me === "B" ? "W" : "B";
   const turn = g.result ? "" : g.to_move;
   const cap = (c) => g.captures?.[c] || 0;
@@ -265,17 +339,19 @@ function goRender() {
   btn("undo").disabled = busy || !g.moves.some((m) => m[0] === me);
   btn("hint").disabled = busy;
   btn("pass").disabled = busy;
-  btn("count").disabled = busy || g.moves.length < 40;
-  btn("resign").disabled = busy;
-  btn("resign").textContent = g.error ? "再试一次" : "认输";
-  btn("resign").dataset.go = g.error ? "retry" : "resign";
-  btn("resign").classList.toggle("danger", !g.error);
+  btn("count").disabled = busy || g.moves.length < 20 || go.counting;
+  // 认输 / 再试一次是同一个按钮，按固定类名找（data-go 会在两者间切换；原来按 data-go 找，出过一次错后就找不到，整个 goRender 报错）
+  const rb = el.querySelector(".go-resign");
+  rb.disabled = !!g.thinking || !!g.result;
+  rb.textContent = g.error ? "再试一次" : "认输";
+  rb.dataset.go = g.error ? "retry" : "resign";
+  rb.classList.toggle("danger", !g.error);
   const res = el.querySelector(".go-result");
   res.hidden = !g.result;
   el.querySelector(".go-pause").textContent = g.result ? "回到小新" : "⏸ 暂停，先去和小新聊";
   if (g.result) {
     const won = g.result.winner === me;
-    res.innerHTML = `<b>${won ? "你赢了 🎉" : "小新赢了"}</b><div>${esc(g.result.text)}</div>`
+    res.innerHTML = `<b>${won ? "👑 你赢了" : "小新赢了"}</b><div>${esc(g.result.text)}</div>`
       + `<div class="go-btns" style="margin:0"><button type="button" class="primary" data-go="review">复盘这盘</button>`
       + `<button type="button" data-go="again">再来一盘</button></div>`;
   }
@@ -295,11 +371,12 @@ function goTap(ev) {
 
 async function goMove(mv) {
   const g = go.g;
-  go.hints = [];
+  go.hints = []; go.zone = [];
   try {
     go.g = await goApi(`api/go/${g.id}/move`, { move: mv });
   } catch (e) { toast(e.message); goRender(); return; }
   goSoundDiff(g, go.g);
+  goEnded(g, go.g);
   goRender();
   goWait();
 }
@@ -311,7 +388,7 @@ async function goWait() {
     try {
       go.g = await goApi(`api/go/${go.g.id}?wait=${go.g.moves.length}`);
     } catch (e) { await new Promise((r) => setTimeout(r, 1500)); continue; }
-    if (my === go.gen) goSoundDiff(before, go.g);
+    if (my === go.gen) { goSoundDiff(before, go.g); goEnded(before, go.g); }
     if (my === go.gen) goRender();
   }
 }
@@ -327,8 +404,21 @@ async function goButton(ev) {
     if (k === "pass") { go.pending = null; await goMove("pass"); return; }
     if (k === "retry") { go.g = await goApi(`api/go/${g.id}/retry`, {}); goRender(); goWait(); return; }
     if (k === "count") {
-      if (!confirm("现在就数子结束这盘吗？")) return;
-      go.g = await goApi(`api/go/${g.id}/count`, {});
+      go.counting = true; goRender();
+      const st = $("go").querySelector(".go-status");
+      st.textContent = "小新在看能不能数棋"; st.className = "go-status think";
+      let r;
+      try { r = await goApi(`api/go/${g.id}/count`, {}); } finally { go.counting = false; }
+      const { count, ...view } = r;
+      const before = go.g;
+      go.g = view;
+      goEnded(before, go.g);
+      go.zone = count.ok ? [] : count.area;
+      goRender();
+      const st2 = $("go").querySelector(".go-status");
+      st2.textContent = count.reason; st2.className = "go-status" + (count.ok ? "" : " warn");
+      if (!count.ok) goSay(count.reason);   // 念出来：孩子不认字
+      return;
     }
     if (k === "resign") {
       if (!confirm("确定认输吗？")) return;

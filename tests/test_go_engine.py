@@ -21,6 +21,8 @@ class FakeKata:
         self.fail = 0
         self.top = None          # 指定最佳点（测 pass）
         self.policy_pts = None   # 指定 humanPolicy 的点
+        self.pass_cost = 0.0     # 「只许停一手」比正常下少几目（测申请数棋）
+        self.black_wr = 0.6      # 黑方视角的胜率（测认输、胜负已定）
 
     def query(self, body, timeout=60):
         self.queries.append(body)
@@ -29,6 +31,7 @@ class FakeKata:
             raise EngineError("小新的棋盘大脑挂了")
         b = R.replay(body["moves"], [s for _, s in body.get("initialStones", [])])
         free = [p for p in ["Q16", "D4", "Q4", "D16", "K10", "C3", "R17"] if b.at(*R.to_xy(p)) == "."]
+        free = free or [R.to_gtp(x, y) for y in range(19) for x in range(19) if b.grid[y][x] == "."]   # 星位下满了
         top = self.top or free[0]
         pol = [0.0] * 362
         for p in (self.policy_pts or free[:3]):
@@ -36,7 +39,10 @@ class FakeKata:
             pol[y * 19 + x] = 1.0
         moves = body["moves"]
         black = (moves[-1][0] == "W") if moves else body.get("initialPlayer", "B") == "B"
-        wr, sc = (0.6, 2.0) if black else (0.4, -2.0)
+        wr, sc = (self.black_wr, 2.0) if black else (1 - self.black_wr, -2.0)
+        if body.get("allowMoves"):   # 只许停一手：目差少 pass_cost
+            sc -= self.pass_cost
+            top = "pass"
         return {"rootInfo": {"winrate": wr, "scoreLead": sc, "visits": body["maxVisits"]},
                 "moveInfos": [{"move": top, "order": 0, "winrate": wr, "scoreLead": sc, "visits": 10, "pv": [top, "C17"]}],
                 "ownership": [0.0] * 361, "humanPolicy": pol, "policy": pol}
@@ -198,3 +204,61 @@ def test_restart_while_thinking_heals(kata):
     assert not g["thinking"] and "断了" in g["error"]
     g = _done(go.retry(g["id"], "k1"))
     assert g["error"] == "" and len(g["moves"]) == 4 and all(g["analysis"])
+
+
+# ---------------------------------------------------------------- 申请数棋（KataGo 判，不用大模型）
+def test_count_refused_when_unfinished(kata):
+    kata.pass_cost = 9.0
+    g = _done(go.play(go.new("k1", level="3k")["id"], "k1", "C3"))
+    g, check = go.count(g["id"], "k1")
+    assert g["result"] is None and not check["ok"] and check["why"] == "unfinished"
+    assert "还不能数棋" in check["reason"] and "大约 9 目" in check["reason"] and check["area"]
+    assert any(q.get("allowMoves") for q in kata.queries)
+    assert go.get(g["id"])["count_requests"] == [{"n": 2, "ok": False, "why": "unfinished"}]
+
+
+def test_count_ok_when_finished(kata):
+    kata.pass_cost = 0.5
+    g = _done(go.play(go.new("k1", level="3k")["id"], "k1", "C3"))
+    g, check = go.count(g["id"], "k1")
+    assert check["ok"] and check["why"] == "finished" and g["result"]["by"] == "count"
+    r = g["result"]
+    assert "黑贴 3¾ 子" in r["text"] and r["text"].startswith("黑 ") and len(r["owner"]) == 361
+
+
+def test_count_ok_when_decided(kata):
+    kata.pass_cost = 9.0
+    kata.black_wr = 0.01
+    g = go.new("k1", level="3k")
+    raw = go.get(g["id"])
+    raw["moves"] = [["B" if i % 2 == 0 else "W", "pass"] for i in range(100)]
+    raw["analysis"] = [dict(raw["analysis"][0], winrate=0.01)] * 101
+    go.save(raw)
+    g, check = go.count(g["id"], "k1")
+    assert check["ok"] and check["why"] == "decided"
+
+
+def test_zi():
+    assert [go._zi(x) for x in (7.5, 0.5, 1.5, 8, 0)] == ["3¾", "¼", "¾", "4", "0"]
+
+
+def test_engine_resigns_when_hopeless(kata):
+    """孩子执黑大优：小新（白）胜率连续 10 次 < 2%、下满 60 手 → 小新认输，不再硬下。"""
+    from server.games import go_rules as R
+
+    kata.black_wr = 0.995
+    g = go.new("k1", level="10k")
+    raw = go.get(g["id"])
+    pts = [R.to_gtp(x, y) for y in range(19) for x in range(19)][:60]   # 60 个不同的空点，黑白轮流，不会提子
+    raw["moves"] = [["B" if i % 2 == 0 else "W", p] for i, p in enumerate(pts)]
+    raw["analysis"] = [dict(raw["analysis"][0], winrate=0.995)] * 61
+    go.save(raw)
+    g = _done(go.play(g["id"], "k1", "K10"))
+    assert g["result"]["by"] == "resign" and g["result"]["winner"] == "B" and g["result"].get("engine_resigned")
+    assert "小新认输" in g["result"]["text"] and g["moves"][-1] == ["B", "K10"]   # 小新没再落子
+
+
+def test_engine_does_not_resign_early(kata):
+    kata.black_wr = 0.995
+    g = _done(go.play(go.new("k1", level="10k")["id"], "k1", "K10"))
+    assert g["result"] is None and len(g["moves"]) == 2   # 才 1 手，不认输
