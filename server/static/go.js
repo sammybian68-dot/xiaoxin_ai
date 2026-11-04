@@ -81,11 +81,14 @@ function goDraw(canvas, opts) {
     c.strokeStyle = v === "B" ? "#fff" : "#000"; c.lineWidth = Math.max(2, step * 0.08);
     c.beginPath(); c.arc(pad + x * step, pad + y * step, step * 0.22, 0, 7); c.stroke();
   }
-  for (const [i, h] of (opts.hints || []).entries()) {   // 提示：半透明绿点 + 序号
+  for (const [i, h] of (opts.hints || []).entries()) {   // 提示：和棋子一样大的绿圈 + 白边 + 序号（pad 上 0.36 格太小，看不清）
     const [x, y] = goXY(h);
-    c.fillStyle = i === 0 ? "rgba(60,180,90,.85)" : "rgba(60,180,90,.55)";
-    c.beginPath(); c.arc(pad + x * step, pad + y * step, step * 0.36, 0, 7); c.fill();
-    c.fillStyle = "#fff"; c.font = `bold ${Math.round(step * 0.42)}px sans-serif`; c.fillText(String(i + 1), pad + x * step, pad + y * step + 1);
+    const cx = pad + x * step, cy = pad + y * step;
+    c.fillStyle = i === 0 ? "rgba(34,170,80,.92)" : "rgba(34,170,80,.6)";
+    c.beginPath(); c.arc(cx, cy, step * 0.46, 0, 7); c.fill();
+    c.strokeStyle = "#fff"; c.lineWidth = Math.max(2, step * 0.07);
+    c.beginPath(); c.arc(cx, cy, step * 0.46, 0, 7); c.stroke();
+    c.fillStyle = "#fff"; c.font = `bold ${Math.round(step * 0.55)}px sans-serif`; c.fillText(String(i + 1), cx, cy + 1);
   }
   for (const m of opts.marks || []) {   // 复盘：AI 建议点（绿圈）、你下的点（红圈）、变化序号
     const [x, y] = goXY(m.p);
@@ -129,7 +132,7 @@ async function goOpen(g) {
   let el = $("go");
   if (!el) {
     el = document.createElement("div");
-    el.id = "go"; el.className = "go"; el.setAttribute("role", "dialog"); el.setAttribute("aria-label", "下围棋");
+    el.id = "go"; el.className = "gogame"; el.setAttribute("role", "dialog"); el.setAttribute("aria-label", "下围棋");
     el.innerHTML = `<div class="go-board-wrap"><canvas class="go-board" aria-label="19 路棋盘，点两下落子"></canvas></div>
       <div class="go-side">
         <button type="button" class="go-close" data-go="close">收起棋盘</button>

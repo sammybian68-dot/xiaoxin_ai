@@ -1,0 +1,35 @@
+/* 查找聊天记录（像微信 / 飞书）：右侧滑出一栏，上面搜索框 + 按人 / 类型的筛选，下面结果（新的在前），点了跳到聊天里那条 */
+.hist { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); z-index: 55; background: var(--panel);
+  border-left: 1px solid var(--line); display: flex; flex-direction: column; box-shadow: -12px 0 30px rgba(0,0,0,.35); }
+.hist-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 8px; }
+.hist-head h3 { margin: 0; font-size: 17px; flex: 1; }
+.hist-head button { height: 36px; padding: 0 14px; border-radius: 18px; border: 1px solid var(--line); background: transparent; color: var(--muted); }
+.hist-q { margin: 0 14px; display: flex; gap: 8px; }
+.hist-q input { flex: 1; height: 44px; border-radius: 22px; border: 1px solid var(--line); background: var(--raised); color: var(--text);
+  padding: 0 16px; font-size: 16px; }
+.hist-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 6px; }
+.hist-chips button { height: 32px; padding: 0 12px; border-radius: 16px; border: 1px solid var(--line); background: transparent;
+  color: var(--muted); font-size: 14px; display: inline-flex; align-items: center; gap: 4px; }
+.hist-chips button.on { background: var(--me); border-color: var(--me); color: #fff; }
+.hist-chips .sep { width: 1px; background: var(--line); margin: 4px 2px; }
+.hist-count { padding: 2px 16px 6px; font-size: 13px; color: var(--muted); }
+.hist-list { flex: 1; overflow-y: auto; padding: 0 8px 16px; }
+.hist-item { display: grid; grid-template-columns: 32px 1fr; gap: 10px; width: 100%; text-align: left; padding: 10px 8px;
+  border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); }
+.hist-item:hover, .hist-item:focus-visible { background: var(--raised); }
+.hist-item .av { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; font-size: 18px; background: var(--raised); }
+.hist-item .av img { width: 32px; height: 32px; border-radius: 10px; }
+.hist-item .who { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); }
+.hist-item .txt { font-size: 15px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  word-break: break-word; }
+.hist-item mark { background: rgba(255, 210, 77, .35); color: inherit; border-radius: 3px; padding: 0 1px; }
+.hist-item .thumbs { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.hist-item .thumbs img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; }
+.hist-item .thumbs span { font-size: 13px; color: var(--muted); }
+.hist-empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+/* 跳到的那条：闪一下 */
+.msg.hist-focus .bubble { animation: hist-flash 2.2s ease; }
+@keyframes hist-flash { 0%, 40% { box-shadow: 0 0 0 3px #ffd24d; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.hist-newer { position: sticky; bottom: 8px; display: block; margin: 8px auto 0; height: 40px; padding: 0 18px; border-radius: 20px;
+  border: 0; background: var(--me); color: #fff; font-size: 15px; box-shadow: 0 6px 16px rgba(0,0,0,.35); }
+@media (max-width: 640px) { .hist { width: 100vw; } }

@@ -1,6 +1,7 @@
-/* 下围棋：全屏对局、复盘、看板（docs/board-games.md 第 4–6 节）。
+/* 根元素叫 .gogame 不叫 .go：笔顺卡片的「再看一遍」按钮是 class="go"，撞了会把它变成全屏顶栏（2026-11-04 pad 上踩过）。
+   下围棋：全屏对局、复盘、看板（docs/board-games.md 第 4–6 节）。
    木纹棋盘 + 立体棋子；pad 横屏：棋盘在左（占满高度），右边一栏信息和按钮；竖屏：棋盘在上，按钮在下。 */
-.go { position: fixed; inset: 0; z-index: 60; display: grid; background: #1b1712; color: #f3ece0;
+.gogame { position: fixed; inset: 0; z-index: 60; display: grid; background: #1b1712; color: #f3ece0;
   font-family: "PingFang SC", "Noto Sans SC", sans-serif; grid-template-columns: auto minmax(280px, 1fr); gap: 0; }
 .go-board-wrap { position: relative; display: grid; place-items: center; padding: 14px; min-width: 0; min-height: 0; }
 .go-board { display: block; touch-action: none; border-radius: 10px;
@@ -109,7 +110,7 @@
 .gos-pick { display: grid; gap: 8px; }
 
 @media (orientation: portrait), (max-width: 900px) {
-  .go, .gor { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .gogame, .gor { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .go-side, .gor-side { border-left: 0; border-top: 1px solid #3a3228; }
   .go-btns { grid-template-columns: repeat(3, 1fr); }
 }

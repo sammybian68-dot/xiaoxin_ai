@@ -19,7 +19,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Query, Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -490,6 +490,54 @@ def kid_thread(request: Request, kid: str = "", since: str = "", before: str = "
         hi = ids.index(before)
         return _page(conv, msgs, max(0, hi - n), hi)
     return _page(conv, msgs, max(0, len(msgs) - n), len(msgs))
+
+
+@app.get("/api/thread/search")
+def kid_thread_search(request: Request, kid: str = "", q: str = "", who_: str = Query("", alias="who"),
+                      kind: str = "", limit: int = 100) -> dict:
+    """查聊天记录（像微信「查找聊天记录」）：关键字 q（不分大小写，多个词空格隔开要都出现）、
+    说话人 who（成员 id、xiaoxin、空 = 全部）、kind（image 图片 / file 文件 / 空 = 全部）。
+    新的在前，最多 limit 条；每条带上下文要的 id，界面点了用 /api/thread/around 跳过去。"""
+    k = kid_for(request, kid)
+    conv = store.get(k["thread"])
+    words = [w.lower() for w in q.split() if w.strip()]
+    owner = k["id"]
+    out = []
+    for m in reversed(conv["messages"]):
+        if m["role"] == "note":
+            continue
+        frm = "xiaoxin" if m["role"] == "assistant" else (m.get("from") or owner)
+        if who_ and frm != who_:
+            continue
+        files = m.get("files") or []
+        if kind == "image" and not any(f.get("kind") == "image" for f in files):
+            continue
+        if kind == "file" and not any(f.get("kind") != "image" for f in files):
+            continue
+        text = m.get("text") or ""
+        hay = (text + " " + " ".join(f.get("name", "") for f in files)).lower()
+        if words and not all(w in hay for w in words):
+            continue
+        out.append({"id": m["id"], "created": m.get("created", 0), "from": frm, "role": m["role"], "text": text[:300],
+                    "files": [{"id": f["id"], "name": f.get("name", ""), "kind": f.get("kind", "")} for f in files][:6]})
+        if len(out) >= max(1, min(limit, 300)):
+            break
+    return {"results": out, "q": q, "who": who_, "kind": kind}
+
+
+@app.get("/api/thread/around")
+def kid_thread_around(request: Request, mid: str, kid: str = "", limit: int = THREAD_PAGE) -> dict:
+    """跳到某条消息：给它前后各 limit/2 条。has_newer：后面还有更新的（界面底下出「回到最新」，往上照常翻）。
+    不一口气给到最新：几个月前的一条，到最新可能上千条。"""
+    k = kid_for(request, kid)
+    conv = {**store.get(k["thread"]), "kid": k["id"]}
+    msgs = conv["messages"]
+    ids = [m["id"] for m in msgs]
+    if mid not in ids:
+        raise HTTPException(404, "这条消息不在了")
+    i, half = ids.index(mid), max(10, min(limit, 500)) // 2
+    hi = min(len(msgs), i + half + 1)
+    return {**_page(conv, msgs, max(0, i - half), hi), "has_newer": hi < len(msgs), "focus": mid}
 
 
 @app.get("/api/thread/files")

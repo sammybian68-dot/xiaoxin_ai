@@ -216,6 +216,8 @@ function hubFile(f) {
 function hubMessage(m, kind) {
   if (document.body.classList.contains("in-chats")) { if (kind === "msg") showChats(); return; }
   if (!state.conv) return;
+  // 搜索后跳到了老消息那一段（has_newer）：新消息不接在这段后面（中间缺了一截），等点「回到最新」重新打开
+  if (state.conv.has_newer && kind === "msg") { toast("有新消息，点「回到最新」看"); return; }
   const known = state.conv.messages.findIndex((x) => x.id === m.id);
   if (known >= 0) state.conv.messages[known] = { ...state.conv.messages[known], ...m };
   else if (kind === "msg") state.conv.messages.push(m);
@@ -354,7 +356,7 @@ async function loadOlder() {
   }
 }
 
-function renderThread() {
+function renderThread(opts = {}) {
   const conv = state.conv;
   const kid = (state.kids || []).find((k) => k.id === conv.kid);
   $("conv-title").textContent = kid && state.me?.role !== "kid" ? `${kid.name} 的群` : "我们家";
@@ -372,8 +374,29 @@ function renderThread() {
   });
   if (marks.has(off + conv.messages.length)) appendDivider(marks.get(off + conv.messages.length));  // 刚翻页、还没说话
   if (!conv.messages.some((m) => m.role !== "note")) renderEmpty();
-  scrollDown(true);
-  requestAnimationFrame(() => { state.replaying = false; scrollDown(true); });
+  if (!opts.noBottom) scrollDown(true);
+  requestAnimationFrame(() => { state.replaying = false; if (!opts.noBottom) scrollDown(true); });
+  if (!opts.noBottom) holdBottom(4000);
+}
+
+// 刚打开群：历史里的卡片（作业卡、笔顺、练习纸、棋局）是异步拉数据再插进来的，图片也是慢慢撑高，
+// 这几秒里一直把视图按在最后一条，不让 revealRow 把它拉到某张老卡的开头（2026-11-04 pad 上打开停在中间）。
+// 用户自己一碰屏幕 / 滚轮就停。
+function holdBottom(ms) {
+  const c = $("chat"), until = performance.now() + ms;
+  state.openingUntil = until;
+  let moved = false;
+  const stop = () => { moved = true; state.openingUntil = 0; };
+  c.addEventListener("touchstart", stop, { once: true, passive: true });
+  c.addEventListener("wheel", stop, { once: true, passive: true });
+  const tick = () => {
+    if (moved || performance.now() > until) return;
+    chatStick.on = true;
+    if (c.scrollHeight - c.scrollTop - c.clientHeight > 2) chatToBottom(false);
+    $("chat-latest").hidden = true;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 // 分界线：上面的小新已经不整段记着了（原文都在，压缩是写成摘要带过来，新篇章是重新开始）
@@ -806,6 +829,7 @@ function scrollDown(force) {
 function revealRow(row) {
   const c = $("chat");
   if (!row || !c.contains(row) || state.replaying) return;  // 打开时回放历史：不追着老卡跑，停在最新
+  if (performance.now() < (state.openingUntil || 0)) return;  // 刚打开那几秒：holdBottom 按着底，老卡别来抢
   const cr = c.getBoundingClientRect(), rr = row.getBoundingClientRect();
   if (rr.height <= c.clientHeight - 16) { scrollDown(); return; }
   if (!chatStick.on) return;
