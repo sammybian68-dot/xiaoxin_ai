@@ -1,0 +1,115 @@
+/* 下围棋：全屏对局、复盘、看板（docs/board-games.md 第 4–6 节）。
+   木纹棋盘 + 立体棋子；pad 横屏：棋盘在左（占满高度），右边一栏信息和按钮；竖屏：棋盘在上，按钮在下。 */
+.go { position: fixed; inset: 0; z-index: 60; display: grid; background: #1b1712; color: #f3ece0;
+  font-family: "PingFang SC", "Noto Sans SC", sans-serif; grid-template-columns: auto minmax(280px, 1fr); gap: 0; }
+.go-board-wrap { position: relative; display: grid; place-items: center; padding: 14px; min-width: 0; min-height: 0; }
+.go-board { display: block; touch-action: none; border-radius: 10px;
+  box-shadow: 0 18px 40px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.4); }
+.go-side { display: flex; flex-direction: column; gap: 14px; padding: 18px 20px; overflow-y: auto; background: #241f19;
+  border-left: 1px solid #3a3228; }
+.go-close { align-self: flex-end; height: 40px; padding: 0 16px; border-radius: 20px; border: 1px solid #4a4034;
+  background: transparent; color: #cbbfae; font-size: 15px; }
+
+.go-players { display: grid; gap: 8px; }
+.go-player { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: #2e271f;
+  border: 2px solid transparent; }
+.go-player.turn { border-color: #e9b85c; background: #3a3024; }
+.go-stone-ico { width: 30px; height: 30px; border-radius: 50%; flex: none; }
+.go-stone-ico.B { background: radial-gradient(circle at 35% 30%, #666 0, #111 55%, #000 100%); }
+.go-stone-ico.W { background: radial-gradient(circle at 35% 30%, #fff 0, #ececec 45%, #b9b5ad 100%); }
+.go-player b { font-size: 17px; }
+.go-player small { display: block; color: #a99c8a; font-size: 13px; }
+.go-player .cap { margin-left: auto; color: #cbbfae; font-size: 14px; font-variant-numeric: tabular-nums; }
+
+.go-status { min-height: 26px; font-size: 18px; color: #f3ece0; }
+.go-status.think::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: go-dots 1.2s steps(4) infinite; }
+@keyframes go-dots { 0% { content: ""; } 25% { content: "·"; } 50% { content: "··"; } 75% { content: "···"; } }
+.go-status.err { color: #ff8f7a; }
+.go-status.warn { color: #ffcf6e; }
+
+/* 胜率条：黑在左白在右，中间那条线是 50% */
+.go-winbar { display: grid; gap: 4px; }
+.go-winbar .bar { position: relative; height: 18px; border-radius: 9px; overflow: hidden; background: #e9e4da; }
+.go-winbar .bar i { position: absolute; inset: 0 auto 0 0; background: #121212; transition: width .5s ease; }
+.go-winbar .bar::after { content: ""; position: absolute; left: 50%; top: 2px; bottom: 2px; width: 2px; background: #e9b85c; opacity: .9; }
+.go-winbar .lab { display: flex; justify-content: space-between; font-size: 13px; color: #cbbfae; font-variant-numeric: tabular-nums; }
+
+.go-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: auto; }
+.go-btns button { height: 58px; border-radius: 16px; border: 0; background: #3a3127; color: #f3ece0; font-size: 18px; font-weight: 600; }
+.go-btns button.primary { background: #e9b85c; color: #2a2015; }
+.go-btns button.danger { background: #5a2b25; color: #ffd8cf; }
+.go-btns button:disabled { opacity: .4; }
+.go-btns .wide { grid-column: 1 / -1; }
+
+/* 结束 */
+.go-result { padding: 16px; border-radius: 16px; background: #3a3024; text-align: center; display: grid; gap: 10px; }
+.go-result b { font-size: 26px; color: #ffd98a; }
+
+/* ---------------- 开局卡片（聊天里） */
+.go-card { display: grid; gap: 12px; padding: 14px; border-radius: 16px; background: linear-gradient(135deg, #3b3125, #2a241d);
+  border: 1px solid #4d4232; color: #f3ece0; max-width: 420px; }
+.go-card h4 { margin: 0; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+.go-card label { display: grid; gap: 4px; font-size: 13px; color: #cbbfae; }
+.go-card select { height: 42px; border-radius: 12px; border: 1px solid #5a4d3b; background: #1f1a15; color: #f3ece0; padding: 0 10px; font-size: 16px; }
+.go-card .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.go-card .seg { display: flex; border-radius: 12px; overflow: hidden; border: 1px solid #5a4d3b; }
+.go-card .seg button { flex: 1; height: 42px; border: 0; background: #1f1a15; color: #cbbfae; font-size: 15px; }
+.go-card .seg button.on { background: #e9b85c; color: #2a2015; font-weight: 600; }
+.go-card .go-start { height: 48px; border-radius: 14px; border: 0; background: #e9b85c; color: #2a2015; font-size: 17px; font-weight: 700; }
+.go-card .go-resume { height: 44px; border-radius: 14px; border: 1px solid #e9b85c; background: transparent; color: #ffd98a; font-size: 15px; }
+.go-card small { color: #a99c8a; }
+
+/* ---------------- 复盘 */
+.gor { position: fixed; inset: 0; z-index: 61; background: #1b1712; color: #f3ece0; display: grid;
+  grid-template-columns: auto minmax(320px, 1fr); font-family: "PingFang SC", "Noto Sans SC", sans-serif; }
+.gor-side { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; overflow-y: auto; background: #241f19; border-left: 1px solid #3a3228; }
+.gor-head { display: flex; align-items: center; gap: 10px; }
+.gor-head h3 { margin: 0; font-size: 18px; flex: 1; }
+.gor-sum { font-size: 16px; color: #ffd98a; }
+.gor-chart { width: 100%; height: 150px; display: block; background: #2a241d; border-radius: 12px; touch-action: none; cursor: pointer; }
+.gor-nav { display: grid; grid-template-columns: repeat(4, 1fr) auto; gap: 8px; align-items: center; }
+.gor-nav button { height: 46px; border-radius: 12px; border: 0; background: #3a3127; color: #f3ece0; font-size: 18px; }
+.gor-nav span { font-size: 15px; color: #cbbfae; min-width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
+.gor-keys { display: flex; flex-wrap: wrap; gap: 8px; }
+.gor-keys button { height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid #6b3b31; background: #3a2520; color: #ffcfc4; font-size: 14px; }
+.gor-keys button.mid { border-color: #6a5a32; background: #352e1e; color: #ffe2a6; }
+.gor-keys button.on { background: #e9b85c; color: #2a2015; border-color: #e9b85c; }
+.gor-move { padding: 14px; border-radius: 14px; background: #2e271f; display: grid; gap: 8px; }
+.gor-move .line { font-size: 16px; }
+.gor-move .nums { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 15px; color: #cbbfae; font-variant-numeric: tabular-nums; }
+.gor-move .nums b { color: #f3ece0; }
+.gor-move .drop { color: #ff8f7a; font-weight: 700; }
+.gor-text { font-size: 17px; line-height: 1.75; color: #f8f1e4; }
+.gor-text.loading { color: #a99c8a; }
+.gor-move .src { font-size: 12px; color: #857868; }
+.gor-pv { display: flex; gap: 8px; flex-wrap: wrap; }
+.gor-pv button { height: 42px; padding: 0 16px; border-radius: 21px; border: 0; background: #3c5b3a; color: #e4f6df; font-size: 15px; }
+.gor-pv button.on { background: #7cc36f; color: #10230d; font-weight: 600; }
+.gor-legend { display: flex; gap: 14px; font-size: 13px; color: #a99c8a; flex-wrap: wrap; }
+.gor-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; margin-right: 4px; }
+
+/* ---------------- 看板（聊天里的一张卡） */
+.gos { display: grid; gap: 12px; padding: 14px; border-radius: 16px; background: #231f1a; border: 1px solid #3c342a; color: #f3ece0; max-width: 560px; }
+.gos-top { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.gos-top div { padding: 10px; border-radius: 12px; background: #2e271f; text-align: center; }
+.gos-top b { display: block; font-size: 26px; font-variant-numeric: tabular-nums; }
+.gos-top small { color: #a99c8a; }
+.gos h5 { margin: 4px 0 0; font-size: 14px; color: #cbbfae; font-weight: 600; }
+.gos-lv { display: grid; gap: 6px; }
+.gos-lv .r { display: grid; grid-template-columns: 70px 1fr 64px; gap: 8px; align-items: center; font-size: 14px; }
+.gos-lv .bar { height: 12px; border-radius: 6px; background: #4a2c27; overflow: hidden; }
+.gos-lv .bar i { display: block; height: 100%; background: #7cc36f; }
+.gos-trend { width: 100%; height: 90px; display: block; }
+.gos-list { display: grid; gap: 6px; }
+.gos-list button { display: grid; grid-template-columns: 74px 1fr auto; gap: 8px; align-items: center; text-align: left; padding: 9px 12px;
+  border-radius: 12px; border: 0; background: #2e271f; color: #f3ece0; font-size: 14px; }
+.gos-list button small { color: #a99c8a; }
+.gos-list .w { color: #9fdc93; font-weight: 600; }
+.gos-list .l { color: #ff9c8a; font-weight: 600; }
+.gos-pick { display: grid; gap: 8px; }
+
+@media (orientation: portrait), (max-width: 900px) {
+  .go, .gor { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .go-side, .gor-side { border-left: 0; border-top: 1px solid #3a3228; }
+  .go-btns { grid-template-columns: repeat(3, 1fr); }
+}

@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="static/alarmcard.css">
 <link rel="stylesheet" href="static/english.css">
 <link rel="stylesheet" href="static/practice.css">
+<link rel="stylesheet" href="static/go.css">
 <link rel="stylesheet" href="static/homework.css">
 </head>
 <body>
@@ -247,6 +248,7 @@
       <button type="button" role="tab" data-pane="general">对话</button>
       <button type="button" role="tab" data-pane="model">模型</button>
       <button type="button" role="tab" data-pane="homework">作业</button>
+      <button type="button" role="tab" data-pane="games">下棋</button>
       <button type="button" role="tab" data-pane="talk">语音对话</button>
       <button type="button" role="tab" data-pane="wake">唤醒</button>
       <button type="button" role="tab" data-pane="voice">音色</button>
@@ -305,6 +307,26 @@
       </div>
       <h4>最近几轮</h4>
       <div id="hw-runs" class="hw-runs"></div>
+    </section>
+
+    <section class="pane" role="tabpanel" data-pane="games" hidden>
+      <h3>下棋</h3>
+      <p class="voice-tip">对小新说「陪我下围棋」「看看我最近围棋胜率」「复盘一下昨天那盘」。棋力由 KataGo 算（gpu2 上常驻），
+        段级档模仿那个水平的真人下法；最高两档「中国冠军」「世界冠军」比职业九段还强。</p>
+      <div class="row rd"><label><b>棋种</b><small>以后在这里加中国象棋、国际象棋、跳棋</small></label><div id="games-tabs" class="hw-chips"></div></div>
+      <h4>围棋（19 路，中国规则）</h4>
+      <div class="row"><label><b>棋盘大脑</b><small id="go-engine">读取中…</small></label></div>
+      <div class="row"><label for="go-level"><b>默认档位</b><small>每盘开始前也能改。比孩子现在的水平高一两级最练人</small></label>
+        <select id="go-level" class="wake-input"></select></div>
+      <div class="row"><label for="go-color"><b>孩子默认执</b></label>
+        <select id="go-color" class="wake-input"><option value="B">黑（先下）</option><option value="W">白</option></select></div>
+      <div class="row"><label for="go-handicap"><b>默认让子</b><small>让子棋黑先摆好星位，白先下，贴 0.5 目</small></label>
+        <select id="go-handicap" class="wake-input"><option value="0">不让</option><option value="2">2 子</option><option value="3">3 子</option><option value="4">4 子</option><option value="5">5 子</option><option value="6">6 子</option><option value="7">7 子</option><option value="8">8 子</option><option value="9">9 子</option></select></div>
+      <div class="row"><label for="go-komi"><b>贴目</b><small>中国规则 7.5</small></label><input id="go-komi" type="number" step="0.5" min="-10" max="20" class="wake-input num"></div>
+      <div class="row"><label for="go-undo"><b>允许悔棋</b><small>正式练习时可以关掉</small></label><input id="go-undo" type="checkbox" class="switch"></div>
+      <div class="row"><label for="go-hint"><b>允许提示</b><small>标出 AI 推荐的 3 个点</small></label><input id="go-hint" type="checkbox" class="switch"></div>
+      <div class="row"><label for="go-winbar"><b>下棋时显示胜率条</b><small>关掉就看不到形势，像真对局</small></label><input id="go-winbar" type="checkbox" class="switch"></div>
+      <div class="row"><label for="go-warn"><b>下坏了提醒一句</b><small>一手亏了很多时提示「要不要悔一步再想想」</small></label><input id="go-warn" type="checkbox" class="switch"></div>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="general" hidden>
@@ -482,6 +504,7 @@
 <script src="static/english.js"></script>
 <script src="static/practice.js"></script>
 <script src="static/homework.js"></script>
+<script src="static/go.js"></script>
 <script src="static/timecard.js"></script>
 <script src="static/alarmcard.js"></script>
 </body>

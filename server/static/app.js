@@ -566,6 +566,8 @@ async function worksheetCard(row, wid) {
 }
 
 function showAction(row, a) {
+  // 下棋（go.js）：开局卡片、看板、复盘
+  if (["play_go", "go_stats", "go_review"].includes(a.name) && typeof goAction === "function" && goAction(row, a)) return;
   if (a.name === "make_exercise" || a.name === "make_worksheet") {
     const wid = /w_([0-9a-f]{16})/.exec(a.result || "")?.[1];
     if (wid) { worksheetCard(row, wid); return; }
@@ -953,7 +955,7 @@ async function send(text, via = "text") {
           reasoning += data.length;
           if (!reply) textEl.innerHTML = `<span class="thinking">小新在想…（${reasoning} 字）</span>`;
         } else if (ev === "tool") {
-          showAction(row, data);
+          showAction(row, { ...data, live: true });   // live：刚调的（复盘直接打开），翻历史时不带
         } else if (ev === "search") {
           if (data.state === "start") {
             if (!reply) textEl.innerHTML = `<span class="thinking">🔎 正在搜：${esc(data.queries.join("、"))}…</span>`;
@@ -1646,7 +1648,7 @@ function onTalkEvent(ev) {
       talkStatus("想一想…");
       scrollDown(true);
       break;
-    case "tool": if (talk.row) showAction(talk.row, ev); break;
+    case "tool": if (talk.row) showAction(talk.row, { ...ev, live: true }); break;
     case "search":
       if (!talk.row) break;
       if (ev.state === "start") {
@@ -1734,6 +1736,7 @@ function showPane(name) {
   if (name === "members") loadMembers();
   if (name === "model") renderModels();
   if (name === "homework") loadHomeworkSettings();
+  if (name === "games" && typeof loadGamesSettings === "function") loadGamesSettings();
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
     loadEngines();

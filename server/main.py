@@ -67,7 +67,15 @@ def _startup() -> None:
         from server import holidays, hw_schedule
         holidays.start_refresher()
         hw_schedule.start()  # 抓作业的定时器（每天到点让 pad 去 QQ 群抓，docs/qq-homework.md）
+        import threading
+
+        from server.games.katago import engine
+        # 下棋：KataGo 常驻（显存 ~2 GB），启动时在后台拉起，孩子第一步不用等模型加载（docs/board-games.md）
+        threading.Thread(target=engine.warm, daemon=True, name="katago-warm").start()
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+from server.games.api import router as games_router  # noqa: E402  下棋：/api/go/*、/api/games/*
+
+app.include_router(games_router)
 
 
 # ---------------------------------------------------------------- 登录
