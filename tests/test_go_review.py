@@ -196,3 +196,44 @@ def test_missed_capture_fact():
     for q in ("M10", "M11"):
         x, y = R.to_xy(q); b.grid[y][x] = "W"; before[y * 19 + x], after[y * 19 + x] = 0.8, -0.9
     assert V._group_facts(b, after, "B", before) == ["小新中腹一共 5 颗子（K12 一带），这手之前 AI 判断你能吃掉，这手之后活了"]
+
+
+def test_flip_beats_late_point_loss():
+    """胜率 57% → 2% 的翻盘手，要排在「已经输定以后又亏 17 目」前面（实战里前者曾经没挑上）。"""
+    moves, ana = [], [_a(.5, 0)]
+    for i in range(1, 31):
+        moves.append(["B" if i % 2 else "W", "pass"])
+        ana.append(_a(.5, 0))
+    ana[18], ana[19] = _a(.57, 1), _a(.02, -8)   # 孩子（黑）第 19 手：57% → 2%
+    for i in range(20, 31):
+        ana[i] = _a(.01, -8 - (i - 19) * 3)
+    for k in (21, 23, 25, 27, 29):          # 输定以后每手亏 ≥ 8 目
+        ana[k] = _a(.005, ana[k - 1]["score"] - 17)
+    g = _game(moves, ana)
+    keys = [k["n"] for k in V.key_moves(g)]
+    assert 19 in keys and keys.index(19) == 0
+
+
+def test_best_connects_two_blocks():
+    b = R.Board()
+    for q in ("C11", "C13"):
+        x, y = R.to_xy(q); b.grid[y][x] = "B"
+    out = V._best_saves(b, "C12", "B")
+    assert out[0] == "AI 建议的 C12（绿圈）能把你左边的C11和C13连成一块"
+
+
+def test_taken_point_and_weak_groups():
+    """孩子（黑）第 1 手没下 C12，小新第 2 手就下在 C12，之后黑 C11、C13 归属从 0.98 掉到 0.1。"""
+    moves = [["B", "Q16"], ["W", "C12"], ["B", "D4"]]
+    own0 = [0.0] * 361
+    own2 = [0.0] * 361
+    for q in ("C11", "C13"):
+        x, y = R.to_xy(q); own0[y * 19 + x] = 0.98; own2[y * 19 + x] = 0.1
+    g = {"id": "g", "kid_color": "B", "moves": moves, "stones": [], "result": None,
+         "analysis": [_a(.5, 0, own=own0), _a(.5, 0, own=own0), _a(.2, -6, own=own2), _a(.2, -6, own=own2)]}
+    # 构造盘面：C11、C13 黑子放进初始子
+    g["stones"] = ["C11", "C13"]
+    out = V._taken(g, 1, "C12", "B")
+    assert out[0] == "绿圈 C12 这个点双方都想要：你没下，小新紧接着就下在了这里"
+    assert out[1] == "小新下了 C12 以后，你左边的C11、C13变得很弱，可能被吃"
+    assert V._taken(g, 1, "D16", "B") == []   # 小新没下在那：不说

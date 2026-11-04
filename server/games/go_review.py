@@ -18,7 +18,7 @@ log = logging.getLogger("xiaoxin.go_review")
 BIG = (0.20, 8.0)     # 胜率掉 ≥ 20% 或目差掉 ≥ 8 目：大失误
 MID = (0.10, 4.0)     # ≥ 10% 或 ≥ 4 目：失误
 DECIDED = 0.05        # 孩子胜率 < 5% 或 > 95%：胜负已定，只看目差
-MAX_KEY = 5
+MAX_KEY = 8          # 一盘最多讲几手：胜率大跌的优先占满，剩下的给「已定以后亏目多的」
 DEAD, DANGER = 0.75, 0.4   # 一块棋的子平均归对方 ≥ 0.75「很可能被吃」，≥ 0.4「危险」
 AREA_MIN = 3.0        # 一个区域（角 / 边 / 中腹）归属合计变了 ≥ 3 个点才说
 LOCAL_R = 2           # 「这手本身起没起作用」看落点周围 5×5
@@ -54,11 +54,20 @@ def losses(g: dict) -> list[dict]:
     return out
 
 
+def _weight(x: dict) -> float:
+    """这手对胜负影响多大，用来挑关键步。胜率掉了多少最要紧（57% → 2% 就是这盘输掉的那一手）；
+    胜负已定以后胜率不动、只看目差，按 40 目 ≈ 胜率掉满来折算，排在真正翻盘的那几手后面。
+    原来两类混排：已定后亏 17 目（17/20 = 0.85）排在 57% → 2%（0.55）前面，翻盘那手反而没挑上（2026-11-04 实战）。"""
+    return x["loss_score"] / 40 if x["decided"] else x["loss_wr"] + x["loss_score"] / 200
+
+
 def key_moves(g: dict) -> list[dict]:
     bad = [x for x in losses(g) if x["grade"]]
-    # 胜负已定时胜率不动，按目差排；其他按胜率排（同样 20%，早一点的影响大，不细分）
-    bad.sort(key=lambda x: (-(x["loss_score"] / 20 if x["decided"] else x["loss_wr"]), x["n"]))
-    return sorted(bad[:MAX_KEY], key=lambda x: x["n"])
+    flips = [x for x in bad if not x["decided"] and x["loss_wr"] >= BIG[0]]   # 胜率大跌的：一个都不能漏
+    rest = sorted((x for x in bad if x not in flips), key=lambda x: (-_weight(x), x["n"]))
+    flips.sort(key=lambda x: (-_weight(x), x["n"]))
+    pick = flips[:MAX_KEY] + rest[:max(0, MAX_KEY - len(flips))]
+    return sorted(pick, key=lambda x: x["n"])
 
 
 # ------------------------------------------------------------ 事实（全是代码算的）
@@ -193,6 +202,15 @@ def _best_saves(board: R.Board, best: str, me: str) -> list[str]:
     给自己只剩 1–2 口气的块长气（「救」）、把对方的块紧到 1 口气（「叫吃」）或直接提掉。"""
     x, y = R.to_xy(best)
     out, seen = [], set()
+    blocks, seen_mine = [], set()   # 绿圈四周孩子自己的几块棋（按块去重）：两块以上 = 下在这里能连起来
+    for n in R.neighbors(x, y):
+        if board.at(*n) == me and n not in seen_mine:
+            st = board.group(*n)[0]
+            seen_mine |= st
+            blocks.append(st)
+    if len(blocks) >= 2:
+        names = "和".join(_stones_str(st) for st in blocks[:3])
+        out.append(f"AI 建议的 {best}（绿圈）能把你{_where(set().union(*blocks))}的{names}连成一块")
     for n in R.neighbors(x, y):
         v = board.at(*n)
         if v == "." or n in seen:
@@ -218,6 +236,33 @@ def _best_saves(board: R.Board, best: str, me: str) -> list[str]:
                 out.append(f"AI 建议的 {best} 能直接提掉小新的{_stones_str(stones)}")
             elif len(after.group(*n)[1]) == 1 and len(stones) >= 2:
                 out.append(f"AI 建议的 {best} 能把小新的{_stones_str(stones)}紧到只剩 1 口气（叫吃）")
+    return out
+
+
+def _taken(g: dict, n: int, best: str, me: str) -> list[str]:
+    """AI 建议的点，小新紧接着（第 n+1 手）就下在了那里：说明这是双方都要的点。
+    再看小新下完以后，绿圈旁边孩子的哪几块棋归属掉了（≥ 0.5）：「你的 C11、C13 变弱了」。都是实际发生的，不是预测。"""
+    if n >= len(g["moves"]) or g["moves"][n][1].upper() != best.upper() or n + 1 >= len(g["analysis"]) or not g["analysis"][n + 1]:
+        return []
+    out = [f"绿圈 {best} 这个点双方都想要：你没下，小新紧接着就下在了这里"]
+    o0, o2 = g["analysis"][n - 1].get("ownership") or [], g["analysis"][n + 1].get("ownership") or []
+    if len(o0) != R.N * R.N or len(o2) != R.N * R.N:
+        return out
+    board = R.replay(g["moves"][: n + 1], g.get("stones"))
+    s = 1 if me == "B" else -1
+    x, y = R.to_xy(best)
+    weak, seen = [], set()
+    for nb in [q for p in R.neighbors(x, y) for q in [p, *R.neighbors(*p)]]:   # 绿圈两步以内
+        if board.at(*nb) != me or nb in seen:
+            continue
+        st = board.group(*nb)[0]
+        seen |= st
+        was = sum(o0[j * R.N + i] * s for i, j in st) / len(st)
+        now = sum(o2[j * R.N + i] * s for i, j in st) / len(st)
+        if was - now >= 0.5:
+            weak.append(st)
+    if weak:
+        out.append(f"小新下了 {best} 以后，你{_where(set().union(*weak))}的" + "、".join(_stones_str(st) for st in weak[:3]) + "变得很弱，可能被吃")
     return out
 
 
@@ -261,6 +306,7 @@ def facts(g: dict, n: int) -> dict:
             lines.append(f"你这手{where}在它周围几乎没起作用，等于白白少下了一手。")
     if best and best["move"].upper() != mv.upper() and best["move"].lower() != "pass":
         lines += _best_saves(before, best["move"], me)
+        lines += _taken(g, n, best["move"], me)
     lines += [f"你下完以后：{x}" for x in _group_facts(after, o1, me, o0)]
     lines += [f"和这手之前比：{x}" for x in _territory(o0, o1, me)]
     return {"n": n, "move": mv, "best": best["move"] if best else "", "lines": lines,
@@ -281,7 +327,7 @@ PROMPT = """你是陪孩子下围棋的小新（讲解里说「我」就是小�
 请像老师当面跟小朋友说话那样讲这一手，2 到 3 句短句：
 1. 先用一句话说这手亏了：胜率、目差这些数最多挑一个说，说成孩子听得懂的话也行（比如「本来还有机会赢，这一下就很难赢了」）。
 2. 重点讲这手的问题：从事实里挑最要紧的一两条（比如「几乎没起作用」「哪块棋只剩几口气」「哪块棋变危险了」「AI 建议的点是给哪块棋长气」）。
-   有「你能吃掉 / 它活了」这类关于整块棋的事实，优先讲它；「哪里的地少了几个点」最多提一个。
+   有「你能吃掉 / 它活了」「双方都想要」「连成一块」「变得很弱」这类关于整块棋的事实，优先讲它；「哪里的地少了几个点」最多提一个。
 3. 最后说 AI 建议下在绿圈那里、为什么（只用事实里写了的理由；没写理由就只说「AI 建议下在绿圈那里」）。
 要求：
 - 孩子的这手说「红圈这一手」，AI 建议的点说「绿圈那里」，不要念它们的坐标；别的坐标也尽量少说，要说就说位置（「右上角」「左边」）。
@@ -290,6 +336,7 @@ PROMPT = """你是陪孩子下围棋的小新（讲解里说「我」就是小�
 - 每一条事实是单独的，不许把两条事实连成因果（比如「小新下了 X，所以你的地少了」），也不许猜孩子的想法（「你是为了……」）。
 - 「AI 认为……」「AI 建议……」是 AI 的看法，不是棋局里发生了的事，不要说成发生了；小新实际下在哪不用提。
 - 事实里说某块棋「只剩几口气」「很危险」，只说它现在的样子，不要说成是这一手造成的。
+- 「小新下了 X 以后……变得很弱」说的是小新占了那个点之后，要把「小新下了绿圈那里以后」这层意思说出来，不能说成「现在」。
 - 孩子看不到上面这份清单，不要说「事实里」「材料里」。
 - 句子要短，词要简单，不用「厚薄」「味道」「本手」这类术语，不要开场白，不要 markdown。"""
 # 讲解里不该出现的说法：提到「事实」本身（孩子不知道有一份事实清单）、
