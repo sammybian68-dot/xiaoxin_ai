@@ -103,3 +103,13 @@
 .ensb-weak { display: flex; flex-wrap: wrap; gap: 6px; }
 .ensb-weak span { display: inline-flex; align-items: center; gap: 6px; background: #2e271f; border-radius: 12px; padding: 4px 6px 4px 10px; }
 .ensb-weak small { color: #ff9c8a; } .ensb-weak button { border: 0; background: #3a3127; border-radius: 10px; width: 30px; height: 28px; cursor: pointer; }
+
+/* 单词卡：盖在场景上面 */
+.ens-wordcard { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: rgba(30, 20, 10, .5);
+  font-family: "PingFang SC", "Noto Sans SC", sans-serif; color: #2b2420; --ens-red: #e0452b; --ens-soft: #8a7d72; }
+.ens-wc { position: relative; background: #fffaf2; border-radius: 28px; padding: 26px 26px 18px; width: min(560px, 92vw); display: grid; gap: 16px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .4); text-align: center; }
+.ens-wc .big { font: 700 64px/1.1 "Fredoka", "Noto Sans SC", sans-serif; color: var(--ens-red); }
+.ens-wc .x { position: absolute; right: 12px; top: 10px; width: 40px; height: 40px; border-radius: 20px; border: 0; background: #f1e6cf; font-size: 22px; }
+.ens-wc .tip { color: var(--ens-soft); font-size: 12px; }
+.ens-bubble .w[data-ww] { cursor: pointer; }

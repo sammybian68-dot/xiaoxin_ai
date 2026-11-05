@@ -116,7 +116,7 @@ async function ensSpeak(i, slow = false) {
   const l = ens.L.lines[i], b = $("ens-bubble"), my = ens.gen;
   const k = ens.L.roles.findIndex((r) => r.id === l.role);
   b.className = "ens-bubble at" + k;
-  b.innerHTML = ensWords(l.en).map((w) => `<span class="w">${esc(w)}</span>`).join(" ") + (ens.zh ? `<span class="zh">${esc(l.zh)}</span>` : "");
+  b.innerHTML = ensWords(l.en).map((w) => `<span class="w" data-ww="${esc(ensKey(w))}">${esc(w)}</span>`).join(" ") + (ens.zh ? `<span class="zh">${esc(l.zh)}</span>` : "");
   requestAnimationFrame(() => b.classList.add("show"));
   ensActors(l.role);
   const ws = [...b.querySelectorAll(".w")], dur = ((slow ? l.slow_s : l.dur_s) || 2.5) * 1000;
@@ -147,7 +147,7 @@ function ensRenderTurn(l, r) {
     const key = ensKey(w), s = scored.find((x, j) => j >= k && x.w === key);
     if (s) k = scored.indexOf(s) + 1;
     const v = s?.s, cls = !s ? "" : s.e === "漏读" || v < 60 ? "bad" : v < 80 ? "ok" : "good";
-    return `<button type="button" class="w ${cls}" data-e="word" data-w="${esc(key)}" title="点一下听这个词">${esc(w)}${s ? `<small>${s.e || Math.round(v)}</small>` : ""}</button>`;
+    return `<button type="button" class="w ${cls}" data-e="word" data-w="${esc(key)}" title="点一下单练这个词">${esc(w)}${s ? `<small>${s.e || Math.round(v)}</small>` : ""}</button>`;
   }).join(" ");
   const meRole = ens.L.roles.find((x) => x.id === ens.me);
   t.innerHTML = `<div class="say"><b>轮到你啦</b>你是 ${esc(meRole?.name || "")}，读这句：</div>
@@ -210,6 +210,8 @@ async function ensDemo() {
 }
 
 async function ensClick(e) {
+  const ww = e.target.closest("[data-ww]");
+  if (ww && ww.dataset.ww) { ensWordCard(ww.dataset.ww); return; }   // 气泡里对方说的词：点了也能单练
   const b = e.target.closest("[data-e],[data-pick],[data-again]");
   if (!b) return;
   if (b.dataset.pick) { ensStart(b.dataset.pick); return; }
@@ -220,7 +222,7 @@ async function ensClick(e) {
   if (k === "zh") { ens.zh = !ens.zh; b.setAttribute("aria-pressed", String(ens.zh)); return; }
   if (k === "listen") { ensDemoGenStop(); await ensSpeak(ens.i); $("ens-bubble").classList.remove("show"); }
   if (k === "demo") ensDemo();
-  if (k === "word") { ensDemoGenStop(); ensPlay(`api/english/word/${encodeURIComponent(b.dataset.w)}.mp3`); }
+  if (k === "word") { ensDemoGenStop(); ensWordCard(b.dataset.w); }
   if (k === "mine" && ens.lastN) ensPlay(ensUrl(`api/english/session/${ens.s.id}/audio/${ens.i}/${ens.lastN}.wav`));
   if (k === "next") { ens.last = null; ens.lastN = 0; $("ens-turn").classList.remove("show"); ens.next?.(); }
 }
@@ -326,6 +328,85 @@ function ensMessage(row, m) {
 }
 
 setTimeout(ensResumeBtn, 1800);
+// ---------------------------------------------------------------- 单词卡：一个词读不好，单独反复练
+// 点任何一个英文词（口语面板里、看板「总是读不准的词」里）弹出：🔊 听（正常）/ 🐢 慢慢听 / 🔁 连听三遍（正常-慢-正常）/
+// 🎤 按住跟读（讯飞按单词打分）/ ▶ 听我读的。关掉卡片回到原来的地方，不影响口语练习的进度
+const ensW = { word: "", gen: 0, blob: null, rec: null };
+function ensWordCard(word) {
+  ensW.word = word; ensW.blob = null; ensW.gen++;
+  let el = $("ens-word");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "ens-word"; el.className = "ens-wordcard"; el.setAttribute("role", "dialog"); el.setAttribute("aria-label", "练一个单词");
+    document.body.appendChild(el);
+    el.addEventListener("click", ensWordClick);
+  }
+  el.hidden = false;
+  ensWordRender();
+  ensWordPlay(0);
+}
+function ensWordRender(r) {
+  const el = $("ens-word");
+  el.innerHTML = `<div class="ens-wc"><button type="button" class="x" data-w="close" aria-label="关掉">×</button>
+    <div class="big">${esc(ensW.word)}</div>
+    <div class="ens-row" style="justify-content:center">
+      <button type="button" class="ens-btn" data-w="play">🔊 听</button>
+      <button type="button" class="ens-btn" data-w="slow">🐢 慢慢听</button>
+      <button type="button" class="ens-btn" data-w="loop">🔁 连听三遍</button>
+    </div>
+    <div class="ens-row" style="justify-content:center">
+      <button type="button" class="ens-mic" data-w="mic">🎤 按住跟读</button>
+      ${ensW.blob ? '<button type="button" class="ens-btn" data-w="mine">▶ 听我读的</button>' : ""}
+    </div>
+    ${r ? `<div class="ens-score" style="justify-content:center"><span class="ens-stars">${"⭐".repeat(r.stars)}${"☆".repeat(3 - r.stars)}</span><span class="msg">${esc(r.msg)}</span></div>` : ""}
+    <small class="tip">读成别的词能听出来；口音上细小的差别以「听标准音、跟着读」为主</small></div>`;
+  const mic = el.querySelector("[data-w=mic]");
+  mic.addEventListener("pointerdown", (e) => { e.preventDefault(); ensWordRec(mic); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) mic.addEventListener(ev, () => ensWordStop(mic));
+}
+const ensWordUrl = (slow) => `api/english/word/${encodeURIComponent(ensW.word)}.mp3${slow ? "?slow=1" : ""}`;
+async function ensWordPlay(mode) {
+  const my = ++ensW.gen;
+  const seq = mode === "loop" ? [0, 1, 0] : [mode === "slow" ? 1 : 0];
+  for (const slow of seq) {
+    if (my !== ensW.gen) return;
+    await ensPlay(ensWordUrl(slow));
+    await ensSleep(700);
+  }
+}
+function ensWordClick(e) {
+  const k = e.target.closest("[data-w]")?.dataset.w;
+  if (!k) { if (e.target.id === "ens-word") $("ens-word").hidden = true; return; }
+  if (k === "close") { ensW.gen++; ens.audio?.pause(); $("ens-word").hidden = true; }
+  if (k === "play") ensWordPlay(0);
+  if (k === "slow") ensWordPlay("slow");
+  if (k === "loop") ensWordPlay("loop");
+  if (k === "mine" && ensW.blob) ensPlay(URL.createObjectURL(ensW.blob));
+}
+async function ensWordRec(btn) {
+  if (ensW.rec) return;
+  ensW.gen++; ens.audio?.pause();
+  ensW.rec = new Recorder(() => {});
+  ensW.at = performance.now();
+  btn.classList.add("rec"); btn.textContent = "🎙 在听…松手结束";
+  try { await ensW.rec.start(); } catch (e) { ensW.rec = null; btn.classList.remove("rec"); btn.textContent = "🎤 按住跟读"; toast("没拿到麦克风：" + e.message); }
+}
+async function ensWordStop(btn) {
+  const rec = ensW.rec;
+  if (!rec) return;
+  ensW.rec = null;
+  const held = performance.now() - ensW.at;
+  const wav = await rec.stop();
+  btn.classList.remove("rec"); btn.textContent = "🎤 按住跟读";
+  if (held < 400) { toast("按住说完再松手哦"); return; }
+  ensW.blob = wav;
+  btn.textContent = "小新在听…";
+  try {
+    const r = await ensApi(`api/english/word/${encodeURIComponent(ensW.word)}/check`, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav });
+    ensWordRender(r);
+  } catch (e) { toast(e.message); ensWordRender(); }
+}
+
 // ---------------------------------------------------------------- 看板（聊天里一张卡）：今日推荐、两周、熟练度墙、读不准的词、最近练习
 const ENS_LV = ["没练过", "会读", "熟练", "掌握 👑"];
 async function ensBoardCard(row) {
@@ -348,7 +429,7 @@ async function ensBoardCard(row) {
     const t = e.target.closest("[data-lid],[data-word],[data-mine]");
     if (!t) return;
     if (t.dataset.lid) ensOpen(t.dataset.lid);
-    if (t.dataset.word) ensPlay(`api/english/word/${encodeURIComponent(t.dataset.word)}.mp3`);
+    if (t.dataset.word) ensWordCard(t.dataset.word);
     if (t.dataset.mine) { const [sid, i, n] = t.dataset.mine.split("/"); ensPlay(ensUrl(`api/english/session/${sid}/audio/${i}/${n}.wav`)); }
   });
   row.querySelector(".bubble").insertBefore(box, row.querySelector(".bubble .text"));

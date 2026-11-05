@@ -7,7 +7,8 @@
   1. 只挖「值得记」的词：这句的 key > 这课的生词 > 这课句型里的词 > 三年级核心词表（CORE：颜色、数字、家人、食物、文具、动物、
      常用动词形容词、礼貌用语）。不在这几类里的不挖（「Mm」「OK」、人名、the 这类）；
   2. 每次都会变：她以前默写里考过的词记着次数，考得少的、上次写错的先挖（同样条件随机），一课练几次能轮到每个核心词；
-  3. 听写句子也轮换：没听写过的句子优先，上次写错的那句再来一次。
+  3. 听写句子：Opus 写剧本时给每个角色标了最值得听写的 3–4 句（dict 排名），从这几句里出；
+     也轮换——没听写过的优先，上次写错的那句再来一次。
 """
 
 from __future__ import annotations
@@ -98,11 +99,13 @@ def build(L: dict, role: str, *, count: int = 3, bank: bool = True, seed=None, h
     h = history or {}
     names = {r["name"] for r in L["roles"]} | {n for r in L["roles"] for n in r["name"].split()}
     mine = [l for l in L["lines"] if l["role"] == role]
-    # 听写：她的台词里挑短的（3–7 个词）；上次写错的句子先、听写得少的先，同样随机；按原顺序排
-    short = [l for l in mine if 3 <= len(_tokens(l["en"])) <= 7] or mine
-    n = max(1, min(count or 3, MAX_COUNT, len(short)))
+    # 听写选句：Opus 标的 dict（1 最值得、2 其次……，0 不选）优先；没标的课退回挑短句（3–7 个词）。
+    # 上次写错的句子先、听写得少的先，再按 dict 排名，同样随机；最后按原顺序排
+    marked = [l for l in mine if l.get("dict")]
+    pool = marked or [l for l in mine if 3 <= len(_tokens(l["en"])) <= 7] or mine
+    n = max(1, min(count or 3, MAX_COUNT, len(pool)))
     ws_, ss_ = set(h.get("wrong_sentences") or []), h.get("sentences") or {}
-    ranked = sorted(short, key=lambda l: (0 if l["en"] in ws_ else 1, ss_.get(l["en"], 0), rnd.random()))
+    ranked = sorted(pool, key=lambda l: (0 if l["en"] in ws_ else 1, ss_.get(l["en"], 0), l.get("dict") or 9, rnd.random()))
     listen = sorted(ranked[:n], key=lambda l: L["lines"].index(l))
     items = [{"q": f"{i + 1}.", "a": l["en"], "zh": l["zh"], "part": "listen", "en": True} for i, l in enumerate(listen)]
     # 补全对话：整段，每句挖一个关键词（句型里的词、生词优先）

@@ -71,17 +71,52 @@ def english_char(name: str) -> FileResponse:
 
 
 @router.get("/api/english/word/{w}.mp3")
-def english_word(w: str) -> FileResponse:
+def english_word(w: str, slow: int = 0) -> FileResponse:
+    """一个词的标准读音（英音女声）。slow=1 慢读一遍（练读不准的词：一遍正常、一遍慢）。"""
     w = build.word_key(w)
     if not w:
         raise HTTPException(404, "没有这个词")
-    p = drill.root() / "words" / f"{w}.mp3"
+    p = drill.root() / "words" / (f"{w}.mp3" if not slow else f"{w}_slow.mp3")
     if not p.is_file():
         try:
-            build.word_audio(w)
+            if slow:
+                build.mp3(build._tts(w, build.WORD_VOICE, speech_rate=-50).pcm, p)
+            else:
+                build.word_audio(w)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(502, f"这个词读不出来：{e}")
     return FileResponse(p, headers={"Cache-Control": "private, max-age=2592000"})
+
+
+@router.post("/api/english/word/{w}/check")
+async def english_word_check(request: Request, w: str, kid: str = "") -> dict:
+    """单练一个词：她读一遍（16 kHz wav），讯飞按单词评分。不记进练习记录，只回分数。"""
+    import asyncio
+
+    from src.voice import xfyun_ise
+
+    _kid(request, kid)
+    w = build.word_key(w)
+    if not w:
+        raise HTTPException(404, "没有这个词")
+    wav = await request.body()
+    try:
+        pcm = xfyun_ise.to_pcm16k(wav)
+        if len(pcm) < 16000 * 2 * 0.3:
+            raise ValueError("没听清，按住说完再松手")
+        import array
+
+        if max(abs(x) for x in array.array("h", pcm)[::8]) < 300:
+            raise ValueError("没听到声音，靠近一点、大声说")
+        r = await asyncio.to_thread(xfyun_ise.assess, w, pcm, category="read_word")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"打分没成功：{e}")
+    total = r.get("total")
+    return {"word": w, "total": total, "stars": drill.stars(total),
+            "msg": "读得真准！" if (total or 0) >= drill.STAR3 else "不错，再跟着读一遍会更好。" if (total or 0) >= drill.STAR2
+            else "再听一遍，跟着读，嘴巴张大一点。"}
 
 
 @router.get("/api/english/say.mp3")

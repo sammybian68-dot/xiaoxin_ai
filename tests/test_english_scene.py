@@ -318,3 +318,22 @@ def test_dictation_uses_opus_key_first():
     _, items = SD.build(L, "lily", seed=3, history=h)
     first = items[-1]["a"].split("；")[0]
     assert first != "sheep" and first.lower() in SD.CORE                   # 考过了：换这句里别的核心词
+
+
+def test_word_check_and_slow_audio(family, monkeypatch):
+    from server.english import build
+    from src.voice import xfyun_ise
+
+    seen = {}
+
+    def fake_assess(text, pcm, category="read_sentence"):
+        seen.update(text=text, category=category)
+        return {"total": 91.0, "words": [{"word": text, "score": 91, "err": ""}]}
+    monkeypatch.setattr(xfyun_ise, "assess", fake_assess)
+    r = family["女儿"].post("/api/english/word/Colour/check", content=_wav(), headers={"Content-Type": "audio/wav"}).json()
+    assert r["stars"] == 3 and seen == {"text": "colour", "category": "read_word"}
+    made = []
+    monkeypatch.setattr(build, "_tts", lambda t, v, **kw: made.append(kw) or type("S", (), {"pcm": b"\x00\x10" * 16000})())
+    monkeypatch.setattr(build, "mp3", lambda pcm, out: out.write_bytes(b"ID3fake"))
+    assert family["女儿"].get("/api/english/word/scoop.mp3?slow=1").status_code == 200
+    assert made[0]["speech_rate"] == -50                                    # 慢读

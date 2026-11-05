@@ -75,8 +75,8 @@ def to_pcm16k(audio: bytes) -> bytes:
     return p.stdout
 
 
-def assess(text: str, pcm16k: bytes, *, timeout: float = 30) -> dict:
-    """评一句英文。返回 {"total", "accuracy", "fluency", "integrity", "words": [{"word", "score", "err"}], "raw"}。"""
+def assess(text: str, pcm16k: bytes, *, timeout: float = 30, category: str = "read_sentence") -> dict:
+    """评一句英文（category=read_word 评单个词）。返回 {"total", "accuracy", "fluency", "integrity", "words": [...], "raw"}。"""
     from websockets.sync.client import connect
 
     text = re.sub(r"\s+", " ", text).strip()
@@ -107,7 +107,8 @@ def assess(text: str, pcm16k: bytes, *, timeout: float = 30) -> dict:
 def parse(xml: str) -> dict:
     """讯飞英文句子题的 XML → 分数（0–100，讯飞英文原始分是 0–5 或 0–100，这里统一成 0–100）。"""
     root = ET.fromstring(xml.lstrip("﻿"))
-    node = root.find(".//read_sentence/rec_paper/read_chapter") or root.find(".//read_chapter") or root.find(".//read_sentence")
+    node = (root.find(".//read_sentence/rec_paper/read_chapter") or root.find(".//read_chapter") or root.find(".//read_sentence")
+            or root.find(".//read_word/rec_paper/read_word") or root.find(".//read_word"))
     if node is None:
         raise IseError("讯飞返回里没有评测结果")
     def sc(n, k):
