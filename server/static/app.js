@@ -46,6 +46,7 @@ async function boot() {
   for (const pane of ["model", "talk", "wake", "voice", "prompt", "members"]) {
     document.querySelector(`.settings-nav [data-pane="${pane}"]`).hidden = me.who.kind !== "admin";
   }
+  if ($("reload-row")) $("reload-row").hidden = me.who.kind !== "admin";   // 远程重启：只有管理员
   applyFreeTalkBtn(!!me.free_talk_btn);
   state.models = me.models;
   state.system = me.system_prompt;
@@ -140,12 +141,40 @@ function hubConnect() {
     if (ev.type === "print.summary" && ev.thread === state.conv?.id) onPrintSummary(ev);
     if (ev.type === "file" && ev.thread === state.conv?.id) hubFile(ev.file);
     if (ev.type === "practice") window.onPracticeEvent?.(ev);
+    if (ev.type === "reload") remoteReload(ev);
   };
   ws.onclose = () => {
     if (hub.ws !== ws) return;
     hub.timer = setTimeout(hubConnect, hub.wait);
     hub.wait = Math.min(hub.wait * 2, 30000);
   };
+}
+
+// ---------------------------------------------------------------- 远程重启（服务端 POST /api/reload → hub「reload」）
+// 部署了新网页：在线的设备倒数 5 秒重新加载。已经是这个版本的不动；孩子正在练习、下棋、英语小剧场、通话、
+// 小新在说话的，等它结束再来（每 5 秒看一次，最多等 30 分钟，过了就不等了下次打开自然是新的）
+const myVersion = document.querySelector('meta[name="xiaoxin-version"]')?.content || "";
+function appBusy() {
+  return !!(window.pracBusy?.() || ($("go") && !$("go").hidden) || ($("ens") && !$("ens").hidden) || talk.on
+    || (typeof call !== "undefined" && call.cur) || state.sending || player.audio);
+}
+function remoteReload(ev, waited = 0) {
+  if (ev.version && ev.version === myVersion) return;
+  if (appBusy()) { if (waited < 1800) setTimeout(() => remoteReload(ev, waited + 5), 5000); return; }
+  if ($("reload-cover")) return;
+  const el = document.createElement("div");
+  el.id = "reload-cover"; el.className = "reload-cover"; el.setAttribute("role", "status");
+  const who = state.me?.role === "kid" ? (state.kids?.find((k) => k.id === state.me.id)?.call || state.me.name) : "";
+  el.innerHTML = `<div class="reload-card"><img src="static/icon.png" alt=""><b>${who ? esc(who) + "，" : ""}我更新一下自己，稍等哦</b>
+    <span class="reload-n">5</span><small>${esc(ev.why || "小新更新了")}</small></div>`;
+  document.body.appendChild(el);
+  if (state.me?.role === "kid" && prefs.autoread) speakAs(`${who ? who + "，" : ""}我更新一下自己，稍等哦。`, document.createElement("button"), {}).catch(() => {});
+  let n = 5;
+  const t = setInterval(() => {
+    n--;
+    el.querySelector(".reload-n").textContent = String(Math.max(n, 0));
+    if (n <= 0) { clearInterval(t); location.reload(); }
+  }, 1000);
 }
 
 // ---------------------------------------------------------------- 侧栏：群信息（成员、下一个闹钟、爸妈发的文件）
@@ -3242,4 +3271,15 @@ window.addEventListener("message", async (e) => {
   const c = call.cur;
   if (c) { try { await api(`api/call/${c.id}/end`, { method: "POST" }); } catch (_) { /* 对方先挂了 */ } }
   closeCall();
+});
+
+// 设置 → 登录与设备：「重启所有小新」（管理员）。所有在线的 pad / 手机重新加载网页
+$("reload-all")?.addEventListener("click", async (e) => {
+  const b = e.currentTarget;
+  b.disabled = true;
+  try {
+    const r = await api("api/reload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ why: "家长让小新重启一下" }) }).then(json);
+    toast(r.sent ? `发给了 ${r.sent} 台在线的设备，空闲时倒数 5 秒重启` : "现在没有在线的设备");
+  } catch (err) { toast(err.message); }
+  b.disabled = false;
 });

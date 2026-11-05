@@ -221,6 +221,28 @@ def me(request: Request) -> dict:
                        for m in members.all_members() if m["status"] == "active"}}
 
 
+def web_version() -> str:
+    """网页的版本：static 下最新改动的那个文件的时间（部署一次就变）。界面带着它，远程重启后报回来，能看出谁还在旧版。"""
+    return str(max(int(p.stat().st_mtime) for p in STATIC.glob("*.*")))
+
+
+@app.get("/api/version")
+def version() -> dict:
+    return {"web": web_version()}
+
+
+@app.post("/api/reload")
+def reload_all(request: Request, body: dict = Body(default={})) -> dict:
+    """远程重启小新：所有在线设备重新加载网页（正在练习、下棋、通话的等它结束）。只有管理员能发。
+    部署脚本（deploy/gpu2.sh）部署完自动调一次。"""
+    from server.family import hub
+
+    need(request, "admin")
+    why = str(body.get("why") or "小新更新了")[:60]
+    n = hub.broadcast({"type": "reload", "version": web_version(), "why": why, "at": time.time()})
+    return {"sent": n, "version": web_version()}
+
+
 def _index_html() -> Response:
     """index.html 里的 app.js / app.css 地址带上文件修改时间，部署后浏览器和 pad 一定拿新的。"""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
@@ -228,6 +250,7 @@ def _index_html() -> Response:
                  "alarmcard.js", "alarmcard.css", "letters.js", "english.js", "english.css"):
         v = int((STATIC / name).stat().st_mtime)
         html = html.replace(f'static/{name}"', f'static/{name}?v={v}"')
+    html = html.replace("<head>", f'<head><meta name="xiaoxin-version" content="{web_version()}">', 1)
     return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
 
 

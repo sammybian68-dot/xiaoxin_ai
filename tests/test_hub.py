@@ -57,3 +57,24 @@ def test_hub_needs_login(anon):
     with pytest.raises(WebSocketDisconnect):
         with anon.websocket_connect("/api/hub") as ws:
             ws.receive_text()
+
+
+def test_reload_broadcast_admin_only(client):
+    """远程重启：管理员发，推给所有在线连接；页面带版本号。"""
+    from server.family import hub
+
+    sent = []
+    real = hub.broadcast
+    hub.broadcast = lambda ev: sent.append(ev) or 3
+    try:
+        r = client.post("/api/reload", json={"why": "测试"}).json()
+    finally:
+        hub.broadcast = real
+    assert r["sent"] == 3 and sent[0]["type"] == "reload" and sent[0]["version"] == r["version"]
+    assert client.get("/api/version").json()["web"] == r["version"]
+    assert f'name="xiaoxin-version" content="{r["version"]}"' in client.get("/").text
+
+
+def test_reload_not_for_parents(family):
+    assert family["爸爸"].post("/api/reload", json={}).status_code == 403
+    assert family["女儿"].post("/api/reload", json={}).status_code == 403

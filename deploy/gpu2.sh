@@ -2,6 +2,7 @@
 # 从这台 Mac 把小新部署到 gpu2：同步代码 → 重启 8184 → （首次或加 --proxy）给 mainbrain 8183 装 /xiaoxin/ 转发。
 #   deploy/gpu2.sh            只更新小新
 #   deploy/gpu2.sh --proxy    同时更新 mainbrain 的转发并重启 8183（会断开训练平台几秒）
+#   deploy/gpu2.sh --reload   部署完让在线的 pad / 手机重新加载网页（远程重启小新；正在练习、下棋、通话的等它结束）
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${XIAOXIN_HOST:-gpu2}"
@@ -43,3 +44,10 @@ python3 -c 'import server.main' && ./run.sh"
   done
 fi
 echo "https://gpu.cmbian.top:8183/xiaoxin/"
+
+if [[ " $* " == *" --reload "* ]]; then
+  # 服务刚重启：等设备的实时连接重新连上（断线后 2–4 秒重连）再发
+  sleep 6
+  ssh "$HOST" "cd $DEST && KEY=\$(grep ^XIAOXIN_KEY= .env | cut -d= -f2) && curl -fsS -X POST -H \"Authorization: Bearer \$KEY\" \
+    -H 'Content-Type: application/json' -d '{\"why\":\"小新更新了\"}' http://127.0.0.1:8184/api/reload" && echo
+fi

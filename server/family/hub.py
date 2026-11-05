@@ -5,6 +5,7 @@
   {"type":"msg", "thread":tid, "message":{…}}         有新消息（用户的、小新答完的、家长发的）
   {"type":"msg.update", "thread":tid, "message":{…}}  已有消息补了字段（原图传完了、首响时间）
   {"type":"ping"}                                     每 25 秒一次，顺便发现断线
+  {"type":"reload", "version":…, "why":…}              远程重启：网页倒数几秒后重新加载（正在练习 / 下棋 / 通话就等它结束）
 客户端 → 服务端：{"type":"pong"}，别的忽略。断了客户端自己重连，带 ?since=<最后一条消息 id> 用 GET /api/thread 补齐。
 
 推送来自线程池（store.append 在同步代码里调），所以 publish() 只往每个连接的 asyncio 队列里 call_soon_threadsafe，
@@ -53,6 +54,16 @@ def publish(thread: str, event: dict) -> None:
         except Exception:
             continue
         c.loop.call_soon_threadsafe(_offer, c, data)
+
+
+def broadcast(event: dict) -> int:
+    """推给所有在线连接（不分线程）：远程重启（reload）用。返回推给了几个。"""
+    with _lock:
+        targets = [c for c in _conns if not c.dead]
+    data = json.dumps(event, ensure_ascii=False)
+    for c in targets:
+        c.loop.call_soon_threadsafe(_offer, c, data)
+    return len(targets)
 
 
 def _offer(c: _Conn, data: str) -> None:
