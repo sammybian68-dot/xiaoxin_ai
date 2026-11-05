@@ -290,3 +290,18 @@ def test_explanation_made_during_game_and_dropped_on_undo(kata, monkeypatch):
     assert go.get(g["id"])["review"]["1"]["text"] == "讲 1"
     g = go.undo(g["id"], "k1")
     assert go.get(g["id"])["review"] == {}
+
+
+def test_decided_needs_ten_moves(kata):
+    """胜负已定要连续 10 手都 < 3%：只有最近 3 手低不算。"""
+    kata.pass_cost = 9.0
+    g = go.new("k1", level="3k")
+    raw = go.get(g["id"])
+    raw["moves"] = [["B" if i % 2 == 0 else "W", "pass"] for i in range(100)]
+    base = raw["analysis"][0]
+    raw["analysis"] = [dict(base, winrate=0.5)] * 98 + [dict(base, winrate=0.01)] * 3
+    go.save(raw)
+    assert go.count_check(go.get(g["id"]))["why"] == "unfinished"
+    raw["analysis"] = [dict(base, winrate=0.5)] * 91 + [dict(base, winrate=0.01)] * 10
+    go.save(raw)
+    assert go.count_check(go.get(g["id"]))["why"] == "decided"

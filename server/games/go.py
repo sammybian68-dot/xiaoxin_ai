@@ -32,7 +32,7 @@ HUMAN_VISITS = 60         # 段级档落子前搜一下：只用来判断该不�
 KOMI = 7.5
 # 申请数棋（全由 KataGo + 代码判，不用大模型）
 DONE_GAIN = 1.5      # 双方「下一手最好的点」比「停一手」都多不到 1.5 目：棋下完了
-DECIDED_WR, DECIDED_MIN = 0.03, 100   # 下满 100 手，孩子胜率连续 3 次 < 3% 或 > 97%：胜负已定
+DECIDED_WR, DECIDED_MIN, DECIDED_RUN = 0.03, 100, 10   # 下满 100 手，孩子胜率连续 10 手 < 3% 或 > 97%：胜负已定（家长 2026-11-05：3 手太少）
 COUNT_VISITS = 400
 # 胜率条、提示、悔棋、下坏了提醒是辅助，默认全关：开着孩子会依赖（家长 2026-11-04 要求），要用在设置里开
 DEFAULTS = {"level": "2k", "color": "B", "komi": KOMI, "handicap": 0,
@@ -483,13 +483,13 @@ def _area_name(x: int, y: int) -> str:
 def count_check(g: dict) -> dict:
     """孩子「申请数棋」：能不能数，由 KataGo 和代码判（不用大模型）。
     返回 {ok, reason（念给孩子听）, area: [没下完那片的点]}。
-    - 胜负已定：下满 100 手，孩子胜率连续 3 次 < 3% 或 > 97%。
+    - 胜负已定：下满 100 手，孩子胜率连续 10 手（双方各 5 手）< 3% 或 > 97%。
     - 棋下完了：轮到谁都一样——「下最好的一手」比「停一手」多不到 DONE_GAIN 目（双方各算一次，allowMoves 只许 pass）。
     - 都不是：说哪里没下完、谁在那里下一手还能多几目，标出那一片还没定归属的空点。"""
     me = g["kid_color"]
-    recent = [a for a in g["analysis"] if a][-3:]
+    recent = [a for a in g["analysis"] if a][-DECIDED_RUN:]
     mine = [(a["winrate"] if me == "B" else 1 - a["winrate"]) for a in recent]
-    if len(g["moves"]) >= DECIDED_MIN and len(mine) == 3 and (all(w < DECIDED_WR for w in mine) or all(w > 1 - DECIDED_WR for w in mine)):
+    if len(g["moves"]) >= DECIDED_MIN and len(mine) == DECIDED_RUN and (all(w < DECIDED_WR for w in mine) or all(w > 1 - DECIDED_WR for w in mine)):
         return {"ok": True, "why": "decided", "reason": "胜负已经定了，可以数棋。", "area": []}
 
     def gain(moves: list, who: str) -> tuple[float, str]:
