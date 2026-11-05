@@ -98,7 +98,7 @@
       <button id="autoread" class="icon-btn" type="button" aria-pressed="true" title="回答完自动朗读">🔊</button>
       <button id="standby" class="standby" type="button" aria-pressed="false" hidden
               title="pad 本机一直听唤醒词，听到才连云端，不唤醒不上传">💤 待命</button>
-      <button id="free-talk" class="free-talk" type="button" title="像打电话一样一直说，小新说话时可以直接插话">📞 自由对话</button>
+      <button id="free-talk" class="free-talk" type="button" title="像打电话一样一直说，小新说话时可以直接插话" hidden>📞 自由对话</button>
     </header>
 
     <section id="chat" class="chat" aria-live="polite">
@@ -409,6 +409,11 @@
     </section>
 
     <section class="pane" role="tabpanel" data-pane="wake" hidden>
+      <h3>自由对话和待命</h3>
+      <div class="row">
+        <label for="set-free-talk"><b>顶栏显示「📞 自由对话」和「💤 待命」</b><small>默认关：家里平时用「按住说话」就够了。打开后顶栏多两个按钮——自由对话像打电话一样一直说、可以插话；待命是 pad 本机一直听唤醒词。全家的 pad 一起变</small></label>
+        <input id="set-free-talk" type="checkbox" class="switch">
+      </div>
       <h3>唤醒词</h3>
       <p class="voice-tip">pad 开着「待命」时，本机一直听，一句话以其中任意一个开头就叫醒小新，后面可以直接接问题（「小新同学，现在几点」）。没叫醒时不上传、不花钱。每个至少 4 个字。<b>*</b> 代表任意一个字：「你好小*」能叫醒「你好小婷」「你好小嗯」这种认偏的。</p>
       <div class="words" id="wake-list" data-kind="wake"></div>

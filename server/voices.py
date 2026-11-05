@@ -120,6 +120,9 @@ def engines() -> dict:
             "wake_idle_s": s.get("wake_idle_s") if isinstance(s.get("wake_idle_s"), int) else WAKE_IDLE_S,
             "wake_vad_ms": s.get("wake_vad_ms") if isinstance(s.get("wake_vad_ms"), int) else WAKE_VAD_MS,
             "wake_vad_ms_range": list(WAKE_VAD_RANGE),
+            # 顶栏的「📞 自由对话」「💤 待命」按钮：默认都不显示（家里用得最多的是「按住说话」，2026-11-05 家长要求），
+            # 设置 →「唤醒」里打开。只是按钮显不显示：开着的待命关了按钮也会停掉
+            "free_talk_btn": bool(s.get("free_talk_btn", False)),
             "wake_idle_s_range": list(WAKE_IDLE_RANGE), "asr_hotwords": hotwords(),
             "asr_options": [{"id": i, "name": n, "desc": d} for i, n, d in ASR_ENGINES],
             "tts_options": [{"id": i, "name": n, "desc": d} for i, n, d in TTS_ENGINES]}
@@ -220,8 +223,10 @@ def _int_in(value, lo: int, hi: int, what: str) -> int:
 
 def set_engines(asr: str | None = None, tts: str | None = None, vad_end_ms=None, wake_word=None,
                 wake_idle_s=None, wake_words=None, exit_words=None, hangup_tone=None, asr_hotwords=None,
-                wake_vad_ms=None) -> dict:
+                wake_vad_ms=None, free_talk_btn=None) -> dict:
     fields = {}
+    if free_talk_btn is not None:
+        fields["free_talk_btn"] = bool(free_talk_btn)
     if hangup_tone is not None:
         if hangup_tone not in TONE_IDS:
             raise VoiceError(f"没有这个提示音：{hangup_tone}")

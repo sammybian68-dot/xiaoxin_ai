@@ -46,6 +46,7 @@ async function boot() {
   for (const pane of ["model", "talk", "wake", "voice", "prompt", "members"]) {
     document.querySelector(`.settings-nav [data-pane="${pane}"]`).hidden = me.who.kind !== "admin";
   }
+  applyFreeTalkBtn(!!me.free_talk_btn);
   state.models = me.models;
   state.system = me.system_prompt;
   state.vision = me.vision_model;
@@ -1444,6 +1445,7 @@ const talk = { on: false, ws: null, rec: null, stream: null, row: null, live: nu
 function talkUi(on) {
   $("free-talk").classList.toggle("on", on);
   $("free-talk").textContent = on ? "■ 挂断" : "📞 自由对话";
+  $("free-talk").hidden = !on && !state.freeTalkBtn;   // 通话中（含待命叫醒的）总得能挂断；挂了按设置收起
   $("talk-bar").hidden = !on;
 }
 function talkStatus(s) { $("talk-status").textContent = s; }
@@ -1542,10 +1544,27 @@ function onStandby(ev) {
   }
 }
 
+// 顶栏「📞 自由对话」「💤 待命」：设置 → 唤醒里开（默认关，平时用「按住说话」）。关掉时正在待命的也停掉；
+// 正在自由对话的不打断（说完挂断后按钮才消失）
+function applyFreeTalkBtn(on) {
+  state.freeTalkBtn = on;
+  if (!talk.on) $("free-talk").hidden = !on;
+  $("standby").hidden = !(on && native?.standby);
+  if (!on && standby.on) setStandby(false);
+  if ($("set-free-talk")) $("set-free-talk").checked = on;
+}
+$("set-free-talk")?.addEventListener("change", async (e) => {
+  try {
+    const r = await api("api/engines", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ free_talk_btn: e.target.checked }) }).then(json);
+    applyFreeTalkBtn(!!r.free_talk_btn);
+    toast(r.free_talk_btn ? "顶栏显示了「自由对话」「待命」" : "顶栏收起了「自由对话」「待命」");
+  } catch (err) { toast(err.message); e.target.checked = !e.target.checked; }
+});
+
 if (native?.standby) {
-  $("standby").hidden = false;
   $("standby").addEventListener("click", () => setStandby(!standby.on));
-  if (localGet("standby")) setTimeout(() => setStandby(true), 800);  // 上次开着，打开 app 就接着待命
+  if (localGet("standby") && state.freeTalkBtn !== false) setTimeout(() => { if (state.freeTalkBtn) setStandby(true); }, 1500);  // 上次开着，打开 app 就接着待命（按钮开着才接着）
   // 切到别的 App（分享、看相册）再回来：原生在后台停了监听，网页这边按记着的状态重新开（原来只在启动时恢复）
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && localGet("standby") && !talk.on) setTimeout(() => setStandby(true), 300);

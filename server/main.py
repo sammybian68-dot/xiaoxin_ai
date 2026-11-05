@@ -207,6 +207,7 @@ def me(request: Request) -> dict:
     kids = [k for k in members.kids() if members.can_thread(w, k["thread"])]
     return {"ok": True, "models": MODELS, "default_model": MODELS[0]["id"], "system_prompt": prompts.build(),
             "vision_model": VISION, "fallback_model": FALLBACK,
+            "free_talk_btn": voices.engines()["free_talk_btn"],   # 顶栏「自由对话」「待命」按钮显不显示（设置 → 唤醒）
             "who": {"kind": w.kind, "role": w.role, "id": w.id,
                     "name": "管理员" if w.kind == "admin" else w.member["name"],
                     "device": w.device["name"] if w.device else ""},
@@ -2227,7 +2228,7 @@ def engine_select(request: Request, body: dict = Body(...)) -> dict:
                            wake_word=body.get("wake_word"), wake_idle_s=body.get("wake_idle_s"),
                            wake_words=body.get("wake_words"), exit_words=body.get("exit_words"),
                            hangup_tone=body.get("hangup_tone"), asr_hotwords=body.get("asr_hotwords"),
-                           wake_vad_ms=body.get("wake_vad_ms"))
+                           wake_vad_ms=body.get("wake_vad_ms"), free_talk_btn=body.get("free_talk_btn"))
     except voices.VoiceError as e:
         raise HTTPException(400, str(e))
     return engine_settings()

@@ -350,3 +350,12 @@ def test_wake_vad_separate_from_call_vad(client):
     e = client.put("/api/engines", json={"wake_vad_ms": 250}).json()
     assert e["wake_vad_ms"] == 250 and e["vad_end_ms"] == 800
     assert client.put("/api/engines", json={"wake_vad_ms": 50}).status_code == 400
+
+
+def test_free_talk_button_off_by_default(client):
+    """顶栏「自由对话」「待命」按钮默认不显示（平时用按住说话），设置 → 唤醒里打开；只有管理员能改。"""
+    assert client.get("/api/engines").json()["free_talk_btn"] is False
+    assert client.get("/api/me").json()["free_talk_btn"] is False
+    assert client.put("/api/engines", json={"free_talk_btn": True}).json()["free_talk_btn"] is True
+    assert client.get("/api/me").json()["free_talk_btn"] is True
+    assert client.put("/api/engines", json={"free_talk_btn": False}).json()["free_talk_btn"] is False
