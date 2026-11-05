@@ -697,6 +697,7 @@ AGENT_DEFAULTS = {
     "max_tries": 4,                                # 一天最多跑几轮（含「立即抓取」）
     "max_steps": 40,                               # 一轮最多走几步
     "notify": True,                                # 当天都没抓到，在群里告诉家长
+    "grade_model": "claude-sonnet-5-5",            # 批改作业用哪个模型（server/tools/check_work.py；评测见 docs/check-work.md）
 }
 
 
@@ -715,7 +716,9 @@ def agent_settings(request: Request) -> dict:
     from server import hw_agent
     from server.agent_bus import bus
 
-    return {**agent_cfg(), "models": [m["id"] for m in MODELS],
+    from server.tools import check_work
+
+    return {**agent_cfg(), "models": [m["id"] for m in MODELS], "grade_models": check_work.GRADE_MODELS,
             "today": today, "today_done": bool(homework.get_day(today)),
             "pending": pend if pend.get("day") == today and not pend.get("taken") else None,
             "pad_online": bus.online(), "running": hw_agent.busy(),
@@ -734,6 +737,12 @@ def agent_update(request: Request, body: dict = Body(...)) -> dict:
         if body["model"] not in {m["id"] for m in MODELS}:
             raise HTTPException(400, f"不支持的模型 {body['model']}")
         cur["model"] = body["model"]
+    if body.get("grade_model"):
+        from server.tools import check_work
+
+        if body["grade_model"] not in check_work.GRADE_MODELS:
+            raise HTTPException(400, f"不支持的批改模型 {body['grade_model']}")
+        cur["grade_model"] = body["grade_model"]
     if isinstance(body.get("at"), list):
         at = sorted({t for t in (str(x).strip() for x in body["at"]) if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t)})
         if not at:
@@ -965,13 +974,22 @@ def practice_step(request: Request, pid: str, step: str, body: dict = Body(defau
         parents = [m["name"] for m in members.all_members() if m["role"] == "parent" and m["status"] == "active"]
 
         def work():
+            extra = {}
             try:
                 g = practice.grade(pid, fids)
                 text = practice.grade_text(g, kid["name"], parents)
+                gr = g["grade"]
+                if gr.get("files"):   # 新卷子：带红圈的拉正卷子，pad 念短的那句
+                    extra = {"files": [store.file_info(f)[1] for f in gr["files"] if store.file_info(f)],
+                             "via": "check", "say": gr.get("say", "")}
+            except practice.PracticeError as e:   # 照片不合格（没拍全二维码）：原话告诉孩子
+                text = str(e)
+                extra = {"via": "check", "say": text}
             except Exception as e:  # noqa: BLE001  批改失败也要说一声
                 log.warning("practice grade %s: %s", pid, e)
                 text = f"卷子收到了，但批改没成功（{str(e)[:60]}），等会儿再交一次试试。"
-            store.append(r["thread"], {"role": "assistant", "text": text, "model": "", "via": "practice", "practice": pid})
+            store.append(r["thread"], {"role": "assistant", "text": text, "model": "", "via": "practice", "practice": pid,
+                                       **extra})
             hub.publish(r["thread"], {"type": "practice", "practice": _practice_view(practice.get(pid))})
 
         threading.Thread(target=work, name="practice-grade", daemon=True).start()

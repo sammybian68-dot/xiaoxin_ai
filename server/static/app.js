@@ -258,7 +258,7 @@ function hubMessage(m, kind) {
   if (kind !== "msg" || m.role === "note") return;
   if ($("messages").querySelector(`[data-mid="${CSS.escape(m.id)}"]`)) return;  // 本地已经画了
   // 打印结果、画好的图是后台发来的，不是这台正在出字的那条
-  if (m.role === "assistant" && !["print", "draw", "english"].includes(m.via) && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
+  if (m.role === "assistant" && !["print", "draw", "english", "check"].includes(m.via) && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
   if (m.role === "user" && m.via === "talk" && talk.on) return;      // 自己这台在自由对话：那句由 heard 画（带原声小喇叭）
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
   const row = appendMessage(m);
@@ -271,6 +271,9 @@ function hubMessage(m, kind) {
   // 孩子的 pad：小新后台画好的图，念一句「XX，图片画好了，请看」（排在正在说的话后面，不打断）
   if (m.role === "assistant" && (m.via === "draw" || (m.via === "english" && m.english?.new)) && m.text && state.me?.role !== "parent"
       && prefs.autoread && !window.pracBusy?.()) sayLater(m, row, true);
+  // 批改结果：念短的那句（m.say），群里那条长的留着看
+  if (m.role === "assistant" && m.via === "check" && m.say && state.me?.role !== "parent"
+      && prefs.autoread && !window.pracBusy?.()) sayLater({ ...m, text: m.say }, row, true);
   // 孩子的 pad：爸爸妈妈发来的话，用他们设的声音读一遍（docs/architecture.md 6.2 的 speak）
   if (m.role === "user" && m.text && m.speak !== false && state.me?.role !== "parent"
       && state.people?.[m.from]?.role === "parent" && prefs.autoread && !window.pracBusy?.()) sayLater(m, row);
@@ -2593,6 +2596,7 @@ async function loadHomeworkSettings() {
   $("hw-tries").value = d.max_tries;
   $("hw-steps").value = d.max_steps;
   $("hw-model").innerHTML = (d.models || []).map((m) => `<option value="${esc(m)}"${m === d.model ? " selected" : ""}>${esc(state.models?.find((x) => x.id === m)?.label || m)}</option>`).join("");
+  $("hw-grade-model").innerHTML = (d.grade_models || []).map((m) => `<option value="${esc(m)}"${m === d.grade_model ? " selected" : ""}>${esc(state.models?.find((x) => x.id === m)?.label || m)}</option>`).join("");
   $("hw-at").innerHTML = HW_AT_CHOICES.map((t) => `<button type="button" class="hw-chip${(d.at || []).includes(t) ? " on" : ""}" data-at="${t}">${t}</button>`).join("");
   $("hw-weekdays").innerHTML = WEEK_NAMES.map((n, i) => `<button type="button" class="hw-chip${(d.weekdays || []).includes(i + 1) ? " on" : ""}" data-wd="${i + 1}">${n}</button>`).join("");
   hwTodayTip();
@@ -2635,6 +2639,7 @@ function wireHomeworkSettings() {
   $("hw-on").addEventListener("change", (e) => saveHomeworkSettings({ on: e.target.checked }));
   $("hw-notify").addEventListener("change", (e) => saveHomeworkSettings({ notify: e.target.checked }));
   $("hw-model").addEventListener("change", (e) => saveHomeworkSettings({ model: e.target.value }));
+  $("hw-grade-model").addEventListener("change", (e) => saveHomeworkSettings({ grade_model: e.target.value }));
   for (const id of ["hw-tries", "hw-steps"]) {
     $(id).addEventListener("change", (e) => saveHomeworkSettings(id === "hw-tries" ? { max_tries: +e.target.value } : { max_steps: +e.target.value }));
   }

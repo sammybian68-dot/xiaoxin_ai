@@ -22,6 +22,21 @@ from server import store
 
 W, H = 1654, 2339          # A4 @ 200 dpi
 MARGIN = 140
+# 四角二维码（批改时 OpenCV 读码 → 认卷子 + 拉正，server/tools/check_work.py）：内容「卷子id-第几页-第几个角」，
+# 大写字母数字 20 个字符 → QR 版本 1（21×21 模块），一个模块 6 px，边长 126 px ≈ 1.6 cm。
+# 内容「XX.卷子id前8位.第几页.第几个角」15 个字符（QR 字母数字模式，版本 1、纠错 Q，21×21 模块），
+# 一个模块 9 px，边长 189 px ≈ 2.4 cm（打印再缩 7%）。2026-11-06 模拟 40 张手机照（透视、转 ±12°/倒拍、模糊、
+# 只传 2048 预览图）：7 px 时对角两码都读到 34/40，9 px 38/40，11 px 39/40；9 px 不太占地方。
+QR_MOD, QR_N = 9, 21
+QR = QR_MOD * QR_N
+QR_OFF = 36                # 离纸边（打印时整页还会缩 7% 留白，见 printing._fit_a4）
+SAFE = QR_OFF + QR + 12    # 有二维码的卷子四边至少留这么宽（真实像素），正文不压到角上的码
+CORNERS = ((QR_OFF, QR_OFF), (W - QR_OFF - QR, QR_OFF), (W - QR_OFF - QR, H - QR_OFF - QR), (QR_OFF, H - QR_OFF - QR))
+FIT_SCALES = (1.0, 0.95, 0.9, 0.85, 0.8, 0.76, 0.72)  # 生词默写尽量一页：整页按比例缩，最小 0.72（田字格 75 px ≈ 9.5 mm）
+# 排版版本：1 = 老卷子（没有二维码，2026-11-06 以前出的）；2 = 四角二维码 + 卷号 + 尽量一页。老卷子照老样子排（已经打出来了）
+LAYOUT_V = 2
+X0 = 100                   # 版本 2：正文框离左右纸边（真实像素）；上下留 SAFE 给二维码和卷号
+BLUE = (40, 90, 200)
 INK = (30, 30, 30)
 GRID = (210, 120, 120)     # 田字格红线
 GRID_DASH = (235, 180, 180)
@@ -77,7 +92,7 @@ def create(kind: str, *, subject: str = "", title: str = "", for_kid: str = "", 
     except exercises.ExerciseError as e:
         raise WorksheetError(str(e)) from e
     ws = {"id": store._new_id(), "kind": layout, "topic": topic, "subject": exercises.TOPICS[topic].SUBJECT,
-          "for": for_kid, "created": time.time(), "title": t, "items": items, **extra}
+          "for": for_kid, "created": time.time(), "title": t, "items": items, "v": LAYOUT_V, **extra}
     if topic == "scene_dictation":
         ws["lesson"] = opts.get("lesson", "")
     _dir().mkdir(parents=True, exist_ok=True)
@@ -120,7 +135,7 @@ def summary(ws: dict) -> str:
 
 # ---------------------------------------------------------------- 排版（A4，PIL）
 
-def _header(d, ws: dict, kid_name: str) -> int:
+def _header(d, ws: dict, kid_name: str, W: int = W) -> int:
     d.text((W // 2, MARGIN), ws["title"], font=_font("bold", 64), fill=INK, anchor="mt")
     y = MARGIN + 110
     f = _font("sans", 32)
@@ -144,13 +159,108 @@ def _tian(d, x: int, y: int, s: int, ch: str = "", font=None) -> None:
 
 def render(ws: dict, answers: bool = False, kid_name: str = "", page: int = 0) -> bytes:
     """排一页 A4，返回 JPEG。answers=True 是答案页（家长看）。生词默写可能好几页，page 是第几页。"""
+    return _jpeg(render_page(ws, answers, kid_name, page)[0])
+
+
+def _jpeg(im) -> bytes:
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=90, dpi=(200, 200))
+    return buf.getvalue()
+
+
+def render_page(ws: dict, answers: bool = False, kid_name: str = "", page: int = 0):
+    """排一页，返回 (PIL 图, 这一页每个答案格在纸上的位置 [{k, box}])。k 是 practice.answer_key 里的第几题（从 0 起），
+    box 是 A4 像素坐标（200 dpi）。批改时按它切格子、画红圈（server/tools/check_work.py）。
+
+    版本 2 的卷子：正文先排在一张「虚拟页」上（为了一页放下，虚拟页可以比 A4 大，见 fit），再整体缩放贴进
+    A4 中间的正文框；四角印二维码（卷子 id + 第几页 + 第几个角），上下印人能看懂的卷号和页码。"""
     from PIL import Image, ImageDraw
 
+    boxes: list[dict] = []
+    if ws.get("v", 1) < 2:
+        im = Image.new("RGB", (W, H), "white")
+        if ws["kind"] == "dictation":
+            _render_dictation(ImageDraw.Draw(im), ws, answers, kid_name, page, W, H, boxes, footer=True)
+        else:
+            _render_plain(ImageDraw.Draw(im), ws, answers, kid_name, W, H, boxes, footer=True)
+        return im, boxes
+    g = fit(ws)
+    vw, vh = g["vw"], g["vh"]
+    virt = Image.new("RGB", (vw, vh), "white")
     if ws["kind"] == "dictation":
-        return _render_dictation(ws, answers, kid_name, page)
+        _render_dictation(ImageDraw.Draw(virt), ws, answers, kid_name, page, vw, vh, boxes, footer=False)
+    else:
+        _render_plain(ImageDraw.Draw(virt), ws, answers, kid_name, vw, vh, boxes, footer=False)
+    cx0, cy0, cx1, cy1 = g["crop"]
+    s = g["s"]
+    body = virt.crop((cx0, cy0, cx1, cy1)).resize((round((cx1 - cx0) * s), round((cy1 - cy0) * s)), Image.LANCZOS)
     im = Image.new("RGB", (W, H), "white")
-    d = ImageDraw.Draw(im)
-    y = _header(d, ws, kid_name)
+    ox, oy = (W - body.width) // 2, SAFE
+    im.paste(body, (ox, oy))
+    for b in boxes:
+        x1, y1, x2, y2 = b["box"]
+        b["box"] = [round(ox + (x1 - cx0) * s), round(oy + (y1 - cy0) * s), round(ox + (x2 - cx0) * s), round(oy + (y2 - cy0) * s)]
+    _codes(ImageDraw.Draw(im), im, ws, page, g["n"])
+    return im, boxes
+
+
+def code_of(ws: dict) -> str:
+    """人看的卷号：卷子 id 前 4 位大写（一个孩子手上同时就几份，4 位够分）。二维码里放前 8 位。"""
+    return ws["id"][:4].upper()
+
+
+def qr_text(ws: dict, page: int, corner: int) -> str:
+    """二维码内容：XX.卷子id前8位.第几页.第几个角（1 左上 2 右上 3 右下 4 左下）。只用 QR 字母数字模式的字符，码最小。"""
+    return f"XX.{ws['id'][:8].upper()}.{page + 1}.{corner}"
+
+
+def _qr(text: str):
+    """21×21 的码（版本 1、纠错 Q），放大成 QR×QR 的黑白图。"""
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    p = cv2.QRCodeEncoder_Params()
+    p.correction_level = cv2.QRCodeEncoder_CORRECT_LEVEL_Q
+    q = cv2.QRCodeEncoder.create(p).encode(text)
+    ys, xs = np.where(q == 0)
+    q = q[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    return Image.fromarray(q).resize((QR, QR), Image.NEAREST).convert("RGB")
+
+
+def _codes(d, im, ws: dict, page: int, n: int) -> None:
+    """四角二维码 + 上下的卷号、页码（孩子、家长一眼看出这几张是不是一份、第几页）。"""
+    for k, (x, y) in enumerate(CORNERS):
+        im.paste(_qr(qr_text(ws, page, k + 1)), (x, y))
+    code = code_of(ws)
+    tag = f"卷号 {code}" + (f"　第 {page + 1} 页 / 共 {n} 页" if n > 1 else "")
+    d.text((W // 2, QR_OFF + QR // 2), tag, font=_font("bold", 34), fill=MUTED, anchor="mm")
+    d.text((W // 2, H - QR_OFF - QR // 2), f"小新出题 · {tag}", font=_font("sans", 28), fill=MUTED, anchor="mm")
+
+
+def fit(ws: dict) -> dict:
+    """版本 2 的版面：正文排在多大的虚拟页上、缩多少贴进 A4。生词默写从 1.0 往下试，第一个能一页放下的缩放就用它；
+    最小 0.72 还放不下才分页（每页同样缩放）。别的题型一页、缩放按正文框定。
+    返回 {s, vw, vh, crop, n}：crop 是虚拟页上要贴的那块（去掉虚拟页自己的白边）。"""
+    if ws.get("v", 1) < 2:
+        return {"s": 1.0, "vw": W, "vh": H, "crop": (0, 0, W, H), "n": len(pages(ws, W, H)) if ws["kind"] == "dictation" else 1}
+    box_w, box_h = W - 2 * X0, H - 2 * SAFE           # A4 上的正文框
+    if ws["kind"] != "dictation":
+        s = min(box_w / W, box_h / H)                  # 老排版整页（含页边）缩进去：口算 150 道用的就是窄页边
+        return {"s": s, "vw": W, "vh": H, "crop": (0, 0, W, H), "n": 1}
+    pad_x, pad_top, pad_bot = MARGIN - 40, MARGIN - 30, MARGIN - 40   # 虚拟页的白边只留一点
+    for s in FIT_SCALES:
+        vw = round(box_w / s) + 2 * pad_x
+        vh = round(box_h / s) + pad_top + pad_bot
+        n = len(pages(ws, vw, vh))
+        if n == 1 or s == FIT_SCALES[-1]:
+            return {"s": s, "vw": vw, "vh": vh, "crop": (pad_x, pad_top, vw - pad_x, vh - pad_bot), "n": n}
+    raise AssertionError
+
+
+def _render_plain(d, ws: dict, answers: bool, kid_name: str, W: int, H: int, boxes: list, footer: bool) -> None:
+    """口算、田字格、作文：画在 W×H 的页上（版本 2 是虚拟页）。boxes 里记每题答案写在哪。"""
+    y = _header(d, ws, kid_name, W)
     if answers:
         d.text((W - MARGIN, MARGIN + 20), "答案", font=_font("bold", 40), fill=(200, 60, 60), anchor="ra")
     items = ws["items"]
@@ -170,6 +280,7 @@ def render(ws: dict, answers: bool = False, kid_name: str = "", page: int = 0) -
             d.text((x, yy), it["q"], font=f, fill=INK)
             qw = d.textlength(it["q"] + " ", font=f)
             line_end = x + col_w - 18
+            boxes.append({"k": i, "box": [x, yy - 4, line_end, yy + row_h - 4]})   # 整道题（算式 + 答案）
             if answers:
                 d.text((x + qw, yy), it["a"], font=f, fill=(200, 60, 60))
             elif line_end - (x + qw) > 30:
@@ -193,6 +304,7 @@ def render(ws: dict, answers: bool = False, kid_name: str = "", page: int = 0) -
             d.text((x + w // 2, yy), label, font=fno if label.endswith(".") else fpy, fill=INK, anchor="mt")
             for k, ch in enumerate(it["a"]):
                 _tian(d, x + k * s, yy + 52, s, ch if answers else "", fch)
+            boxes.append({"k": i, "box": [x, yy + 52, x + w, yy + 52 + s]})
             x += w + gap_x
         if ws.get("topic") == "dictation" and not answers:
             d.text((MARGIN, H - MARGIN + 30), "家长念词语，孩子写在格子里。", font=_font("sans", 28), fill=MUTED)
@@ -212,10 +324,8 @@ def render(ws: dict, answers: bool = False, kid_name: str = "", page: int = 0) -
                 d.rectangle([x0 + c * cell, yy, x0 + (c + 1) * cell, yy + cell], outline=(170, 200, 170), width=2)
             if (r + 1) * cols % 100 < cols:  # 每满 100 字标一下
                 d.text((W - MARGIN + 6, yy + cell), str((r + 1) * cols // 100 * 100), font=_font("sans", 20), fill=MUTED, anchor="ls")
-    d.text((W // 2, H - 60), "小新出题", font=_font("sans", 22), fill=MUTED, anchor="mb")
-    buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=90, dpi=(200, 200))
-    return buf.getvalue()
+    if footer:
+        d.text((W // 2, H - 60), "小新出题", font=_font("sans", 22), fill=MUTED, anchor="mb")
 
 
 # ---------------------------------------------------------------- 生词默写（多页：听写格 → 古诗积累填空）
@@ -223,13 +333,17 @@ def render(ws: dict, answers: bool = False, kid_name: str = "", page: int = 0) -
 S_DICT = 104   # 听写田字格边长（一页放下 40 来个两字词）
 
 
-def pages(ws: dict) -> list[list[dict]]:
-    """生词默写分页：每页放哪些块。块是 ("listen", 一行的词) 或 ("write", 一题)。一页高度按块高累加，放不下换页。"""
+def pages(ws: dict, vw: int | None = None, vh: int | None = None) -> list[list[dict]]:
+    """生词默写分页：每页放哪些块。块是 ("listen", 一行的词) 或 ("write", 一题)。一页高度按块高累加，放不下换页。
+    vw × vh：排版用的「虚拟页」多大（版本 2 为了一页放下会把虚拟页放大、整页缩小印，见 fit）；不给就按 fit 算的。"""
     if ws["kind"] != "dictation":
         return [[{"all": True}]]
-    top, bottom = MARGIN + 230, H - MARGIN
+    if not vh:
+        g = fit(ws)
+        vw, vh = g["vw"], g["vh"]
+    top, bottom = MARGIN + 230, vh - MARGIN
     out, cur, y = [], [], top
-    usable = W - 2 * MARGIN
+    usable = vw - 2 * MARGIN
 
     def put(block, h):
         nonlocal cur, y
@@ -277,8 +391,9 @@ def pages(ws: dict) -> list[list[dict]]:
             put({"head": head["head"]}, 80)
             if it.get("bank"):   # 词库：单独一个框，按宽度换行
                 put({"en_bank": it["bank"]}, _bank_rows(it["bank"]) * EN_ROW + 40)
-            for line in it["lines"]:
-                put({"en_dialogue": {**it, "lines": [line]}}, _write_rows({"en": True, "lines": [line]}) * EN_ROW)
+            for li, line in enumerate(it["lines"]):
+                put({"en_dialogue": {**it, "lines": [line]}, "src": it, "li": li},
+                    _write_rows({"en": True, "lines": [line]}) * EN_ROW)
             groups = []
         for k, g in enumerate(groups):
             h = max((90 if it["q"] else 0) + _write_rows(it) * 96 for it in g) + 30
@@ -313,15 +428,31 @@ def _whole_poem(it: dict) -> bool:
     return not it.get("en") and bool(it["q"]) and all(BLANK.sub("", line).strip("，。；、 ") == "" for line in it["lines"])
 
 
-def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> bytes:
-    from PIL import Image, ImageDraw
-
+def key_offsets(ws: dict) -> dict[int, int]:
+    """每道题（ws["items"] 的下标）在 practice.answer_key 里从第几个开始：听写 1 个，填空每个空 1 个，别的 1 个。"""
     from server.exercises.chinese.word_dictation import BLANK
 
-    blocks = pages(ws)[page]
-    im = Image.new("RGB", (W, H), "white")
-    d = ImageDraw.Draw(im)
-    y = _header(d, ws, kid_name) if page == 0 else MARGIN + 20
+    out, k = {}, 0
+    for i, it in enumerate(ws["items"]):
+        out[i] = k
+        k += sum(len(BLANK.findall(line)) for line in it["lines"]) if it.get("part") == "write" else 1
+    return out
+
+
+def _blanks_before(it: dict, li: int) -> int:
+    from server.exercises.chinese.word_dictation import BLANK
+
+    return sum(len(BLANK.findall(line)) for line in it["lines"][:li])
+
+
+def _render_dictation(d, ws: dict, answers: bool, kid_name: str, page: int, W: int, H: int, boxes: list,
+                      footer: bool) -> None:
+    from server.exercises.chinese.word_dictation import BLANK
+
+    blocks = pages(ws, W, H)[page]
+    idx = {id(it): i for i, it in enumerate(ws["items"])}
+    offs = key_offsets(ws)
+    y = _header(d, ws, kid_name, W) if page == 0 else MARGIN + 20
     if answers:
         d.text((W - MARGIN, MARGIN + 20 if page == 0 else 50), "答案", font=_font("bold", 40), fill=(200, 60, 60), anchor="ra")
     red = (200, 60, 60)
@@ -332,7 +463,10 @@ def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> byte
             d.text((MARGIN, y + 10), b["head"], font=fhead, fill=INK)
             y += 80
         elif "en_dialogue" in b:
-            y = _en_dialogue(d, b["en_dialogue"], MARGIN + 10, y, W - 2 * MARGIN - 20, answers, red)
+            rec: list = []
+            y = _en_dialogue(d, b["en_dialogue"], MARGIN + 10, y, W - 2 * MARGIN - 20, answers, red, rec)
+            base = offs[idx[id(b["src"])]] + _blanks_before(b["src"], b["li"])
+            boxes.extend({"k": base + j, "box": bx} for j, bx in enumerate(rec))
         elif "en_bank" in b:
             fbk = _font("en", 40)
             h = _bank_rows(b["en_bank"]) * EN_ROW + 16
@@ -352,6 +486,7 @@ def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> byte
             it = b["en_line"]
             d.text((MARGIN, y + 30), it["q"], font=_font("sans", 34), fill=MUTED)
             _four_lines(d, MARGIN + 60, W - MARGIN, y + 20)
+            boxes.append({"k": offs[idx[id(it)]], "box": [MARGIN + 60, y, W - MARGIN, y + 20 + 96 + 24]})
             if answers:   # 写在第三条线（基线）上，和孩子写字一样
                 d.text((MARGIN + 80, y + 20 + 64), it["a"], font=_font("en", 52), fill=red, anchor="ls")
             y += EN_LINE_H
@@ -364,6 +499,7 @@ def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> byte
                     _tian(d, x + k * S_DICT, y + 40, S_DICT)
                     if answers:
                         d.text((x + k * S_DICT + S_DICT // 2, y + 40 + S_DICT // 2), ch, font=fch, fill=red, anchor="mm")
+                boxes.append({"k": offs[idx[id(it)]], "box": [x, y + 40, x + w, y + 40 + S_DICT]})
                 x += w + 40
             y += S_DICT + 64
         else:
@@ -379,8 +515,11 @@ def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> byte
                     if it.get("by"):
                         d.text((x0 + d.textlength(it["q"], font=_font("bold", 46)) + 24, yy + 22), it["by"], font=fby, fill=MUTED)
                     yy += 90
+                kb = offs[idx[id(it)]]
                 if it.get("en"):
-                    yy = _en_dialogue(d, it, x0 + 20, yy, col_w - 40, answers, red)
+                    rec = []
+                    yy = _en_dialogue(d, it, x0 + 20, yy, col_w - 40, answers, red, rec)
+                    boxes.extend({"k": kb + j, "box": bx} for j, bx in enumerate(rec))
                     bottom = max(bottom, yy)
                     continue
                 for line in it["lines"]:
@@ -392,18 +531,18 @@ def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> byte
                         else:           # 空：按字数留宽，答案页填红字
                             wd = max(2, len(part)) * 56 + 20
                             d.line([(x + 6, yy + 82), (x + wd - 6, yy + 82)], fill=INK, width=2)
+                            boxes.append({"k": kb, "box": [x, yy + 4, x + wd, yy + 92]})
+                            kb += 1
                             if answers:
                                 d.text((x + wd // 2, yy + 20), part, font=fpoem, fill=red, anchor="ma")
                             x += wd
                     yy += 96
                 bottom = max(bottom, yy)
             y = bottom + 30
-    n = len(pages(ws))
-    d.text((W // 2, H - 60), f"小新出题 · 第 {page + 1} 页，共 {n} 页" if n > 1 else "小新出题", font=_font("sans", 22),
-           fill=MUTED, anchor="mb")
-    buf = io.BytesIO()
-    im.save(buf, "JPEG", quality=90, dpi=(200, 200))
-    return buf.getvalue()
+    if footer:
+        n = len(pages(ws, W, H))
+        d.text((W // 2, H - 60), f"小新出题 · 第 {page + 1} 页，共 {n} 页" if n > 1 else "小新出题", font=_font("sans", 22),
+               fill=MUTED, anchor="mb")
 
 
 def _four_lines(d, x0: int, x1: int, y: int) -> None:
@@ -412,8 +551,9 @@ def _four_lines(d, x0: int, x1: int, y: int) -> None:
         d.line([(x0, y + k * 32), (x1, y + k * 32)], fill=col, width=wd)
 
 
-def _en_dialogue(d, it: dict, x0: int, y: int, width: int, answers: bool, red) -> int:
-    """英文对话填空：一个词一个词排，放不下换行；空格留横线（按答案长度），答案页填红字。返回画完的 y。"""
+def _en_dialogue(d, it: dict, x0: int, y: int, width: int, answers: bool, red, rec: list | None = None) -> int:
+    """英文对话填空：一个词一个词排，放不下换行；空格留横线（按答案长度），答案页填红字。返回画完的 y。
+    rec 给了就按顺序记每个空的位置（批改画圈用）。"""
     from server.exercises.chinese.word_dictation import BLANK
 
     f, fb = _font("en", 44), _font("en_bold", 44)
@@ -440,6 +580,8 @@ def _en_dialogue(d, it: dict, x0: int, y: int, width: int, answers: bool, red) -
                 x, yy = indent, yy + EN_ROW
             if m:
                 d.line([(x + 4, yy + 62), (x + wd - 4, yy + 62)], fill=INK, width=2)
+                if rec is not None:
+                    rec.append([round(x), yy, round(x + wd), yy + EN_ROW])
                 if answers:
                     d.text((x + wd / 2, yy + 14), m.group(1), font=f, fill=red, anchor="ma")
             else:
@@ -460,8 +602,11 @@ def page_files(ws: dict, answers: bool = False, kid_name: str = "") -> list[dict
         return [store.file_info(f)[1] for f in have]
     metas = []
     n = len(pages(ws))
+    lay = []
     for i in range(n):
-        data = render(ws, answers, kid_name, i)
+        im, bx = render_page(ws, answers, kid_name, i)
+        lay.append(bx)
+        data = _jpeg(im)
         fid, path = store.allocate()
         path.write_bytes(data)
         suffix = ("（答案）" if answers else "") + (f"第{i + 1}页" if n > 1 else "")
@@ -471,8 +616,16 @@ def page_files(ws: dict, answers: bool = False, kid_name: str = "") -> list[dict
         metas.append(meta)
     ws[key] = [m["id"] for m in metas]
     ws["page_file" if not answers else "answer_file"] = metas[0]["id"]
+    ws["boxes"] = lay
     store._write_json(_dir() / f"{ws['id']}.json", ws)
     return metas
+
+
+def boxes(ws: dict) -> list[list[dict]]:
+    """每页每个答案格在 A4 上的位置（render_page 记的）。出卷时存下了就用存的，没有现排一遍（不存图）。"""
+    if ws.get("boxes"):
+        return ws["boxes"]
+    return [render_page(ws, False, "", i)[1] for i in range(len(pages(ws)))]
 
 
 def page_file(ws: dict, answers: bool = False, kid_name: str = "") -> dict:
@@ -482,12 +635,14 @@ def page_file(ws: dict, answers: bool = False, kid_name: str = "") -> dict:
     key = "answer_file" if answers else "page_file"
     if ws.get(key) and store.file_info(ws[key]):
         return store.file_info(ws[key])[1]
-    data = render(ws, answers, kid_name)
+    im, bx = render_page(ws, answers, kid_name)
+    data = _jpeg(im)
     fid, path = store.allocate()
     path.write_bytes(data)
     meta = store.commit(fid, f"{ws['title']}{'（答案）' if answers else ''}.jpg", "image/jpeg", len(data), owner="xiaoxin")
     store.variant_path(fid, "thumb")
     store.variant_path(fid, "screen")
     ws[key] = fid
+    ws["boxes"] = [bx]
     store._write_json(_dir() / f"{ws['id']}.json", ws)
     return meta

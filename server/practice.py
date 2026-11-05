@@ -163,6 +163,21 @@ GRADE_PROMPT = """你是小学老师，批改孩子手写的卷子。下面是�
 补全对话的每个空算一题（no 用说话人和空前面两三个词）。"""
 
 
+def _blank_label(line: str, j: int) -> str:
+    """一行里第 j 个空叫什么：那一小段（按全角空格分），这个空写「__」、别的空写「□」。
+    「百依百（{顺}）　四（{平}）八稳」第 2 个空 →「四（__）八稳」；「人心{齐}，{泰山移}。」第 2 个 →「人心□，__。」。"""
+    from server.exercises.chinese.word_dictation import BLANK
+
+    k = 0
+    for part in line.split("　"):
+        n = len(BLANK.findall(part))
+        if k + n > j:
+            seen = iter(range(k, k + n))
+            return BLANK.sub(lambda m: "__" if next(seen) == j else "□", part).strip()
+        k += n
+    return BLANK.sub("__", line)[:8]
+
+
 def answer_key(ws: dict) -> list[dict]:
     from server.exercises.chinese.word_dictation import BLANK
 
@@ -172,8 +187,8 @@ def answer_key(ws: dict) -> list[dict]:
             out.append({"no": it["q"].rstrip("."), "want": it["a"]})
         elif it.get("part") == "write":
             for line in it["lines"]:
-                for b in BLANK.findall(line):
-                    out.append({"no": it["q"] or BLANK.sub("__", line)[:8], "want": b})
+                for j, b in enumerate(BLANK.findall(line)):
+                    out.append({"no": it["q"] or _blank_label(line, j), "want": b})
         else:
             out.append({"no": it["q"], "want": it["a"]})
     return out
@@ -191,11 +206,43 @@ def _parse_grade(text: str) -> dict:
 
 
 def grade(pid: str, file_ids: list[str]) -> dict:
-    """看图模型对着答案批改。同步跑（几十秒），调用方放线程里。"""
-    from src.llm import client
-
+    """批改交上来的卷子。新卷子（有二维码，worksheet v2）走 check_work：读码拉正、按格子判、红圈图；
+    老卷子（11/6 以前打的）还按老办法整张照片给模型。同步跑，调用方放线程里。
+    新卷子照片不合格：抛 PracticeError（话是给孩子的，让她重拍再交）。"""
     r = get(pid)
     ws = worksheet.get(r["worksheet"])
+    if ws.get("v", 1) >= 2:
+        return _grade_v2(r, ws, file_ids)
+    return _grade_v1(r, ws, file_ids)
+
+
+def _grade_v2(r: dict, ws: dict, file_ids: list[str]) -> dict:
+    from server.tools import check_work
+
+    g = check_work.grade([{"id": f} for f in file_ids], r["kid"])
+    pages = [p for p in g["pages"] if p["ws"]["id"] == ws["id"]]
+    if not pages:
+        raise PracticeError(g["retake"][0] if g["retake"] else "照片里不是这份卷子，请拍「" + ws["title"] + "」再交")
+    items = []
+    for p in pages:
+        for n, c in enumerate(p["cells"], 1):
+            bad = n in p["wrong"]
+            items.append({"no": c["no"], "want": c["want"], "got": p["wrong"].get(n, c["want"]) if bad else c["want"], "ok": not bad})
+    rep = check_work.report({**g, "pages": pages, "retake": g["retake"]})
+    total = sum(len(p["cells"]) for p in pages)
+    gr = {"items": items, "right": sum(x["ok"] for x in items), "total": total, "comment": "",
+          "model": pages[0]["model"], "files": [f["id"] for f in rep["files"] if f.get("id")], "say": rep["say"],
+          "missing_pages": len(worksheet.pages(ws)) - len(pages)}
+    with _lock:
+        r = get(r["id"])
+        r.update(answers=file_ids, grade=gr, state="graded", graded=time.time())
+        _save(r)
+    return r
+
+
+def _grade_v1(r: dict, ws: dict, file_ids: list[str]) -> dict:
+    from src.llm import client
+
     parts = [{"type": "text", "text": GRADE_PROMPT + "\n\n标准答案：\n" + json.dumps(answer_key(ws), ensure_ascii=False)}]
     for fid in file_ids:
         img = store.best_image(fid)
@@ -207,7 +254,7 @@ def grade(pid: str, file_ids: list[str]) -> dict:
     g = _parse_grade(rep.text)
     g["model"] = rep.model
     with _lock:
-        r = get(pid)
+        r = get(r["id"])
         r.update(answers=file_ids, grade=g, state="graded", graded=time.time())
         _save(r)
     return r
@@ -221,11 +268,18 @@ def grade_text(r: dict, kid_name: str, parents: list[str]) -> str:
     lines = [f"{head} {kid_name}的「{r['title']}」批改好了：对了 {g['right']} / {g['total']}。".strip(),
              f"用时 {mmss(used_s(r))}（限时 {mmss(r['limit_s'])}，" + (f"超时 {mmss(over)}" if over else "没超时")
              + f"），第 {r['attempt']} 次练。"]
-    if wrong:
+    if wrong and g.get("files"):   # 新卷子：和「小新批一下」同一个说法（check_work.summary），红圈图跟着发
+        from server.tools import check_work
+
+        t, _ = check_work.summary(r["title"], g["total"], wrong)
+        lines.append(t.split("\n", 1)[1] if "\n" in t else "")
+    elif wrong:
         lines.append("错的：" + "；".join(f"{x.get('no')}. 应为「{x.get('want')}」" + (f"，写成了「{x['got']}」" if x.get("got") else "，没写")
                                           for x in wrong[:20]) + ("……" if len(wrong) > 20 else ""))
     else:
         lines.append("全对 🎉")
+    if g.get("missing_pages"):
+        lines.append(f"（这份还有 {g['missing_pages']} 页没拍上来。）")
     if g.get("comment"):
         lines.append(g["comment"])
     return "\n".join(lines)

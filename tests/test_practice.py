@@ -68,6 +68,8 @@ def test_practice_flow_grade_and_report(client, fakes, monkeypatch):
     if not any(m["role"] == "parent" and m["name"] == "爸爸" for m in members.all_members()):
         members.add("parent", "爸爸")
     ws = worksheet.create("word_dictation", subject="chinese", units=[1], for_kid=kid["id"])
+    ws.pop("v")   # 老卷子（没二维码）：整张照片给模型批。新卷子的交卷批改见 test_practice_submit_v2
+    store._write_json(worksheet._dir() / f"{ws['id']}.json", ws)
     r = client.post("/api/practice", json={"worksheet": ws["id"], "kid": kid["id"], "minutes": 1}).json()
     assert r["state"] == "listening" and len(r["listen"]) == 38 and r["attempt"] == 1 and r["limit_s"] == 60
     assert client.get(f"/api/practice/current?kid={kid['id']}").json()["id"] == r["id"]
@@ -110,6 +112,45 @@ def test_practice_flow_grade_and_report(client, fakes, monkeypatch):
     assert r2["attempt"] == 2
     rep = practice.report(kid["id"])
     assert "一共 2 次练习" in rep and "第 1 次练，批改了" in rep and "学校→学笑" in rep and "超时" in rep
+
+
+def test_practice_submit_v2(client, fakes, monkeypatch):
+    """新卷子（四角二维码）交卷：读码拉正 + 按格子判 + 红圈图；照片不合格就原话让重拍。"""
+    import cv2
+    import numpy as np
+
+    from src.llm import client as llm
+    from tests.test_check_work import _photo
+
+    kid = members.kids()[0]
+    ws = worksheet.create("word_dictation", subject="chinese", units=[4], for_kid=kid["id"])
+    r = practice.start(ws["id"], kid)
+    page = np.asarray(worksheet.render_page(ws, True, "", 0)[0])[:, :, ::-1].copy()
+
+    def upload(img):
+        ok, enc = cv2.imencode(".jpg", img)
+        return client.post("/api/files", content=enc.tobytes(),
+                           headers={"Content-Type": "image/jpeg", "X-Filename": "paper.jpg"}).json()["id"]
+
+    def wait():
+        for _ in range(100):
+            m = store.get(kid["thread"])["messages"][-1]
+            if m["role"] == "assistant" and m.get("via") == "check":
+                return m
+            time.sleep(0.05)
+        raise AssertionError("没等到批改结果")
+
+    monkeypatch.setattr(llm, "chat_full", lambda models, messages, **kw: _Rep(json.dumps({"wrong": [{"id": 3, "got": "晋通"}]})))
+    client.post(f"/api/practice/{r['id']}/submit", json={"file_ids": [upload(np.full_like(page, 255))]})
+    m = wait()
+    assert "二维码" in m["text"] and m["say"] == m["text"] and practice.get(r["id"])["state"] == "done"
+
+    client.post(f"/api/practice/{r['id']}/submit", json={"file_ids": [upload(_photo(page, tilt=0.1, rot=3))]})
+    m = wait()
+    g = practice.get(r["id"])["grade"]
+    assert g["total"] == len(practice.answer_key(ws)) and g["right"] == g["total"] - 1
+    assert "批改好了" in m["text"] and "第 3 个：写成「晋通」，应为「普通」" in m["text"]
+    assert len(m["files"]) == 1 and m["say"].startswith("卞依一") is False and "错了1个" in m["say"]
 
 
 def test_start_practice_tool(client, fakes):
