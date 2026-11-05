@@ -374,10 +374,22 @@ async function ensWordPlay(mode) {
     await ensSleep(700);
   }
 }
+// 关单词卡：停声音、丢掉没录完的；回到原来的地方（口语练习的进度、面板都不动）
+function ensWordClose() {
+  const el = $("ens-word");
+  if (!el || el.hidden) return false;
+  ensW.gen++;
+  ens.audio?.pause();
+  if (ensW.rec) { ensW.rec.stop(); ensW.rec = null; }
+  el.hidden = true;
+  return true;
+}
 function ensWordClick(e) {
+  // 点卡片外面（半透明的那一圈）任何地方都关；点卡片里空白的地方不关
+  if (!e.target.closest(".ens-wc")) { ensWordClose(); return; }
   const k = e.target.closest("[data-w]")?.dataset.w;
-  if (!k) { if (e.target.id === "ens-word") $("ens-word").hidden = true; return; }
-  if (k === "close") { ensW.gen++; ens.audio?.pause(); $("ens-word").hidden = true; }
+  if (!k) return;
+  if (k === "close") { ensWordClose(); return; }
   if (k === "play") ensWordPlay(0);
   if (k === "slow") ensWordPlay("slow");
   if (k === "loop") ensWordPlay("loop");
@@ -405,6 +417,13 @@ async function ensWordStop(btn) {
     const r = await ensApi(`api/english/word/${encodeURIComponent(ensW.word)}/check`, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav });
     ensWordRender(r);
   } catch (e) { toast(e.message); ensWordRender(); }
+}
+
+// 键盘 Esc、安卓返回键：先关单词卡
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") ensWordClose(); });
+{
+  const prevBack = window.xiaoxinBack;
+  window.xiaoxinBack = () => ensWordClose() || (prevBack ? prevBack() : false);
 }
 
 // ---------------------------------------------------------------- 看板（聊天里一张卡）：今日推荐、两周、熟练度墙、读不准的词、最近练习
