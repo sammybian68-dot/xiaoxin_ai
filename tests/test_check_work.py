@@ -375,3 +375,26 @@ def test_show_checked_old_check(family, monkeypatch):
     ms = [m for m in store.get(tid)["messages"] if m.get("via") == "check"]
     assert len(ms) == 1 and ms[0]["files"][0]["id"] == pic["id"]          # 同一组照片只发一次（最新那次）
     assert "老的长回复" in ms[0]["text"] or "应为「指甲」" in ms[0]["text"]
+
+
+def test_send_file_resends_worksheet_and_image(family):
+    """「把那张卷子再发我」：练习纸发出它的每一页；图片原样再发一条；不在这段对话里的不发。"""
+    from server.tools import printer as printer_tools
+
+    kid = family["ids"]["女儿"]
+    tid = family["admin"].get(f"/api/thread?kid={kid}").json()["id"]
+    pic = _upload(np.full((300, 400, 3), 200, np.uint8))
+    store.append(tid, {"role": "user", "text": "", "files": [pic]})
+    tok = printer_tools.ctx.set({"thread": tid, "kid": kid, "kid_name": "卞依一"})
+    try:
+        made = printer_tools.run("make_exercise", json.dumps({"subject": "chinese", "topic": "word_dictation", "units": [4]}))
+        wid = printer_tools.WID.search(made).group(0)
+        store.append(tid, {"role": "assistant", "text": "出好了", "actions": [{"name": "make_exercise", "result": made}]})
+        out = printer_tools.run("send_file", json.dumps({"files": [wid, "f_" + pic["id"]]}))
+        assert "重新发到聊天里" in out and "第四单元生词默写" in out
+        m = store.get(tid)["messages"][-1]
+        assert m["via"] == "resend" and len(m["files"]) == 2 and m["files"][1]["id"] == pic["id"]
+        stranger = _upload(np.full((10, 10, 3), 0, np.uint8))
+        assert "不在这段对话里" in printer_tools.run("send_file", json.dumps({"files": ["f_" + stranger["id"]]}))
+    finally:
+        printer_tools.ctx.reset(tok)

@@ -258,7 +258,7 @@ function hubMessage(m, kind) {
   if (kind !== "msg" || m.role === "note") return;
   if ($("messages").querySelector(`[data-mid="${CSS.escape(m.id)}"]`)) return;  // 本地已经画了
   // 打印结果、画好的图是后台发来的，不是这台正在出字的那条
-  if (m.role === "assistant" && !["print", "draw", "english", "check"].includes(m.via) && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
+  if (m.role === "assistant" && !["print", "draw", "english", "check", "resend"].includes(m.via) && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
   if (m.role === "user" && m.via === "talk" && talk.on) return;      // 自己这台在自由对话：那句由 heard 画（带原声小喇叭）
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
   const row = appendMessage(m);

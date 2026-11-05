@@ -59,12 +59,22 @@ SPECS = [
         "parameters": {"type": "object", "properties": {}},
     }},
     {"type": "function", "function": {
+        "name": "send_file",
+        "description": "把这段对话里以前的一份东西（图片、PDF、练习纸、画的图）再发一次到聊天里，方便对方直接看、转发、保存。"
+                       "「把那张图再发我」「刚才的卷子发一下」「发给我看看」都用这个，不要说办不到、不要让人往上翻。"
+                       "先用 list_printables 看有哪些。批改过的卷子用 show_checked。",
+        "parameters": {"type": "object", "properties": {
+            "files": {"type": "array", "items": {"type": "string"}, "description": "文件 id（f_…）或练习纸 id（w_…），可以几个"},
+            "answers": {"type": "boolean", "description": "练习纸：发答案页（默认发练习页）"},
+        }, "required": ["files"]},
+    }},
+    {"type": "function", "function": {
         "name": "list_printables",
         "description": "列出这段对话里能打印的东西：文件名、类型、页数、彩色多少、是谁发的。决定打哪个、黑白还是彩色前先看这个。",
         "parameters": {"type": "object", "properties": {}},
     }},
 ]
-NAMES = {"make_exercise", "make_worksheet", "print_file", "list_printables", "printer_status"}  # make_worksheet：老名字，历史里有
+NAMES = {"make_exercise", "make_worksheet", "print_file", "list_printables", "printer_status", "send_file"}  # make_worksheet：老名字，历史里有
 WID = re.compile(r"w_([0-9a-f]{16})")  # 工具结果里的练习纸 id
 
 
@@ -145,6 +155,26 @@ def run(name: str, arguments: str) -> str:
                     f"播报：{ws['title']}出好了，要打印就说「打印出来」。")
         if name == "printer_status":
             return printing.describe_status(printing.status())
+        if name == "send_file":
+            refs = [str(x) for x in (args.get("files") or [])][:8]
+            if not refs:
+                return "失败：files 是空的，先用 list_printables 看有哪些"
+            metas, names = [], []
+            for ref in refs:
+                if ref.startswith("w_") or ref in ("latest", "最近", "刚才的"):
+                    fid, ws = _resolve(ref, thread)
+                    if ws is not None:
+                        pages = worksheet.page_files(ws, answers=bool(args.get("answers")), kid_name=c.get("kid_name", ""))
+                        metas += pages
+                        names.append(ws["title"] + ("（答案）" if args.get("answers") else ""))
+                        continue
+                else:
+                    fid, _ = _resolve(ref, thread)
+                info = store.file_info(fid)
+                metas.append(info[1])
+                names.append(info[1].get("name", "文件"))
+            store.append(thread, {"role": "assistant", "via": "resend", "model": "", "text": "", "files": metas})
+            return f"已经把「{'、'.join(names)}」重新发到聊天里了（{len(metas)} 个文件）。播报：发出来了，往下看。"
         if name == "list_printables":
             items = _items(thread)
             if not items:
