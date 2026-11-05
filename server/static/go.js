@@ -535,9 +535,14 @@ function goLine(cv, values, o = {}) {
   pts.forEach(([x, v], i) => (i ? c.lineTo(x, Y(v)) : c.moveTo(x, Y(v)))); c.stroke();
   for (const m of o.marks || []) {
     if (values[m.i] == null) continue;
-    c.fillStyle = m.color || "#ff5a45"; c.beginPath(); c.arc(cv._x(m.i), Y(values[m.i]), 5, 0, 7); c.fill();
+    c.fillStyle = m.color || "#ff5a45"; c.beginPath(); c.arc(cv._x(m.i), Y(values[m.i]), m.on ? 8 : 5.5, 0, 7); c.fill();
+    if (m.on) { c.strokeStyle = "#fff"; c.lineWidth = 2; c.stroke(); }
   }
-  if (o.cursor != null) { c.strokeStyle = "#fff"; c.lineWidth = 1.5; c.beginPath(); c.moveTo(cv._x(o.cursor), 4); c.lineTo(cv._x(o.cursor), h - 4); c.stroke(); }
+  if (o.cursor != null) {
+    const x = cv._x(o.cursor);
+    c.strokeStyle = "#fff"; c.lineWidth = 2.5; c.beginPath(); c.moveTo(x, 4); c.lineTo(x, h - 4); c.stroke();
+    if (values[o.cursor] != null) { c.fillStyle = "#fff"; c.beginPath(); c.arc(x, Y(values[o.cursor]), 6, 0, 7); c.fill(); }
+  }
 }
 // ---------------------------------------------------------------- 复盘
 // 盘面在前端按棋谱重摆（简单提子规则，和服务端 go_rules 一致；复盘只用来看，不判合法）
@@ -583,7 +588,7 @@ async function goReviewOpen(gid) {
         <div class="gor-head"><h3></h3><button type="button" class="go-close" data-r="close">关掉</button></div>
         <div class="gor-sum"></div>
         <canvas class="gor-chart" aria-label="你的胜率曲线，红点是下坏的手，点一下跳到那一手"></canvas>
-        <div class="gor-legend"><span><i style="background:#ff5a45"></i>大亏</span><span><i style="background:#e9b85c"></i>小亏</span><span>竖线 = 现在看的那手</span></div>
+        <div class="gor-legend"><span><i style="background:#ff5a45"></i>大亏</span><span><i style="background:#e9b85c"></i>小亏</span><span>按住曲线左右拖，竖线就是正在看的那手</span></div>
         <div class="gor-keys"></div>
         <div class="gor-nav"><button type="button" data-r="first" aria-label="开头">⏮</button><button type="button" data-r="prev" aria-label="上一手">◀</button>
           <button type="button" data-r="next" aria-label="下一手">▶</button><button type="button" data-r="last" aria-label="最后">⏭</button><span></span></div>
@@ -591,10 +596,23 @@ async function goReviewOpen(gid) {
       </div>`;
     document.body.appendChild(el);
     el.addEventListener("click", gorButton);
-    el.querySelector(".gor-chart").addEventListener("pointerdown", (e) => {
-      const cv = e.currentTarget, r = cv.getBoundingClientRect(), n = gor.r.curve.length - 1;
-      gorGo(Math.max(0, Math.min(n, Math.round(((e.clientX - r.left - 8) / (r.width - 16)) * n))));
-    });
+    // 曲线是主要的选手方式：按住拖，竖线跟着手指走；松手时离红点（坏棋）≤ 2 手就吸到那手并念讲解
+    const chart = el.querySelector(".gor-chart");
+    const at = (e) => {
+      const r = chart.getBoundingClientRect(), n = gor.r.curve.length - 1;
+      return Math.max(0, Math.min(n, Math.round(((e.clientX - r.left - 8) / (r.width - 16)) * n)));
+    };
+    let dragging = false;
+    chart.addEventListener("pointerdown", (e) => { dragging = true; chart.setPointerCapture?.(e.pointerId); gorGo(at(e)); });
+    chart.addEventListener("pointermove", (e) => { if (dragging) { const n = at(e); if (n !== gor.n) gorGo(n); } });
+    const up = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const n = at(e), near = gor.r.keys.map((k) => k.n).sort((a, b) => Math.abs(a - n) - Math.abs(b - n))[0];
+      if (near != null && Math.abs(near - n) <= 2) { gorGo(near); if (gor.key?.text && gor.saying == null) gorSay(); }
+    };
+    chart.addEventListener("pointerup", up);
+    chart.addEventListener("pointercancel", () => { dragging = false; });
     window.addEventListener("resize", () => { if (!el.hidden && gor.r) gorRender(); });
     document.addEventListener("keydown", (e) => {
       if (el.hidden || !gor.r) return;
@@ -633,8 +651,25 @@ function gorHeader() {
   const el = $("gor"), r = gor.r, d = new Date(r.created * 1000);
   el.querySelector(".gor-head h3").textContent = `${d.getMonth() + 1}月${d.getDate()}日 对 ${r.level_name} · ${r.kid_color === "B" ? "执黑" : "执白"}`;
   el.querySelector(".gor-sum").textContent = (r.result ? r.result.text + "。" : "") + r.summary;
-  el.querySelector(".gor-keys").innerHTML = r.keys.map((k) => `<button type="button" class="${k.grade}${k.n === gor.n ? " on" : ""}" data-key="${k.n}">第 ${k.n} 手 ${k.decided ? `-${k.loss_score} 目` : `-${Math.round(k.loss_wr * 100)}%`}${k.pending ? " …" : ""}</button>`).join("")
-    || "<small>这盘没有明显下坏的手 👍</small>";
+  gorKeys();
+}
+
+// 关键步一盘可能二十多手：只摆正在看的那手附近的 6 个（不然一屏按钮），其余靠曲线上的红点点 / 拖，
+// 或者按「‹ 上一个坏棋」「下一个坏棋 ›」
+const GOR_SHOW = 6;
+function gorKeys() {
+  const el = $("gor"), r = gor.r, ks = r.keys;
+  if (!ks.length) { el.querySelector(".gor-keys").innerHTML = "<small>这盘没有明显下坏的手 👍</small>"; return; }
+  let at = ks.findIndex((k) => k.n >= gor.n);
+  if (at < 0) at = ks.length - 1;
+  const lo = Math.max(0, Math.min(at - 2, ks.length - GOR_SHOW));
+  const shown = ks.slice(lo, lo + GOR_SHOW);
+  const i = ks.findIndex((k) => k.n === gor.n);
+  el.querySelector(".gor-keys").innerHTML =
+    `<button type="button" class="nav" data-r="kprev"${ks.some((k) => k.n < gor.n) ? "" : " disabled"} aria-label="上一个坏棋">‹</button>`
+    + shown.map((k) => `<button type="button" class="${k.grade}${k.n === gor.n ? " on" : ""}" data-key="${k.n}">第 ${k.n} 手 ${k.decided ? `-${k.loss_score} 目` : `-${Math.round(k.loss_wr * 100)}%`}${k.pending ? " …" : ""}</button>`).join("")
+    + `<button type="button" class="nav" data-r="knext"${ks.some((k) => k.n > gor.n) ? "" : " disabled"} aria-label="下一个坏棋">›</button>`
+    + `<small class="kcount">${i >= 0 ? `第 ${i + 1} / ${ks.length} 个坏棋` : `共 ${ks.length} 个坏棋，红点都是`}</small>`;
 }
 
 // 念讲解（儿子还不认字）：用小新平时的声音（/api/tts），念完按钮变回来。再点一下停
@@ -692,10 +727,10 @@ function gorRender() {
     }
   }
   goDraw(cv, { board, last, marks });
-  const keyMarks = r.keys.map((x) => ({ i: x.n, color: x.grade === "big" ? "#ff5a45" : "#e9b85c" }));
+  const keyMarks = r.keys.map((x) => ({ i: x.n, color: x.grade === "big" ? "#ff5a45" : "#e9b85c", on: x.n === n }));
   goLine(el.querySelector(".gor-chart"), r.curve, { lo: 0, hi: 1, mid: 0.5, marks: keyMarks, cursor: n, color: "#f3ece0", fill: "rgba(243,236,224,.10)" });
   el.querySelector(".gor-nav span").textContent = `${n} / ${r.moves.length} 手`;
-  el.querySelectorAll(".gor-keys button").forEach((b) => b.classList.toggle("on", +b.dataset.key === n));
+  gorKeys();
   const box = el.querySelector(".gor-move");
   const pct = (v) => (v == null ? "-" : Math.round(v * 100) + "%");
   const lead = (s) => (s == null ? "-" : s >= 0 ? `领先 ${s.toFixed(1)} 目` : `落后 ${(-s).toFixed(1)} 目`);
@@ -703,7 +738,7 @@ function gorRender() {
   const [c, mv] = r.moves[n - 1];
   const mine = c === r.kid_color;
   const before = r.curve[n - 1], after = r.curve[n];
-  const head = `<div class="line">第 ${n} 手 · ${mine ? "你" : "小新"}下在 <b>${esc(mv)}</b>${k && r.best[n - 1] && r.best[n - 1] !== mv ? `，AI 建议 <b style="color:#7be3a0">${esc(r.best[n - 1])}</b>` : ""}</div>`
+  const head = `<div class="line">第 ${n} 手 · ${mine ? "你" : "小新"}下在 <b>${esc(mv)}</b>${k && r.best[n - 1] && r.best[n - 1] !== mv ? `，小新建议 <b style="color:#7be3a0">${esc(r.best[n - 1])}</b>` : ""}</div>`
     + `<div class="nums"><span>你的胜率 <b>${pct(before)}</b> → <b class="${k ? "drop" : ""}">${pct(after)}</b></span>`
     + `<span>目差 <b>${lead(r.score[n - 1])}</b> → <b>${lead(r.score[n])}</b></span></div>`;
   if (!k) { box.innerHTML = head; return; }
@@ -711,7 +746,7 @@ function gorRender() {
   box.innerHTML = head
     + (k.text ? `<div class="gor-text">${esc(k.text)}</div>` : `<div class="gor-text loading">小新正在想这手怎么讲给你听…</div>`)
     + `<div class="gor-pv">${k.text ? `<button type="button" class="gor-say" data-r="say">${gor.saying === n ? "⏹ 停" : "🔊 听小新讲"}</button>` : ""}`
-    + `<button type="button" data-r="pv"${gor.pv ? ' class="on"' : ""}>${gor.pv ? `AI 的下法 ${gor.pv} / ${pvLen}（再点一手）` : "看 AI 的下法"}</button>`
+    + `<button type="button" data-r="pv"${gor.pv ? ' class="on"' : ""}>${gor.pv ? `小新的下法 ${gor.pv} / ${pvLen}（再点一手）` : "看小新的下法"}</button>`
     + (gor.pv ? `<button type="button" data-r="pv0">回到实战</button>` : "") + `</div>`
     + (k.source === "template" ? `<div class="src">（讲解没通过核对，换成了固定说法）</div>` : "");
 }
@@ -724,6 +759,11 @@ function gorButton(ev) {
   const k = b.dataset.r;
   if (k === "close") { gorHush(); gor.gen++; $("gor").hidden = true; return; }
   if (k === "say") { gorSay(); return; }
+  if (k === "kprev" || k === "knext") {
+    const ks = r.keys, t = k === "kprev" ? [...ks].reverse().find((x) => x.n < gor.n) : ks.find((x) => x.n > gor.n);
+    if (t) { gorGo(t.n); if (gor.key?.text && gor.saying == null) gorSay(); }
+    return;
+  }
   if (k === "first") gorGo(0);
   if (k === "prev") gorGo(gor.n - 1);
   if (k === "next") gorGo(gor.n + 1);

@@ -26,7 +26,8 @@ LEVELS = [("world", "世界冠军"), ("china", "中国冠军")] + \
          [(f"{d}d", f"{d} 段") for d in range(9, 0, -1)] + [(f"{k}k", f"{k} 级") for k in range(1, 21)]
 LEVEL_NAME = dict(LEVELS)
 CHAMP_VISITS = {"world": 3000, "china": 1500}
-ANALYZE_VISITS = 400      # 每手分析（复盘用）：A100 上 ~0.3 秒
+ANALYZE_VISITS = 400      # 每手分析（胜率曲线、亏了多少）：A100 上 ~0.3 秒
+ADVICE_VISITS = 1500      # 复盘里的「小新建议」：要讲的那几手再用中国冠军档的搜索量重算一遍最好的点（~2 秒一手）
 HUMAN_VISITS = 60         # 段级档落子前搜一下：只用来判断该不该 pass
 KOMI = 7.5
 RESIGN_WR, RESIGN_RUN, RESIGN_MIN = 0.02, 10, 60   # 小新认输：自己的胜率连续 10 次分析都 < 2%，且下满 60 手
@@ -132,7 +133,7 @@ def review_later(gid: str) -> bool:
                     save(cur)
                 with _changed:
                     _changed.notify_all()
-            go_review.fill(g, on_one=saved)
+            go_review.fill(g, on_one=saved, deepen=deep_best)
         except Exception:  # noqa: BLE001 讲解没生成出来：下次打开复盘再试
             logging.getLogger("xiaoxin.go").exception("review %s", gid)
         finally:
@@ -192,6 +193,14 @@ def analyze(g: dict, upto: int) -> dict:
     to_move = R.other(moves[-1][0]) if moves else ("W" if g.get("stones") else "B")
     r = _query(g, moves, maxVisits=ANALYZE_VISITS, includeOwnership=True)
     return _black_view(r, to_move)
+
+
+def deep_best(g: dict, upto: int) -> list[dict]:
+    """第 upto 手之后的局面，用 ADVICE_VISITS 次搜索算「最好的点」和变化（黑方视角，格式同 analyze 的 best）。
+    建议只看这个，和对手是几级无关：每手分析和建议都用主模型（b28，最强的那个），不用人类模型。"""
+    moves = g["moves"][:upto]
+    to_move = R.other(moves[-1][0]) if moves else ("W" if g.get("stones") else "B")
+    return _black_view(_query(g, moves, maxVisits=ADVICE_VISITS), to_move)["best"]
 
 
 def engine_move(g: dict) -> str:

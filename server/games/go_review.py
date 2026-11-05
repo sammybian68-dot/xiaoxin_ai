@@ -98,7 +98,7 @@ def _group_facts(board: R.Board, own: list, me: str, own_before: list | None = N
     对方本来能被吃、这手之后活了的（连成片说）；本来就很可能被吃的大块（≥ 3 颗）。"""
     out, escaped = [], []
     for color in (me, R.other(me)):
-        who = "你的" if color == me else "小新的"
+        who = "你的" if color == me else "对手的"
         s = 1 if color == "B" else -1
         for stones, libs in board.groups(color):
             n = len(stones)
@@ -112,7 +112,7 @@ def _group_facts(board: R.Board, own: list, me: str, own_before: list | None = N
                 was = sum(own_before[y * R.N + x] * s for x, y in stones) / n
                 if color == me and was - avg >= WORSE and avg < 0:
                     state = "很可能被吃" if avg <= -DEAD else "变得很危险"
-                    out.append(f"{who}{_stones_str(stones)}（{_where(stones)}）这手之前还好好的，这手之后 AI 判断{state}")
+                    out.append(f"{who}{_stones_str(stones)}（{_where(stones)}）这手之前还好好的，这手之后小新看{state}")
                     continue
                 # 对方的块：这手之前 AI 判断能吃掉，这手之后它活了 / 逃出来了（孩子错过了吃棋的机会）。
                 # 先攒着，下面把挨得近的连成一片说（被围的一大片常常是好几块，分开说一长串）
@@ -122,12 +122,12 @@ def _group_facts(board: R.Board, own: list, me: str, own_before: list | None = N
             if n < 3:
                 continue
             if avg <= -DEAD:
-                out.append(f"{who}{_stones_str(stones)}（{_where(stones)}）AI 判断很可能被吃")
+                out.append(f"{who}{_stones_str(stones)}（{_where(stones)}）小新看很可能被吃")
             elif avg <= -DANGER:
                 out.append(f"{who}{_stones_str(stones)}（{_where(stones)}）很危险")
     for blob in _clusters(escaped):
         n = len(blob)
-        out.insert(0, f"小新{_where(blob)}一共 {n} 颗子（{_stones_str(blob).split(' ')[0]} 一带），这手之前 AI 判断你能吃掉，这手之后活了")
+        out.insert(0, f"对手{_where(blob)}一共 {n} 颗子（{_stones_str(blob).split(' ')[0]} 一带），这手之前小新看你能吃掉，这手之后活了")
     return out
 
 
@@ -212,7 +212,7 @@ def _best_saves(board: R.Board, best: str, me: str) -> list[str]:
             blocks.append(st)
     if len(blocks) >= 2:
         names = "和".join(_stones_str(st) for st in blocks[:3])
-        out.append(f"AI 建议的 {best}（绿圈）能把你{_where(set().union(*blocks))}的{names}连成一块")
+        out.append(f"小新建议的 {best}（绿圈）能把你{_where(set().union(*blocks))}的{names}连成一块")
     for n in R.neighbors(x, y):
         v = board.at(*n)
         if v == "." or n in seen:
@@ -227,7 +227,7 @@ def _best_saves(board: R.Board, best: str, me: str) -> list[str]:
                 continue
             now = len(after.group(x, y)[1])
             if now > len(libs):
-                out.append(f"AI 建议的 {best}（绿圈）紧挨着你{_where(stones)}的{_stones_str(stones)}，是给这块棋长气：原来只有 {len(libs)} 口气，下了以后有 {now} 口")
+                out.append(f"小新建议的 {best}（绿圈）紧挨着你{_where(stones)}的{_stones_str(stones)}，是给这块棋长气：原来只有 {len(libs)} 口气，下了以后有 {now} 口")
         elif v == R.other(me):
             after = board.copy()
             try:
@@ -235,9 +235,9 @@ def _best_saves(board: R.Board, best: str, me: str) -> list[str]:
             except R.IllegalMove:
                 continue
             if set(stones) <= set(dead):
-                out.append(f"AI 建议的 {best} 能直接提掉小新的{_stones_str(stones)}")
+                out.append(f"小新建议的 {best}（绿圈）能直接提掉对手的{_stones_str(stones)}")
             elif len(after.group(*n)[1]) == 1 and len(stones) >= 2:
-                out.append(f"AI 建议的 {best} 能把小新的{_stones_str(stones)}紧到只剩 1 口气（叫吃）")
+                out.append(f"小新建议的 {best}（绿圈）能把对手的{_stones_str(stones)}紧到只剩 1 口气（叫吃）")
     return out
 
 
@@ -246,7 +246,7 @@ def _taken(g: dict, n: int, best: str, me: str) -> list[str]:
     再看小新下完以后，绿圈旁边孩子的哪几块棋归属掉了（≥ 0.5）：「你的 C11、C13 变弱了」。都是实际发生的，不是预测。"""
     if n >= len(g["moves"]) or g["moves"][n][1].upper() != best.upper() or n + 1 >= len(g["analysis"]) or not g["analysis"][n + 1]:
         return []
-    out = [f"绿圈 {best} 这个点双方都想要：你没下，小新紧接着就下在了这里"]
+    out = [f"绿圈 {best} 这个点双方都想要：你没下，对手紧接着就下在了这里"]
     o0, o2 = g["analysis"][n - 1].get("ownership") or [], g["analysis"][n + 1].get("ownership") or []
     if len(o0) != R.N * R.N or len(o2) != R.N * R.N:
         return out
@@ -264,7 +264,7 @@ def _taken(g: dict, n: int, best: str, me: str) -> list[str]:
         if was - now >= 0.5:
             weak.append(st)
     if weak:
-        out.append(f"小新下了 {best} 以后，你{_where(set().union(*weak))}的" + "、".join(_stones_str(st) for st in weak[:3]) + "变得很弱，可能被吃")
+        out.append(f"对手下了 {best} 以后，你{_where(set().union(*weak))}的" + "、".join(_stones_str(st) for st in weak[:3]) + "变得很弱，可能被吃")
     return out
 
 
@@ -285,20 +285,20 @@ def facts(g: dict, n: int) -> dict:
              f"这手之前你的胜率 {w0:.0%}，之后 {w1:.0%}；目差从 {_lead(s0)} 变成 {_lead(s1)}。"]
     if best and best["move"].upper() != mv.upper():
         bw, bs = _mine(best, me)
-        lines.append(f"AI 建议下在 {best['move']}，下那里你的胜率是 {bw:.0%}，目差 {_lead(bs)}。")
+        lines.append(f"小新建议下在 {best['move']}（绿圈），下那里你的胜率是 {bw:.0%}，目差 {_lead(bs)}。")
         # 整串变化不给模型（黑白交替，模型会把对方的手说成「你接着下」，2026-11-04 实测 7 步里 3 步这样），
         # 只给代码在变化里数出来的提子；变化本身在棋盘上「看 AI 的下法」一步步摆
         notes, _, _ = _pv_facts(before, best["pv"], me)
-        lines += [f"按 AI 建议的下法走下去：{x}" for x in notes]
+        lines += [f"按小新建议的下法走下去：{x}" for x in notes]
     # 这一手之后 AI 觉得小新最好的应手，和小新实际下的（预测不等于发生了：模型会说成「被我抢先下了」）
     reply = a1["best"][0] if a1.get("best") else None
     actual = g["moves"][n][1] if n < len(g["moves"]) else ""
     if reply and reply["move"].lower() != "pass":
         same = actual.upper() == reply["move"].upper()
-        lines.append(f"你下了 {mv} 以后，AI 认为小新最好的应手是 {reply['move']}"
-                     + ("，小新实际也下了这里。" if same else f"（只是 AI 的看法），小新实际下的是 {actual}。" if actual else "。"))
+        lines.append(f"你下了 {mv} 以后，小新觉得对手最好的应手是 {reply['move']}"
+                     + ("，对手实际也下了这里。" if same else f"（只是看法），对手实际下的是 {actual}。" if actual else "。"))
         notes, _, _ = _pv_facts(after, reply["pv"], R.other(me))
-        lines += [f"如果小新下 {reply['move']} 接着走下去：{x}" for x in notes]
+        lines += [f"如果对手下 {reply['move']} 接着走下去：{x}" for x in notes]
     o0, o1 = a0.get("ownership") or [], a1.get("ownership") or []
     if mv.lower() != "pass":
         x, y = R.to_xy(mv)
@@ -320,30 +320,32 @@ def _lead(s: float) -> str:
 
 
 # ------------------------------------------------------------ 讲解 + 校验
-PROMPT = """你是陪孩子下围棋的小新（讲解里说「我」就是小新）。孩子在上幼儿园，围棋业余 3 级左右，还不认字：
-你的讲解会念给他听，他一边听一边看棋盘——棋盘上红圈是他下的这一手，绿圈是 AI 建议的点。
-下面是关于这一手的全部事实，都是围棋 AI 和程序算出来的，是准的：
+PROMPT = """你是陪孩子下围棋的小新（讲解里说「我」就是小新，复盘时你是他的老师）。孩子在上幼儿园，围棋业余 3 级左右，还不认字：
+你的讲解会念给他听，他一边听一边看棋盘——棋盘上红圈是他下的这一手，绿圈是你建议下的点。
+下面是关于这一手的全部事实，都是围棋程序算出来的，是准的（「小新建议 / 小新看」是你这个老师的判断，
+「对手」是刚才和他下棋的那一方，讲的时候说「对手」或「我」都行）：
 
 {facts}
 
 请像老师当面跟小朋友说话那样讲这一手，2 到 3 句短句：
 1. 先用一句话说这手亏了：胜率、目差这些数最多挑一个说，说成孩子听得懂的话也行（比如「本来还有机会赢，这一下就很难赢了」）。
-2. 重点讲这手的问题：从事实里挑最要紧的一两条（比如「几乎没起作用」「哪块棋只剩几口气」「哪块棋变危险了」「AI 建议的点是给哪块棋长气」）。
+2. 重点讲这手的问题：从事实里挑最要紧的一两条（比如「几乎没起作用」「哪块棋只剩几口气」「哪块棋变危险了」「绿圈是给哪块棋长气」）。
    有「你能吃掉 / 它活了」「双方都想要」「连成一块」「变得很弱」这类关于整块棋的事实，优先讲它；「哪里的地少了几个点」最多提一个。
-3. 最后说 AI 建议下在绿圈那里、为什么（只用事实里写了的理由；没写理由就只说「AI 建议下在绿圈那里」）。
+3. 最后说「小新建议下在绿圈那里」和为什么（只用事实里写了的理由；没写理由就只说「小新建议下在绿圈那里」）。
 要求：
-- 孩子的这手说「红圈这一手」，AI 建议的点说「绿圈那里」，不要念它们的坐标；别的坐标也尽量少说，要说就说位置（「右上角」「左边」）。
+- 讲解里不要出现「AI」两个字，说「小新觉得」「小新建议」。
+- 孩子的这手说「红圈这一手」，建议的点说「绿圈那里」，不要念它们的坐标；别的坐标也尽量少说，要说就说位置（「右上角」「左边」）。
 - 说到某一块棋，一定带上它在哪（「左上角那块」「绿圈旁边那块」「右边那 17 颗」），孩子要能在棋盘上找到它；不要只说「有一块棋」。
 - 只能用上面事实里出现过的坐标和数字，不许自己加新的坐标、新的变化、新的数字。
-- 每一条事实是单独的，不许把两条事实连成因果（比如「小新下了 X，所以你的地少了」），也不许猜孩子的想法（「你是为了……」）。
-- 「AI 认为……」「AI 建议……」是 AI 的看法，不是棋局里发生了的事，不要说成发生了；小新实际下在哪不用提。
+- 每一条事实是单独的，不许把两条事实连成因果（比如「对手下了 X，所以你的地少了」），也不许猜孩子的想法（「你是为了……」）。
+- 「小新觉得……」「小新建议……」是看法，不是棋局里发生了的事，不要说成发生了；对手实际下在哪不用提。
 - 事实里说某块棋「只剩几口气」「很危险」，只说它现在的样子，不要说成是这一手造成的。
-- 「小新下了 X 以后……变得很弱」说的是小新占了那个点之后，要把「小新下了绿圈那里以后」这层意思说出来，不能说成「现在」。
+- 「对手下了 X 以后……变得很弱」说的是对手占了那个点之后，要把「对手占了绿圈那里以后」这层意思说出来，不能说成「现在」。
 - 孩子看不到上面这份清单，不要说「事实里」「材料里」。
 - 句子要短，词要简单，不用「厚薄」「味道」「本手」这类术语，不要开场白，不要 markdown。"""
 # 讲解里不该出现的说法：提到「事实」本身（孩子不知道有一份事实清单）、
 # 「这是最要紧的问题」这类给某条事实加评判的话（事实里没说哪条最要紧）
-BANNED = ["事实", "最要紧", "资料里", "材料里"]
+BANNED = ["事实", "最要紧", "资料里", "材料里", "AI"]
 COORD = re.compile(r"(?<![A-Za-z])([A-HJ-T](?:1[0-9]|[1-9]))(?![0-9A-Za-z])")
 NUM = re.compile(r"\d+(?:\.\d+)?")
 
@@ -368,7 +370,7 @@ def template(fx: dict) -> str:
     """模型两次都没过校验时的兜底：按事实拼的固定说法（念给孩子听，不念坐标）。"""
     s = f"红圈这一手下完，胜率从 {fx['before']:.0%} 掉到了 {fx['after']:.0%}。"
     if fx["best"] and fx["best"].upper() != fx["move"].upper():
-        s += "AI 建议下在绿圈那里，可以点「看 AI 的下法」一步步看。"
+        s += "小新建议下在绿圈那里，可以点「看小新的下法」一步步看。"
     return s
 
 
@@ -396,6 +398,7 @@ def explain(fx: dict, chat=None) -> dict:
 
 
 WORKERS = 8   # 讲解并行生成几手（每手一次模型调用 ~10 秒）
+REVIEW_V = 2  # 讲解的版本：2 = 建议用 1500 次深算、讲解里说「小新建议」。旧版本的缓存当作没有，重新生成
 
 
 def review(g: dict, *, chat=None, with_text: bool = True, wait: bool = True) -> dict:
@@ -410,36 +413,57 @@ def review(g: dict, *, chat=None, with_text: bool = True, wait: bool = True) -> 
         fill(g, keys, chat=chat, with_text=with_text)
     for k in keys:
         c = cache.get(str(k["n"]))
+        if c is not None and c.get("v") != REVIEW_V:
+            c = None
         if c is None:
             fx = facts(g, k["n"])     # 事实是纯代码，很快：讲解没好也先给数字
             c = {"facts": fx["lines"], "best": fx["best"]}
         k.update(c)
         k["pending"] = with_text and "text" not in c
     mine = losses(g)
+    best = [a["best"][0]["move"] if a and a.get("best") else "" for a in g["analysis"]]
+    pv = [a["best"][0]["pv"][:PV_LEN] if a and a.get("best") else [] for a in g["analysis"]]
+    for k in keys:   # 关键步：棋盘上的绿圈、「看小新的下法」用深算的那份
+        if k.get("pv"):
+            best[k["n"] - 1], pv[k["n"] - 1] = k["best"], k["pv"]
     return {"id": g["id"], "kid_color": me, "curve": curve, "score": score, "keys": keys,
             "pending": sum(k["pending"] for k in keys),
             "summary": summary(g, keys), "moves": g["moves"], "stones": g.get("stones", []),
-            "best": [a["best"][0]["move"] if a and a.get("best") else "" for a in g["analysis"]],
-            "pv": [a["best"][0]["pv"][:PV_LEN] if a and a.get("best") else [] for a in g["analysis"]],
+            "best": best, "pv": pv,
             "stats": {"moves": len(mine), "big": sum(x["grade"] == "big" for x in mine),
                       "mid": sum(x["grade"] == "mid" for x in mine),
                       "avg_loss": round(sum(max(0, x["loss_score"]) for x in mine) / max(1, len(mine)), 2)}}
 
 
-def fill(g: dict, keys: list[dict] | None = None, *, chat=None, with_text: bool = True, on_one=None) -> int:
-    """把缺的讲解补上（并行），写进 g["review"]。on_one(n, c)：每好一手调一次（后台生成时用它存盘、叫醒界面）。返回补了几手。"""
+def fill(g: dict, keys: list[dict] | None = None, *, chat=None, with_text: bool = True, on_one=None, deepen=None) -> int:
+    """把缺的讲解补上（并行），写进 g["review"]。on_one(n, c)：每好一手调一次（后台生成时用它存盘、叫醒界面）。
+    deepen(g, i) -> best 列表：把第 i 手之后的局面用更多次搜索重算「最好的点」（建议用中国冠军档 1500 次，
+    每手分析只有 400 次，变化看得浅）。返回补了几手。"""
     keys = key_moves(g) if keys is None else keys
     cache = g.setdefault("review", {})
-    todo = [k for k in keys if not cache.get(str(k["n"])) or (with_text and "text" not in cache[str(k["n"])])]
+    todo = [k for k in keys if (cache.get(str(k["n"])) or {}).get("v") != REVIEW_V
+            or (with_text and "text" not in cache[str(k["n"])])]
     if g.get("result") is None:   # 还在下：小新还没应的那手（讲解要用小新的应手）先不讲
         todo = [k for k in todo if k["n"] + 1 < len(g["analysis"])]
 
     def one(k):
-        fx = facts(g, k["n"])
-        c = {"facts": fx["lines"], "best": fx["best"]}
+        n, gg = k["n"], g
+        deep = None
+        if deepen:
+            try:
+                deep = deepen(g, n - 1)
+            except Exception as e:  # noqa: BLE001 深算失败就用 400 次的
+                log.warning("deepen %s/%s failed: %s", g.get("id"), n, e)
+        if deep:   # 只换这一手之前那次分析的「最好的点」（胜率曲线、亏了多少仍按 400 次的，前后一致）
+            ana = list(g["analysis"])
+            ana[n - 1] = {**ana[n - 1], "best": deep}
+            gg = {**g, "analysis": ana}
+        fx = facts(gg, n)
+        c = {"facts": fx["lines"], "best": fx["best"], "v": REVIEW_V,
+             "pv": deep[0]["pv"][:PV_LEN] if deep else None, "deep": bool(deep)}
         if with_text:
             c.update(explain(fx, chat))
-        return k["n"], c
+        return n, c
     if todo:
         with ThreadPoolExecutor(min(WORKERS, len(todo))) as ex:
             for n, c in ex.map(one, todo):
