@@ -202,8 +202,10 @@ def audio(sid: str, kid: str, i: int, n: int) -> Path:
     return p
 
 
-def finish(sid: str, kid: str, today: dt.date | None = None) -> dict:
-    """练完：算这次的成绩，更新熟练度和复习排期（today 给测试用）。"""
+def finish(sid: str, kid: str, today: dt.date | None = None, early: bool = False) -> dict:
+    """练完：算这次的成绩，更新熟练度和复习排期（today 给测试用）。
+    early：孩子点了「结束」（没演完）。一句都没读就当没练过（不算次数、不进熟练度，也不在群里说）；
+    读了几句的照常记下，summary 里 early=True，熟练度按读过的算（没读的句子是 None，min2 / all3 自然不满足）。"""
     with _lock:
         s = get(sid)
         if s["kid"] != kid:
@@ -215,8 +217,14 @@ def finish(sid: str, kid: str, today: dt.date | None = None) -> dict:
         s["ended"] = time.time()
         s["secs"] = round(s["ended"] - s["started"])
         s["summary"] = summarize(s, L)
+        if early:
+            s["summary"]["early"] = True
+            if not s["summary"]["said"]:
+                s["discarded"] = True
+                s.pop("summary")
         save(s)
-    update_progress(kid, s["lesson"], today=today)
+    if not s.get("discarded"):
+        update_progress(kid, s["lesson"], today=today)
     return s
 
 
@@ -347,7 +355,7 @@ def board(kid: str, today: dt.date | None = None) -> dict:
     """总看板数据：每课熟练度、最近两周每天练了几分钟、连续天数、读不准的词、最近练习。"""
     today = today or dt.date.today()
     P = progress(kid)
-    S = [s for s in sessions(kid) if s.get("done")]
+    S = [s for s in sessions(kid) if s.get("done") and s.get("summary")]   # 一句没读就结束的（discarded）不算
     mins = {}
     for s in S:
         d = dt.date.fromtimestamp(s["started"]).isoformat()

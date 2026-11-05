@@ -57,6 +57,9 @@ def isolate_env(request, tmp_path, monkeypatch):
     from server.family import call
 
     call._calls.clear()  # 通话状态是进程里的（落盘在 DATA/calls.json，DATA 每个测试新的）
+    from server import phonics
+
+    monkeypatch.setattr(phonics, "warm", lambda words: None)  # 打开一课会后台预拆拼读：测试里不起线程（会活过临时目录）
     monkeypatch.setattr(doubao, "ROOT", tmp_path)  # .env 从这里读，这里没有
     for name in ("DOUBAO_TTS_API_KEY", "DOUBAO_API_KEY", "XIAOXIN_ORIGINS"):
         monkeypatch.delenv(name, raising=False)

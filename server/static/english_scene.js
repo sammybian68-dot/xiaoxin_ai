@@ -47,8 +47,9 @@ async function ensOpen(lid, sid) {
     ${roles.map((r, k) => `<div class="ens-actor idle a${k}" data-role="${r.id}"><img src="api/english/char/${r.id}.png" alt="${esc(r.name)}"></div>`).join("")}
     <div class="ens-bubble" id="ens-bubble"></div>
     <div class="ens-top"><span class="t">${esc(L.name)}</span><span class="ens-dots" id="ens-dots"></span><span class="sp"></span>
-      <button type="button" data-e="zh" aria-pressed="true">中文意思</button>
-      <button type="button" class="pause" data-e="pause">⏸ 暂停，回去聊天</button></div>
+      <button type="button" data-e="zh" aria-pressed="true" title="句子下面显示 / 不显示中文翻译">中文翻译 开</button>
+      <button type="button" class="pause" data-e="pause">⏸ 暂停</button>
+      <button type="button" class="quit" data-e="quit">✕ 结束</button></div>
     <div class="ens-turn" id="ens-turn" aria-live="polite"></div>
     <div class="ens-cover" id="ens-cover"></div></div>`;
   ensDots();
@@ -116,7 +117,7 @@ async function ensSpeak(i, slow = false) {
   const l = ens.L.lines[i], b = $("ens-bubble"), my = ens.gen;
   const k = ens.L.roles.findIndex((r) => r.id === l.role);
   b.className = "ens-bubble at" + k;
-  b.innerHTML = ensWords(l.en).map((w) => `<span class="w" data-ww="${esc(ensKey(w))}">${esc(w)}</span>`).join(" ") + (ens.zh ? `<span class="zh">${esc(l.zh)}</span>` : "");
+  b.innerHTML = ensWords(l.en).map((w) => `<span class="w" data-ww="${esc(ensKey(w))}">${esc(w)}</span>`).join(" ") + `<span class="zh"${ens.zh ? "" : " hidden"}>${esc(l.zh)}</span>`;
   requestAnimationFrame(() => b.classList.add("show"));
   ensActors(l.role);
   const ws = [...b.querySelectorAll(".w")], dur = ((slow ? l.slow_s : l.dur_s) || 2.5) * 1000;
@@ -151,7 +152,7 @@ function ensRenderTurn(l, r) {
   }).join(" ");
   const meRole = ens.L.roles.find((x) => x.id === ens.me);
   t.innerHTML = `<div class="say"><b>轮到你啦</b>你是 ${esc(meRole?.name || "")}，读这句：</div>
-    <div class="ens-line">${line}</div>${ens.zh ? `<div class="zh">${esc(l.zh)}</div>` : ""}
+    <div class="ens-line">${line}</div><div class="zh"${ens.zh ? "" : " hidden"}>${esc(l.zh)}</div>
     <div class="ens-row">
       <button type="button" class="ens-btn" data-e="listen">🔊 听一遍</button>
       <button type="button" class="ens-btn" data-e="demo">👨‍🏫 小新演示</button>
@@ -218,8 +219,15 @@ async function ensClick(e) {
   if (b.dataset.again) { ensStart(b.dataset.again); return; }
   const k = b.dataset.e, l = ens.L.lines[ens.i];
   if (k === "pause" || k === "close") { ensPause(); return; }
+  if (k === "quit") { ensQuit(); return; }
   if (k === "dict") { ensDictation(ens.L.id, b, ens.me); return; }
-  if (k === "zh") { ens.zh = !ens.zh; b.setAttribute("aria-pressed", String(ens.zh)); return; }
+  if (k === "zh") {   // 句子下面的中文翻译：开 / 关（下一句起生效，这一句也马上跟着变）
+    ens.zh = !ens.zh;
+    b.setAttribute("aria-pressed", String(ens.zh));
+    b.textContent = ens.zh ? "中文翻译 开" : "中文翻译 关";
+    document.querySelectorAll("#ens .zh").forEach((z) => { z.hidden = !ens.zh; });
+    return;
+  }
   if (k === "listen") { ensDemoGenStop(); await ensSpeak(ens.i); $("ens-bubble").classList.remove("show"); }
   if (k === "demo") ensDemo();
   if (k === "word") { ensDemoGenStop(); ensWordCard(b.dataset.w); }
@@ -236,10 +244,26 @@ function ensPause() {
   ensResumeBtn();
 }
 
+// 结束：不演了，直接收起回聊天。读过的几句照常记成绩（群里说「练了一部分就结束了」）；一句没读就当没练。
+// 和「暂停」不同：结束后顶栏不再亮「继续英语」
+async function ensQuit() {
+  ens.gen++; ensDemoGenStop(); ensHush();
+  if (ens.rec) { ens.rec.stop(); ens.rec = null; }
+  ensWordClose?.();
+  const el = $("ens"); if (el) el.hidden = true;
+  if (ens.s && !ens.s.done) {
+    try { await ensApi(`api/english/session/${ens.s.id}/finish`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kid: state.conv?.kid, early: true }) }); } catch (e) { toast(e.message); }
+    ens.s.done = true;
+  }
+  ensResumeBtn();
+}
+
 async function ensFinish() {
   let s;
   try { s = await ensApi(`api/english/session/${ens.s.id}/finish`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kid: state.conv?.kid }) }); }
   catch (e) { toast(e.message); return; }
+  ens.s.done = true;
   const sm = s.summary, other = ens.L.roles.find((r) => r.id !== ens.me);
   const c = $("ens-cover");
   c.hidden = false;

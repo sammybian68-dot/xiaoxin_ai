@@ -315,3 +315,24 @@ def test_word_check_and_slow_audio(family, monkeypatch):
     monkeypatch.setattr(build, "mp3", lambda pcm, out: out.write_bytes(b"ID3fake"))
     assert family["女儿"].get("/api/english/word/scoop.mp3?slow=1").status_code == 200
     assert made[0]["speech_rate"] == -50                                    # 慢读
+
+
+def test_quit_early(family):
+    """点「结束」：读过几句的照常记成绩（early）；一句没读就当没练过，不算次数、看板不出错、群里不说。"""
+    from server import store
+
+    kid = family["ids"]["女儿"]
+    c = family["女儿"]
+    lid = _lesson()["id"] if isinstance(_lesson(), dict) else _lesson()
+    L = drill.lesson(lid)
+    role = L["roles"][0]["id"]
+    tid = family["admin"].get(f"/api/thread?kid={kid}").json()["id"]
+    n0 = len(store.get(tid)["messages"])
+    s = c.post("/api/english/session", json={"lesson": lid, "role": role}).json()
+    out = c.post(f"/api/english/session/{s['id']}/finish", json={"early": True}).json()
+    assert out["done"] and out.get("discarded") and "summary" not in out
+    assert len(store.get(tid)["messages"]) == n0                       # 没读就结束：群里不说
+    assert c.get("/api/english").status_code == 200                     # 看板不因为没有 summary 出错
+    assert c.get(f"/api/english/lesson/{lid}").json()["history"] == []
+    assert (drill.progress(kid).get(lid) or {}).get("times", 0) == 0
+    assert drill.current(kid) is None                                   # 结束了就不再是「暂停着」

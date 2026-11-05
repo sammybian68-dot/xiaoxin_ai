@@ -38,7 +38,7 @@ def english_lesson(request: Request, lid: str, kid: str = "") -> dict:
     except KeyError:
         raise HTTPException(404, "没有这一课")
     hist = [{"id": s["id"], "role": s["role"], "at": s["started"], "secs": s.get("secs", 0), "summary": s.get("summary")}
-            for s in drill.sessions(k["id"], lid) if s.get("done")]
+            for s in drill.sessions(k["id"], lid) if s.get("done") and s.get("summary")]
     from server import phonics
 
     # 打开一课就把这课的词先拆好（自然拼读，后台、不等）：点单词卡时一般已经有了
@@ -224,9 +224,11 @@ def english_audio(request: Request, sid: str, i: int, n: int, kid: str = "") -> 
 
 @router.post("/api/english/session/{sid}/finish")
 def english_finish(request: Request, sid: str, body: dict = Body(default={})) -> dict:
+    """练完，或者孩子点了「结束」（early=true，没演完也结束；一句没读的不算这次练习）。"""
     k, _ = _own(request, sid, str(body.get("kid") or ""))
-    s = drill.finish(sid, k["id"])
-    _report(k, s)
+    s = drill.finish(sid, k["id"], early=bool(body.get("early")))
+    if not s.get("discarded"):
+        _report(k, s)
     return s
 
 
@@ -239,7 +241,8 @@ def _report(k: dict, s: dict) -> None:
     role = next((r["name"] for r in L["roles"] if r["id"] == s["role"]), s["role"])
     stars = "⭐" * round(sm["stars"]) if sm["said"] else ""
     weak = "、".join(w for w, _ in sm["weak"][:3])
-    text = (f"{k['name']}练完了英语小剧场「{L['zh']}」（演 {role}）：{sm['said']}/{sm['of']} 句，平均 {sm['avg']} 分 {stars}，"
+    how = "练了一部分就结束了" if sm.get("early") else "练完了"
+    text = (f"{k['name']}{how}英语小剧场「{L['zh']}」（演 {role}）：{sm['said']}/{sm['of']} 句，平均 {sm['avg']} 分 {stars}，"
             f"用了 {s['secs'] // 60} 分 {s['secs'] % 60} 秒" + (f"，重读 {sm['retries']} 次" if sm["retries"] else "")
             + (f"。还要多练：{weak}" if weak else "。都读得很好！"))
     try:
