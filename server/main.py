@@ -246,10 +246,10 @@ def reload_all(request: Request, body: dict = Body(default={})) -> dict:
 def _index_html() -> Response:
     """index.html 里的 app.js / app.css 地址带上文件修改时间，部署后浏览器和 pad 一定拿新的。"""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for name in ("app.js", "app.css", "clock.js", "clock.css", "hanzi.js", "hanzi.css", "timecard.js", "timecard.css",
-                 "alarmcard.js", "alarmcard.css", "letters.js", "english.js", "english.css"):
-        v = int((STATIC / name).stat().st_mtime)
-        html = html.replace(f'static/{name}"', f'static/{name}?v={v}"')
+    # static 下所有 js / css 都带上修改时间：WebView 有时不按 no-cache 来，拿着旧的 js（2026-11-05 pad 上 practice.js、go.js、
+    # english_scene.js 没带版本号，开了 11 小时的页面一直是旧的，英语小剧场出不来）。新加的文件不用再登记
+    for f in sorted(STATIC.glob("*.js")) + sorted(STATIC.glob("*.css")):
+        html = html.replace(f'static/{f.name}"', f'static/{f.name}?v={int(f.stat().st_mtime)}"')
     html = html.replace("<head>", f'<head><meta name="xiaoxin-version" content="{web_version()}">', 1)
     return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
 

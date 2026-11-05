@@ -40,6 +40,8 @@ def update(game: str, patch: dict) -> dict:
             cur[k] = v
         elif k == "handicap":
             cur[k] = max(0, min(int(v), 9))
+        elif k == "hint_max":
+            cur[k] = max(0, min(int(v), 30))
         elif k == "komi":
             cur[k] = max(-10.0, min(float(v), 20.0))
     allg = dict(store.settings().get("games") or {})

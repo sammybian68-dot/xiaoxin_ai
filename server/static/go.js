@@ -337,7 +337,9 @@ function goRender() {
   btn("undo").hidden = !go.cfg?.undo;   // 辅助：默认关，设置里开
   btn("hint").hidden = !go.cfg?.hint;
   btn("undo").disabled = busy || !g.moves.some((m) => m[0] === me);
-  btn("hint").disabled = busy;
+  const hintsLeft = g.hint_max ? g.hint_max - (g.hints || 0) : null;
+  btn("hint").disabled = busy || hintsLeft === 0;
+  btn("hint").textContent = hintsLeft == null ? "💡 提示" : `💡 提示（还剩 ${Math.max(0, hintsLeft)} 次）`;
   btn("pass").disabled = busy;
   btn("count").disabled = busy || g.moves.length < 20 || go.counting;
   // 认输 / 再试一次是同一个按钮，按固定类名找（data-go 会在两者间切换；原来按 data-go 找，出过一次错后就找不到，整个 goRender 报错）
@@ -400,7 +402,7 @@ async function goButton(ev) {
   try {
     if (k === "close") { goClose(); return; }   // 暂停：只是收起来，这盘还在（顶栏「继续下棋」、说「接着下」都能回来）
     if (k === "undo") { go.g = await goApi(`api/go/${g.id}/undo`, {}); go.hints = []; }
-    if (k === "hint") { go.hints = (await goApi(`api/go/${g.id}/hint`, {})).hints.map((h) => h.move); }
+    if (k === "hint") { go.hints = (await goApi(`api/go/${g.id}/hint`, {})).hints.map((h) => h.move); go.g = { ...go.g, hints: (go.g.hints || 0) + 1 }; }
     if (k === "pass") { go.pending = null; await goMove("pass"); return; }
     if (k === "retry") { go.g = await goApi(`api/go/${g.id}/retry`, {}); goRender(); goWait(); return; }
     if (k === "count") {
@@ -808,6 +810,7 @@ async function loadGamesSettings() {
   $("go-level").innerHTML = d.levels.map((l) => `<option value="${l.id}"${l.id === g.level ? " selected" : ""}>${esc(l.name)}</option>`).join("");
   $("go-color").value = g.color;
   $("go-handicap").value = String(g.handicap);
+  if ($("go-hint-max")) $("go-hint-max").value = g.hint_max ?? 3;
   $("go-komi").value = g.komi;
   for (const k of ["undo", "hint", "winbar", "warn", "sound"]) $("go-" + k).checked = !!g[k];
   $("go-clear").hidden = !admin;
@@ -828,6 +831,7 @@ function wireGamesSettings() {
   $("go-level").addEventListener("change", (e) => saveGamesSettings({ level: e.target.value }));
   $("go-color").addEventListener("change", (e) => saveGamesSettings({ color: e.target.value }));
   $("go-handicap").addEventListener("change", (e) => saveGamesSettings({ handicap: +e.target.value }));
+  $("go-hint-max")?.addEventListener("change", (e) => saveGamesSettings({ hint_max: +e.target.value }));
   $("go-komi").addEventListener("change", (e) => saveGamesSettings({ komi: +e.target.value }));
   for (const k of ["undo", "hint", "winbar", "warn", "sound"]) $("go-" + k).addEventListener("change", (e) => saveGamesSettings({ [k]: e.target.checked }));
   // 清空所有下棋记录：先确认一次，再输密码（服务端核对，错了不删）

@@ -242,20 +242,31 @@ def test_zi():
     assert [go._zi(x) for x in (7.5, 0.5, 1.5, 8, 0)] == ["3¾", "¼", "¾", "4", "0"]
 
 
-def test_engine_resigns_when_hopeless(kata):
-    """孩子执黑大优：小新（白）胜率连续 10 次 < 2%、下满 60 手 → 小新认输，不再硬下。"""
+def test_engine_never_resigns(kata):
+    """小新从不认输：孩子大优、下满 60 手，小新照样接着下（只能孩子认输、双方停一手或申请数棋结束）。"""
     from server.games import go_rules as R
 
     kata.black_wr = 0.995
     g = go.new("k1", level="10k")
     raw = go.get(g["id"])
-    pts = [R.to_gtp(x, y) for y in range(19) for x in range(19)][:60]   # 60 个不同的空点，黑白轮流，不会提子
+    pts = [R.to_gtp(x, y) for y in range(19) for x in range(19)][:60]
     raw["moves"] = [["B" if i % 2 == 0 else "W", p] for i, p in enumerate(pts)]
     raw["analysis"] = [dict(raw["analysis"][0], winrate=0.995)] * 61
     go.save(raw)
     g = _done(go.play(g["id"], "k1", "K10"))
-    assert g["result"]["by"] == "resign" and g["result"]["winner"] == "B" and g["result"].get("engine_resigned")
-    assert "小新认输" in g["result"]["text"] and g["moves"][-1] == ["B", "K10"]   # 小新没再落子
+    assert g["result"] is None and g["moves"][-1][0] == "W"
+
+
+def test_hint_limit(kata, monkeypatch):
+    from server.games import registry
+
+    g = _done(go.play(go.new("k1", level="3k")["id"], "k1", "C3"))
+    for _ in range(3):
+        go.hint(g["id"], "k1")
+    with pytest.raises(go.GameError, match="3 次提示用完了"):
+        go.hint(g["id"], "k1")
+    monkeypatch.setattr(registry, "settings", lambda game: {**go.DEFAULTS, "hint_max": 0})
+    go.hint(g["id"], "k1")                       # 0 = 不限
 
 
 def test_engine_does_not_resign_early(kata):

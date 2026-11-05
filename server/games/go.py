@@ -30,14 +30,13 @@ ANALYZE_VISITS = 400      # 每手分析（胜率曲线、亏了多少）：A100
 ADVICE_VISITS = 1500      # 复盘里的「小新建议」：要讲的那几手再用中国冠军档的搜索量重算一遍最好的点（~2 秒一手）
 HUMAN_VISITS = 60         # 段级档落子前搜一下：只用来判断该不该 pass
 KOMI = 7.5
-RESIGN_WR, RESIGN_RUN, RESIGN_MIN = 0.02, 10, 60   # 小新认输：自己的胜率连续 10 次分析都 < 2%，且下满 60 手
 # 申请数棋（全由 KataGo + 代码判，不用大模型）
 DONE_GAIN = 1.5      # 双方「下一手最好的点」比「停一手」都多不到 1.5 目：棋下完了
 DECIDED_WR, DECIDED_MIN = 0.03, 100   # 下满 100 手，孩子胜率连续 3 次 < 3% 或 > 97%：胜负已定
 COUNT_VISITS = 400
 # 胜率条、提示、悔棋、下坏了提醒是辅助，默认全关：开着孩子会依赖（家长 2026-11-04 要求），要用在设置里开
 DEFAULTS = {"level": "2k", "color": "B", "komi": KOMI, "handicap": 0,
-            "undo": False, "hint": False, "winbar": False, "warn": False, "sound": True}
+            "undo": False, "hint": False, "hint_max": 3, "winbar": False, "warn": False, "sound": True}
 
 _locks: dict[str, threading.Lock] = {}
 _changed = threading.Condition()   # 有对局变了（小新下完、出错）：叫醒 wait() 的
@@ -287,11 +286,7 @@ def _respond(gid: str) -> None:
                 g["last_loss"] = _loss_of_last(g)
             if _passed_twice(g):
                 finish_by_count(g)
-            elif mv is not None and g["result"] is None and _engine_should_resign(g):
-                g["result"] = {"winner": g["kid_color"], "by": "resign", "engine_resigned": True,
-                               "text": f"{'黑' if g['kid_color'] == 'B' else '白'}中盘胜（小新认输）"}
-                g["ended"] = time.time()
-            elif mv is not None and g["result"] is None:
+            elif mv is not None and g["result"] is None:   # 小新从不认输（家长 2026-11-05：要下到底 / 申请数棋）
                 _apply(g, g["engine"], mv)
                 g["analysis"].append(None)
                 save(g)
@@ -319,17 +314,6 @@ def _fail(gid: str, msg: str) -> None:
         g = get(gid)
         g["thinking"], g["error"] = False, msg
         save(g)
-
-
-def _engine_should_resign(g: dict) -> bool:
-    """低档位时孩子大优，小新别一直硬下到底。冠军档基本碰不到。"""
-    if len(g["moves"]) < RESIGN_MIN:
-        return False
-    recent = [a for a in g["analysis"] if a][-RESIGN_RUN:]
-    if len(recent) < RESIGN_RUN:
-        return False
-    mine = [(a["winrate"] if g["engine"] == "B" else 1 - a["winrate"]) for a in recent]
-    return all(w < RESIGN_WR for w in mine)
 
 
 def _passed_twice(g: dict) -> bool:
@@ -422,9 +406,14 @@ def undo(gid: str, kid: str) -> dict:
 
 def hint(gid: str, kid: str) -> list[dict]:
     """提示：当前局面 AI 推荐的前 3 个点（就是上一手之后那次分析的 best）。"""
+    from server.games import registry
+
     g = _own(gid, kid)
     if g["result"] is not None or _to_move(g) != g["kid_color"] or g.get("thinking"):
         raise GameError("现在不是你下")
+    cap = int(registry.settings("go").get("hint_max", 3) or 0)   # 0 = 不限
+    if cap and g["hints"] >= cap:
+        raise GameError(f"这盘的 {cap} 次提示用完了，自己想想吧")
     with lock(gid):
         g = get(gid)
         g["hints"] += 1
@@ -564,6 +553,12 @@ def _own(gid: str, kid: str) -> dict:
 
 
 # ------------------------------------------------------------ 给界面的
+def _hint_max() -> int:
+    from server.games import registry
+
+    return int(registry.settings("go").get("hint_max", 3) or 0)
+
+
 def view(g: dict) -> dict:
     """界面要的：盘面、轮到谁、提子、最后一手、胜率（孩子视角）、结果。不带每手的大块分析。"""
     board = R.replay(g["moves"], g.get("stones"))
@@ -575,6 +570,7 @@ def view(g: dict) -> dict:
             "board": ["".join(r) for r in board.grid], "captures": board.captures, "ko": board.ko,
             "to_move": _to_move(g), "result": g["result"], "undos": g["undos"], "hints": g["hints"],
             "thinking": bool(g.get("thinking")), "error": g.get("error", ""), "last_loss": g.get("last_loss"),
+            "hint_max": _hint_max(),
             "winrate": round(wr if me == "B" else 1 - wr, 3),
             "score": round((last["score"] if last else 0) * (1 if me == "B" else -1), 1),
             "created": g["created"]}
