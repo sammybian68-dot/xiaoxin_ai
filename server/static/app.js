@@ -226,7 +226,7 @@ function hubMessage(m, kind) {
   if (kind !== "msg" || m.role === "note") return;
   if ($("messages").querySelector(`[data-mid="${CSS.escape(m.id)}"]`)) return;  // 本地已经画了
   // 打印结果、画好的图是后台发来的，不是这台正在出字的那条
-  if (m.role === "assistant" && m.via !== "print" && m.via !== "draw" && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
+  if (m.role === "assistant" && !["print", "draw", "english"].includes(m.via) && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
   if (m.role === "user" && m.via === "talk" && talk.on) return;      // 自己这台在自由对话：那句由 heard 画（带原声小喇叭）
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
   const row = appendMessage(m);
@@ -237,7 +237,8 @@ function hubMessage(m, kind) {
     renderSide();
   }
   // 孩子的 pad：小新后台画好的图，念一句「XX，图片画好了，请看」（排在正在说的话后面，不打断）
-  if (m.role === "assistant" && m.via === "draw" && m.text && state.me?.role !== "parent" && prefs.autoread && !window.pracBusy?.()) sayLater(m, row, true);
+  if (m.role === "assistant" && (m.via === "draw" || (m.via === "english" && m.english?.new)) && m.text && state.me?.role !== "parent"
+      && prefs.autoread && !window.pracBusy?.()) sayLater(m, row, true);
   // 孩子的 pad：爸爸妈妈发来的话，用他们设的声音读一遍（docs/architecture.md 6.2 的 speak）
   if (m.role === "user" && m.text && m.speak !== false && state.me?.role !== "parent"
       && state.people?.[m.from]?.role === "parent" && prefs.autoread && !window.pracBusy?.()) sayLater(m, row);
@@ -483,6 +484,7 @@ function appendMessage(m) {
       + (t ? `  文字首响 ${t.first_text ?? "-"}s · 语音首响 ${t.first_audio ?? "-"}s（服务端）` : "");
     renderSources(row, m.searches);
     for (const a of m.actions || []) showAction(row, a);
+    if (m.english && typeof ensMessage === "function") ensMessage(row, m);   // 小新后台发来的「新场景做好了」
     row.dataset.reply = m.text || "";
     wireActions(row);
   }
@@ -593,6 +595,8 @@ async function worksheetCard(row, wid) {
 function showAction(row, a) {
   // 下棋（go.js）：开局卡片、看板、复盘
   if (["play_go", "go_stats", "go_review"].includes(a.name) && typeof goAction === "function" && goAction(row, a)) return;
+  // 英语小剧场（english_scene.js）：课程卡片、做新场景、看板
+  if (a.name.startsWith("english_scene") && typeof ensAction === "function" && ensAction(row, a)) return;
   if (a.name === "make_exercise" || a.name === "make_worksheet") {
     const wid = /w_([0-9a-f]{16})/.exec(a.result || "")?.[1];
     if (wid) { worksheetCard(row, wid); return; }

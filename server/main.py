@@ -76,6 +76,9 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 from server.games.api import router as games_router  # noqa: E402  下棋：/api/go/*、/api/games/*
 
 app.include_router(games_router)
+from server.english.api import router as english_router  # noqa: E402  英语小剧场：/api/english/*
+
+app.include_router(english_router)
 
 
 # ---------------------------------------------------------------- 登录
