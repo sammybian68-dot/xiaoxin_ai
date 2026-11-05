@@ -251,3 +251,53 @@ def test_say_only_english():
 
     with TestClient(main.app) as c:
         assert c.get("/api/english/say.mp3?text=你好").status_code in (400, 401)
+
+
+def test_dictation_rotates_and_only_core_words():
+    """连着出三张：挖的词会轮换（考过的往后放）；只挖生词 / 句型词 / 核心词；上次写错的词一定再考。"""
+    from server.exercises.english import scene_dictation as SD
+
+    L = _lesson()
+    L["lines"] = [{"role": "bear", "en": "Hello, Lily. What colour do you like?", "zh": ""},
+                  {"role": "lily", "en": "I like pink and white, please.", "zh": ""},
+                  {"role": "bear", "en": "Mm. One scoop or two scoops?", "zh": ""},
+                  {"role": "lily", "en": "Two, please. Thank you, Mr. Bear.", "zh": ""}]
+    L["new_words"] = [{"en": "scoop", "zh": "勺"}]
+    h = {"words": {}, "sentences": {}, "wrong": [], "wrong_sentences": []}
+    sheets = []
+    for k in range(3):
+        _, items = SD.build(L, "lily", history=h, seed=k)
+        ans = [a.lower() for a in items[-1]["a"].split("；")]
+        sheets.append(ans)
+        for a in ans:
+            h["words"][a] = h["words"].get(a, 0) + 1
+    allw = {w for s in sheets for w in s}
+    assert allw <= SD.CORE | {"scoop", "scoops"} and not allw & {"mm", "lily", "bear", "mr"}
+    assert sheets[0] != sheets[1]                           # 第二张换了词
+    _, items = SD.build(L, "lily", history={**h, "wrong": ["pink"]}, seed=9)
+    assert "pink" in [a.lower() for a in items[-1]["a"].split("；")]   # 写错的再考
+
+
+def test_check_homework_tool(family, monkeypatch):
+    from server import store
+    from server.tools import check_work, printer as printer_tools
+
+    kid = family["ids"]["女儿"]
+    tid = family["admin"].get(f"/api/thread?kid={kid}").json()["id"]
+    assert check_work.run("check_homework", "{}").startswith("失败：这里批不了")
+    tok = printer_tools.ctx.set({"thread": tid, "kid": kid})
+    try:
+        assert "还没有作业照片" in check_work.run("check_homework", "{}")
+        store.append(tid, {"role": "user", "text": "", "files": [{"id": "f1", "name": "a.jpg", "kind": "image"}]})
+        seen = {}
+
+        def fake(photos, subject="auto", note=""):
+            seen["photos"] = [p["id"] for p in photos]
+            return {"subject": "数学", "items": [{"no": "1", "got": "12", "want": "12", "ok": True},
+                                                 {"no": "2", "got": "35", "want": "36", "ok": False, "why": "进位忘了"}],
+                    "right": 1, "total": 2, "unclear": 0, "comment": "很认真！"}
+        monkeypatch.setattr(check_work, "grade", fake)
+        out = check_work.run("check_homework", json.dumps({"subject": "math"}))
+        assert seen["photos"] == ["f1"] and "对了 1 / 2" in out and "应为「36」（进位忘了）" in out
+    finally:
+        printer_tools.ctx.reset(tok)

@@ -2,8 +2,11 @@
   一、听写句子：挑孩子演的那个角色的 3–4 句短台词。练习模式里小新用英音读（每句两遍、每遍后等几秒），她写下来；
   二、补全对话：整段对话印出来，挖掉关键词。刚学的课（没到「熟练」）下面给词库；熟练以后不给词库，靠记忆和上下文。
 
-题全由程序从剧本里出（不用模型）：挖哪个词按规则挑——这课的句型词、生词优先，其次是实词（名词、动词、颜色、数字），
-不挖 a / the / I 这类虚词和人名；同一个词只挖一次。答案就是原文，不会错。
+题全由程序从剧本里出（不用模型）：答案就是原文，不会错。挖哪个词：
+  1. 只挖「值得记」的词：这课的生词 > 这课句型里的词 > 三年级核心词表（CORE：颜色、数字、家人、食物、文具、动物、
+     常用动词形容词、礼貌用语）。不在这三类里的不挖（「Mm」「OK」、人名、the 这类）；
+  2. 每次都会变：她以前默写里考过的词记着次数，考得少的、上次写错的先挖（同样条件随机），一课练几次能轮到每个核心词；
+  3. 听写句子也轮换：没听写过的句子优先，上次写错的那句再来一次。
 """
 
 from __future__ import annotations
@@ -22,7 +25,19 @@ HELP = ("lesson：英语小剧场的课 id（english_scene 卡片上那课）；
         "count：听写几句（默认 3）；bank：补全对话给不给词库（不给按熟练度：没到熟练给，熟练了不给）")
 
 STOP = set("a an the i you he she it we they my your his her our its is am are was be to of in on at and or "
-           "do does can let's let me us oh ok yes no not too so very here there this that what how please".split())
+           "do does can let's let me us oh ok mm yes no not too so very here there this that".split())
+# 三年级（译林三上 + 生活场景）核心词：颜色、数字、家人、食物、文具、动物、身体、常用动词形容词、礼貌用语和问句词
+CORE = set("""red blue yellow green white black brown pink orange purple colour
+one two three four five six seven eight nine ten
+mother father mum dad grandpa grandma brother sister aunt uncle family friend teacher
+apple apples banana bananas orange oranges pear egg eggs milk juice water bread cake rice noodles sandwich ice cream sweets tea
+pencil pen ruler rubber book bag desk chair crayon
+cat dog bird fish duck panda monkey tiger lion elephant giraffe rabbit pig horse sheep cow
+eye eyes ear ears nose mouth face hand hands head
+like love look see help play eat drink wash open close sit stand come go run jump swim draw read sing dance have want can
+big small long short tall nice good happy beautiful hungry thirsty tired cold hot sunny rainy windy
+hello hi goodbye bye morning afternoon evening night please thank thanks welcome sorry
+what where who how much many old name""".split())
 BLANK = "{%s}"
 
 
@@ -34,37 +49,57 @@ def _core(w: str) -> str:
     return re.sub(r"[^A-Za-z']", "", w)
 
 
-def _pick_blanks(lines: list[dict], names: set[str], prefer: set[str], rnd: random.Random, per_line: int = 1) -> list[list[int]]:
-    """每句挑 per_line 个词挖空：句型词 / 生词优先，再挑长一点的实词；不挖虚词、人名、已经挖过的词。"""
+# 词组的头一个词（good morning、see you、ice cream）：单挖一个字孩子不知道要填半个词组，不挖；
+# 词组后半（morning、you、cream）照常可以挖
+PHRASE_HEAD = {"good", "see", "ice", "how", "what", "thank"}
+
+
+def _pick_blanks(lines: list[dict], names: set[str], prefer: set[str], seen: dict[str, int], wrong: set[str],
+                 rnd: random.Random) -> list[list[int]]:
+    """每句最多挖一个词。候选只要「值得记」的（prefer 生词 / 句型词，或者 CORE）；排序：上次写错的 > 考得少的 >
+    生词句型词 > 核心词，同样的随机。同一个词一张卷子只挖一次。"""
     used, out = set(), []
     for l in lines:
+        best = None
         toks = _tokens(l["en"])
-        cand = []
         for k, w in enumerate(toks):
             c = _core(w).lower()
             if len(c) < 2 or c in STOP or _core(w) in names or c in used or "'" in c:
                 continue
-            cand.append((0 if c in prefer else 1, -len(c), rnd.random(), k, c))
-        cand.sort()
-        pick = cand[:per_line]
-        used.update(c for *_, c in pick)
-        out.append(sorted(k for *_, k, _c in pick))
+            nxt = _core(toks[k + 1]).lower() if k + 1 < len(toks) else ""
+            if c in PHRASE_HEAD and nxt and w[-1].isalpha():   # 「Good morning」「See you」「How much」：不挖前一半
+                continue
+            if c not in prefer and c not in CORE:
+                continue
+            key = (0 if c in wrong else 1, seen.get(c, 0), 0 if c in prefer else 1, rnd.random())
+            if best is None or key < best[0]:
+                best = (key, k, c)
+        if best:
+            used.add(best[2])
+            out.append([best[1]])
+        else:
+            out.append([])
     return out
 
 
-def build(L: dict, role: str, *, count: int = 3, bank: bool = True, seed=None) -> tuple[str, list[dict]]:
+def build(L: dict, role: str, *, count: int = 3, bank: bool = True, seed=None, history: dict | None = None) -> tuple[str, list[dict]]:
+    """history：她以前这课的默写记录（history_of 给）——words 每个词考过几次、wrong 上次写错的词、
+    sentences 每句听写过几次、wrong_sentences 上次写错的句子。没有就是第一次。"""
     rnd = random.Random(seed)
+    h = history or {}
     names = {r["name"] for r in L["roles"]} | {n for r in L["roles"] for n in r["name"].split()}
     mine = [l for l in L["lines"] if l["role"] == role]
-    # 听写：她的台词里挑短的（3–7 个词），按原顺序
+    # 听写：她的台词里挑短的（3–7 个词）；上次写错的句子先、听写得少的先，同样随机；按原顺序排
     short = [l for l in mine if 3 <= len(_tokens(l["en"])) <= 7] or mine
     n = max(1, min(count or 3, MAX_COUNT, len(short)))
-    listen = sorted(rnd.sample(short, n), key=lambda l: L["lines"].index(l))
+    ws_, ss_ = set(h.get("wrong_sentences") or []), h.get("sentences") or {}
+    ranked = sorted(short, key=lambda l: (0 if l["en"] in ws_ else 1, ss_.get(l["en"], 0), rnd.random()))
+    listen = sorted(ranked[:n], key=lambda l: L["lines"].index(l))
     items = [{"q": f"{i + 1}.", "a": l["en"], "zh": l["zh"], "part": "listen", "en": True} for i, l in enumerate(listen)]
     # 补全对话：整段，每句挖一个关键词（句型里的词、生词优先）
     prefer = {w["en"].lower() for w in L.get("new_words") or []}
     prefer |= {_core(w).lower() for w in re.split(r"[\s/]+", L.get("target") or "") if _core(w)}
-    holes = _pick_blanks(L["lines"], names, prefer, rnd)
+    holes = _pick_blanks(L["lines"], names, prefer, h.get("words") or {}, set(h.get("wrong") or []), rnd)
     lines, answers = [], []
     for l, ks in zip(L["lines"], holes):
         toks = _tokens(l["en"])
@@ -96,4 +131,36 @@ def generate(count: int, rnd: random.Random, lesson: str = "", role: str = "", b
     if bank is None:
         lv = (drill.progress(kid).get(L["id"]) or {}).get("level", 0) if kid else 0
         bank = lv < 2
-    return build(L, role, count=count or 3, bank=bool(bank), seed=rnd.random())
+    return build(L, role, count=count or 3, bank=bool(bank), seed=rnd.random(), history=history_of(kid, L["id"]))
+
+
+def history_of(kid: str, lid: str) -> dict:
+    """她以前这课默写的卷子和批改：每个词考过几次、每句听写过几次、最近一次批改写错的词和句子。"""
+    from server import practice, worksheet
+
+    out = {"words": {}, "sentences": {}, "wrong": [], "wrong_sentences": []}
+    if not kid:
+        return out
+    papers = []
+    for p in worksheet._dir().glob("*.json") if worksheet._dir().is_dir() else []:
+        try:
+            ws = __import__("json").loads(p.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        if ws.get("topic") == TOPIC and ws.get("for") == kid and ws.get("lesson") == lid:
+            papers.append(ws)
+    for ws in papers:
+        for it in ws["items"]:
+            if it["part"] == "listen":
+                out["sentences"][it["a"]] = out["sentences"].get(it["a"], 0) + 1
+            else:
+                for c in it["a"].split("；"):
+                    out["words"][c.lower()] = out["words"].get(c.lower(), 0) + 1
+    graded = [r for r in practice.all_for(kid) if r.get("grade") and r.get("worksheet") in {w["id"] for w in papers}]
+    if graded:
+        last = max(graded, key=lambda r: r.get("graded", 0))
+        for x in last["grade"]["items"]:
+            if not x.get("ok"):
+                w = str(x.get("want") or "")
+                (out["wrong_sentences"] if " " in w else out["wrong"]).append(w if " " in w else w.lower())
+    return out

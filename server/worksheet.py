@@ -78,6 +78,8 @@ def create(kind: str, *, subject: str = "", title: str = "", for_kid: str = "", 
         raise WorksheetError(str(e)) from e
     ws = {"id": store._new_id(), "kind": layout, "topic": topic, "subject": exercises.TOPICS[topic].SUBJECT,
           "for": for_kid, "created": time.time(), "title": t, "items": items, **extra}
+    if topic == "scene_dictation":
+        ws["lesson"] = opts.get("lesson", "")
     _dir().mkdir(parents=True, exist_ok=True)
     store._write_json(_dir() / f"{ws['id']}.json", ws)
     return ws

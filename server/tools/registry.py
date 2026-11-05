@@ -3,6 +3,7 @@ server/prompts/<x>.md，在这里登记模块，在 prompts.ORDER 登记 md。""
 
 from __future__ import annotations
 
+from server.tools import check_work as check_work_tools
 from server.tools import clock as clock_tools
 from server.tools import draw as draw_tools
 from server.tools import english_scene as english_scene_tools
@@ -17,7 +18,7 @@ from src.search import web_search
 
 SPECS = [web_search.SPEC, *time_tools.SPECS, *clock_tools.SPECS, *hanzi_tools.SPECS, *english_tools.SPECS, *printer_tools.SPECS,
          *practice_tools.SPECS, *homework_tools.SPECS, *draw_tools.SPECS,
-         *games_tools.SPECS, *english_scene_tools.SPECS]
+         *games_tools.SPECS, *english_scene_tools.SPECS, *check_work_tools.SPECS]
 SEARCH = web_search.NAME
 # 本地工具（不联网、不计搜索次数）：名字 → 执行函数
 LOCAL = {**{n: time_tools.run for n in time_tools.NAMES}, **{n: clock_tools.run for n in clock_tools.NAMES},
@@ -25,7 +26,8 @@ LOCAL = {**{n: time_tools.run for n in time_tools.NAMES}, **{n: clock_tools.run 
          **{n: english_tools.run for n in english_tools.NAMES}, **{n: practice_tools.run for n in practice_tools.NAMES},
          **{n: homework_tools.run for n in homework_tools.NAMES}, **{n: draw_tools.run for n in draw_tools.NAMES},
          **{n: games_tools.run for n in games_tools.NAMES},
-         **{n: english_scene_tools.run for n in english_scene_tools.NAMES}}
+         **{n: english_scene_tools.run for n in english_scene_tools.NAMES},
+         **{n: check_work_tools.run for n in check_work_tools.NAMES}}
 
 
 def run_local(name: str, arguments: str) -> str:
