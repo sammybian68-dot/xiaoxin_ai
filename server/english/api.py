@@ -39,6 +39,11 @@ def english_lesson(request: Request, lid: str, kid: str = "") -> dict:
         raise HTTPException(404, "没有这一课")
     hist = [{"id": s["id"], "role": s["role"], "at": s["started"], "secs": s.get("secs", 0), "summary": s.get("summary")}
             for s in drill.sessions(k["id"], lid) if s.get("done")]
+    from server import phonics
+
+    # 打开一课就把这课的词先拆好（自然拼读，后台、不等）：点单词卡时一般已经有了
+    phonics.warm([w for ln in L.get("lines") or [] for w in re.findall(r"[A-Za-z]+", ln.get("en") or "")]
+                 + [w.get("en", "") for w in L.get("new_words") or []])
     return {**L, "progress": drill.progress(k["id"]).get(lid) or {"level": 0, "times": 0}, "history": hist}
 
 
@@ -68,6 +73,31 @@ def english_char(name: str) -> FileResponse:
     if not p.is_file():
         raise HTTPException(404, "没有这个角色")
     return FileResponse(p, headers={"Cache-Control": "private, max-age=2592000"})
+
+
+@router.get("/api/english/phonics/{w}")
+def phonics_get(request: Request, w: str, wait: float = 0) -> dict:
+    """单词卡、书写卡要的：英式音标 + 自然拼读拆法（server/phonics.py）。还没拆好就后台去拆，最多等 wait 秒（≤ 20）；
+    没好 pending=true，界面过一会儿再来要。拆不对的不给 parts（宁缺勿错）。"""
+    from server import dictionary, phonics
+    from server.main import who
+
+    who(request)
+    try:
+        w = dictionary.norm(w)
+    except dictionary.DictError as e:
+        raise HTTPException(400, str(e))
+    try:
+        ipa = dictionary.phonetic(w)
+    except dictionary.DictError:
+        ipa = {"word": w, "uk": "", "us": ""}
+    r = phonics.get(w, wait=max(0.0, min(float(wait), 20.0)))
+    out = {"word": w, "uk": ipa.get("uk", ""), "us": ipa.get("us", "")}
+    if r and not r.get("fail"):
+        out.update(parts=r["parts"], syl=r["syl"])
+    else:
+        out["pending"] = r is None
+    return out
 
 
 @router.get("/api/english/word/{w}.mp3")

@@ -27,6 +27,7 @@ function englishCard(word, meaning = "") {
       ? ["uk", "us"].map((a) => `<button type="button" class="en-acc" data-acc="${a}"><span class="en-tag">${a === "uk" ? "英" : "美"}</span>`
         + `<span class="en-ipa">…</span><span class="en-ico">🔊</span></button>`).join("")
       : '<button type="button" class="en-acc" data-acc="tts"><span class="en-ico">🔊</span> 读一遍</button>'}</div>`
+    + `<div class="en-phx"></div>`
     + `<div class="en-board"><svg class="en-svg" viewBox="${-2} ${-6} ${W + 4} ${H + 12}" preserveAspectRatio="xMidYMid meet"></svg></div>`
     + `<div class="en-now" aria-live="polite">共 ${letters.length} 个字母、${strokes.length} 笔</div>`
     + `<div class="en-btns"><button type="button" class="primary" data-a="play">▶ 看怎么写</button>`
@@ -151,6 +152,12 @@ function englishCard(word, meaning = "") {
   wrap.querySelector('[data-a="quiz"]').addEventListener("click", startQuiz);
   // 音标、英音美音：服务端从词典取（有缓存）；取不到就只剩「🔊」，点了用小新的声音读
   const w = encodeURIComponent(word.trim());
+  // 自然拼读拆解（单个词才有；短语只有音标）。英美音标按钮还在上面那一行，这里不再重复显示音标
+  if (phrase && !/\s/.test(word.trim()) && typeof phonicsBox === "function") {
+    const pb = phonicsBox(word.trim());
+    pb.classList.add("no-ipa");
+    wrap.querySelector(".en-phx").appendChild(pb);
+  }
   if (phrase) {
     api(`api/dict/${w}`).then(json).then((d) => {
       for (const a of ["uk", "us"]) wrap.querySelector(`[data-acc="${a}"] .en-ipa`).textContent = d[a] ? `/${d[a]}/` : "";

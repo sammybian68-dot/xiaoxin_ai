@@ -1,0 +1,17 @@
+/* 自然拼读 + 音标（static/phonics.js）：单词卡、英文书写卡共用。元音红、辅音蓝、不发音灰，和课堂上的拼读卡一个配色 */
+.ph-box { display: grid; gap: 10px; justify-items: center; }
+.ph-ipa { font: 24px/1.2 "Lucida Sans Unicode", "Arial Unicode MS", "Noto Sans", "Doulos SIL", sans-serif; color: #4a3f36; letter-spacing: .02em; min-height: 1.2em; }
+.ph-tag { font: 700 13px/1 "PingFang SC", "Noto Sans SC", sans-serif; color: #8a6d3b; background: #f1e6cf; border-radius: 8px; padding: 4px 7px; margin-right: 8px; vertical-align: 3px; }
+.ph-parts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.ph-chip { display: grid; justify-items: center; gap: 2px; min-width: 46px; padding: 7px 8px 5px; border-radius: 14px; background: #fff; border: 2px solid #e6d9c2; }
+.ph-chip b { font: 700 34px/1.05 "Fredoka", "Comic Sans MS", ui-rounded, sans-serif; letter-spacing: 1px; }
+.ph-chip b i { font-style: normal; opacity: .45; }
+.ph-chip small { font: 17px/1.1 "Lucida Sans Unicode", "Arial Unicode MS", "Noto Sans", sans-serif; color: #6b5f55; }
+.ph-chip.v { border-color: #f2b4a8; } .ph-chip.v b { color: #e0452b; }
+.ph-chip.c { border-color: #b9cdf0; } .ph-chip.c b { color: #2f63c4; }
+.ph-chip.silent { border-style: dashed; } .ph-chip.silent b { color: #b3a89c; } .ph-chip.silent small { color: #b3a89c; font-family: "PingFang SC", "Noto Sans SC", sans-serif; font-size: 13px; }
+.ph-syl { font: 22px/1.2 "Fredoka", "Comic Sans MS", ui-rounded, sans-serif; color: #4a3f36; letter-spacing: 1px; }
+@media (max-width: 640px) { .ph-chip { min-width: 42px; padding: 6px 7px 5px; } .ph-chip b { font-size: 26px; } .ph-ipa { font-size: 20px; } }
+.ph-box.no-ipa .ph-ipa { display: none; }
+.en-phx:empty { display: none; }
+.ens-ph:empty { display: none; }

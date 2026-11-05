@@ -349,6 +349,7 @@ function ensWordRender(r) {
   const el = $("ens-word");
   el.innerHTML = `<div class="ens-wc"><button type="button" class="x" data-w="close" aria-label="关掉">×</button>
     <div class="big">${esc(ensW.word)}</div>
+    <div class="ens-ph"></div>
     <div class="ens-row" style="justify-content:center">
       <button type="button" class="ens-btn" data-w="play">🔊 听</button>
       <button type="button" class="ens-btn" data-w="slow">🐢 慢慢听</button>
@@ -360,6 +361,9 @@ function ensWordRender(r) {
     </div>
     ${r ? `<div class="ens-score" style="justify-content:center"><span class="ens-stars">${"⭐".repeat(r.stars)}${"☆".repeat(3 - r.stars)}</span><span class="msg">${esc(r.msg)}</span></div>` : ""}
     <small class="tip">读成别的词能听出来；口音上细小的差别以「听标准音、跟着读」为主</small></div>`;
+  // 音标 + 自然拼读：同一个词重画（打完分）时用上次的那块，不再请求
+  if (ensW.ph?.word !== ensW.word) ensW.ph = { word: ensW.word, box: typeof phonicsBox === "function" ? phonicsBox(ensW.word) : null };
+  if (ensW.ph.box) el.querySelector(".ens-ph").appendChild(ensW.ph.box);
   const mic = el.querySelector("[data-w=mic]");
   mic.addEventListener("pointerdown", (e) => { e.preventDefault(); ensWordRec(mic); });
   for (const ev of ["pointerup", "pointerleave", "pointercancel"]) mic.addEventListener(ev, () => ensWordStop(mic));
