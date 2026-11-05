@@ -299,3 +299,79 @@ def test_grade_model_setting(client):
 
     st.update_settings(agent={"grade_model": "claude-opus-5-5"})
     assert C.model_chain()[0] == "claude-opus-5-5" and len(C.model_chain()) == 3
+
+
+# ---------------------------------------------------------------- 事后重发（家长 11/6：「把批过的卷子发我」不能说办不到）
+
+def _wait_check(tid, n):
+    for _ in range(150):
+        ms = [m for m in store.get(tid)["messages"] if m.get("via") == "check"]
+        if len(ms) >= n:
+            return ms
+        time.sleep(0.1)
+    raise AssertionError("没等到批改消息")
+
+
+def _upload(img, owner="kid"):
+    import cv2
+
+    ok, enc = cv2.imencode(".jpg", img)
+    fid, path = store.allocate()
+    path.write_bytes(enc.tobytes())
+    return store.commit(fid, "p.jpg", "image/jpeg", len(enc), owner=owner)
+
+
+def test_show_checked_resends_with_circles(family, monkeypatch):
+    from server.tools import check_work as C, printer as printer_tools
+    from src.llm import client
+
+    kid = family["ids"]["女儿"]
+    tid = family["admin"].get(f"/api/thread?kid={kid}").json()["id"]
+    ws = worksheet.create("word_dictation", subject="chinese", units=[4], for_kid=kid)
+    store.append(tid, {"role": "user", "text": "", "files": [_upload(_photo(_bgr(worksheet.render_page(ws, True, "", 0)[0])))]})
+    monkeypatch.setattr(client, "chat_full", lambda models, m, **kw: client.Reply(text='{"wrong":[{"id":6,"got":"指中"}]}', model=models[0]))
+    tok = printer_tools.ctx.set({"thread": tid, "kid": kid, "kid_name": "卞依一"})
+    try:
+        assert "没有批改记录" in C.run("show_checked", "{}")
+        C.run("check_homework", "{}")
+        first = _wait_check(tid, 1)[0]
+        out = C.run("show_checked", json.dumps({"date": time.strftime("%Y-%m-%d")}))
+        assert "重新发到聊天里" in out and "播报" in out
+        again = _wait_check(tid, 2)[1]
+    finally:
+        printer_tools.ctx.reset(tok)
+    assert again["files"] and again["files"][0]["id"] == first["files"][0]["id"]   # 同一张红圈图
+    assert "应为「指甲」" in again["text"] and again["say"] == ""                     # 重发不再念
+    assert C.records(kid)[0]["right"] == C.records(kid)[0]["total"] - 1
+
+
+def test_show_checked_old_check(family, monkeypatch):
+    """11/6 以前批的（没有记录、没红圈图）：发当时交的照片 + 当时的结果，不调模型、不说办不到。"""
+    from server import practice
+    from server.family import members
+    from server.tools import check_work as C, printer as printer_tools
+    from src.llm import client
+
+    monkeypatch.setattr(client, "chat_full", lambda *a, **k: (_ for _ in ()).throw(AssertionError("不该调模型")))
+    kid = family["ids"]["女儿"]
+    tid = family["admin"].get(f"/api/thread?kid={kid}").json()["id"]
+    pic = _upload(np.full((900, 1200, 3), 255, np.uint8))
+    store.append(tid, {"role": "user", "text": "", "files": [pic]})
+    store.append(tid, {"role": "assistant", "text": "批改好了，对了 46 / 62（老的长回复）",
+                       "actions": [{"name": "check_homework", "arguments": '{"photos": 1}', "result": "…"}]})
+    ws = worksheet.create("word_dictation", subject="chinese", units=[4], for_kid=kid)
+    r = practice.start(ws["id"], members.get(kid))
+    rec = practice.get(r["id"])
+    rec.update(state="graded", graded=time.time() - 60, answers=[pic["id"]],
+               grade={"items": [{"no": "6", "want": "指甲", "got": "指中", "ok": False}, {"no": "7", "want": "得到", "got": "得到", "ok": True}],
+                      "right": 1, "total": 2})
+    store._write_json(practice._dir() / f"{r['id']}.json", rec)
+    tok = printer_tools.ctx.set({"thread": tid, "kid": kid, "kid_name": "卞依一"})
+    try:
+        out = C.run("show_checked", json.dumps({"which": "all"}))
+    finally:
+        printer_tools.ctx.reset(tok)
+    assert "重新发到聊天里" in out and "没有红圈图" in out
+    ms = [m for m in store.get(tid)["messages"] if m.get("via") == "check"]
+    assert len(ms) == 1 and ms[0]["files"][0]["id"] == pic["id"]          # 同一组照片只发一次（最新那次）
+    assert "老的长回复" in ms[0]["text"] or "应为「指甲」" in ms[0]["text"]

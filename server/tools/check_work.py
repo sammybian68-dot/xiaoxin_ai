@@ -35,7 +35,16 @@ SPECS = [{"type": "function", "function": {
         "photos": {"type": "integer", "description": "批最近几张照片，默认 1（孩子一次发了好几页就填页数）"},
     }},
 }}]
-NAMES = {"check_homework"}
+SPECS.append({"type": "function", "function": {
+    "name": "show_checked",
+    "description": "把批改过的卷子（带红圈的那几张）再发一次到聊天里，连同当时的批改结果。家长 / 孩子说「把批过的卷子发我」"
+                   "「重发一下批改」「看看昨天批的」时用，不要说办不到。11/6 以前的老批改没有红圈图，发当时交的照片和结果。",
+    "parameters": {"type": "object", "properties": {
+        "date": {"type": "string", "description": "哪天批的，YYYY-MM-DD；不填 = 最近一次"},
+        "which": {"type": "string", "enum": ["last", "all"], "description": "last 最近一次（默认）；all 那天的每一次"},
+    }},
+}})
+NAMES = {"check_homework", "show_checked"}
 MAX_PHOTOS = 6
 # 设置里能选的。2026-11-06 用女儿 11/5 的第四单元默写第 1 页评测（47 格，真错 13 个，详见 docs/check-work.md）：
 #   Sonnet 5.5 13/13、15–20 秒（最好）；Opus 5.5 12/13、15–25 秒；Gemini 3.8 Flash 12/13 + 误判 1、~25 秒；
@@ -416,6 +425,41 @@ def report(g: dict, kid_name: str = "") -> dict:
     return {"text": "\n\n".join(texts), "say": "".join(says), "files": files}
 
 
+# ---------------------------------------------------------------- 批改记录（家长事后要「把批过的卷子发我」）
+
+def _rec_dir():
+    return store.DATA / "checks"
+
+
+def save_record(kid: str, thread: str, photos: list[dict], g: dict, out: dict, mid: str = "") -> dict | None:
+    """批完存一条（DATA/checks/<id>.json）：哪几张照片、哪份卷子、对错、红圈图、念的那句。没批出东西（全要重拍）不存。"""
+    if not g.get("pages"):
+        return None
+    rec = {"id": store._new_id(), "kid": kid, "thread": thread, "at": time.time(), "msg": mid,
+           "photos": [p["id"] for p in photos], "files": [f["id"] for f in out["files"] if f.get("id")],
+           "text": out["text"], "say": out["say"],
+           "sheets": sorted({p["ws"]["id"] for p in g["pages"]}),
+           "title": "、".join(dict.fromkeys(p["ws"]["title"] for p in g["pages"])),
+           "right": sum(len(p["cells"]) - len(p["wrong"]) for p in g["pages"]),
+           "total": sum(len(p["cells"]) for p in g["pages"])}
+    store._write_json(_rec_dir() / f"{rec['id']}.json", rec)
+    return rec
+
+
+def records(kid: str, day: str = "") -> list[dict]:
+    """这个孩子的批改记录，新的在前；day（YYYY-MM-DD）给了就只要那天的。"""
+    d = _rec_dir()
+    out = []
+    for p in d.glob("*.json") if d.is_dir() else []:
+        try:
+            r = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        if r.get("kid") == kid and (not day or time.strftime("%Y-%m-%d", time.localtime(r["at"])) == day):
+            out.append(r)
+    return sorted(out, key=lambda r: -r["at"])
+
+
 def _work(thread: str, kid: str, kid_name: str, photos: list[dict]) -> None:
     try:
         try:
@@ -431,13 +475,87 @@ def _work(thread: str, kid: str, kid_name: str, photos: list[dict]) -> None:
                                      for n, got in sorted(p["wrong"].items())],
                            "model": p["model"], "model_s": p["model_s"]} for p in g["pages"]],
                 "seconds": g["seconds"]}
-        store.append(thread, {"role": "assistant", "via": "check", "model": (g["pages"] or [{}])[0].get("model", ""),
-                              "text": out["text"], "say": out["say"], "files": out["files"], "check": meta,
-                              **({"error": out["error"]} if out.get("error") else {})})
+        msg = store.append(thread, {"role": "assistant", "via": "check", "model": (g["pages"] or [{}])[0].get("model", ""),
+                                    "text": out["text"], "say": out["say"], "files": out["files"], "check": meta,
+                                    **({"error": out["error"]} if out.get("error") else {})})
+        try:
+            save_record(kid, thread, photos, g, out, msg.get("id", ""))
+        except Exception as e:  # noqa: BLE001 记录存不上不影响这次的结果
+            log.warning("check record: %s", e)
         log.info("check_homework %d photos %.1fs pages=%s", len(photos), g["seconds"],
                  [(p["ws"]["id"], p["page"] + 1, len(p["wrong"]), p["model"], p["model_s"]) for p in g["pages"]])
     finally:
         _busy.release()
+
+
+def _old_checks(kid: str, day: str) -> list[dict]:
+    """11/6 以前的批改（新流程上线前，没有记录、没有红圈图）：练习交卷存了照片和结果（practice 记录）；
+    聊天里调过 check_homework 的，照片是那条消息前面最近的几张，结果是小新那条回复。
+    返回 [{at, photos, title, text}]，新的在前。不重批：老卷子没二维码，按新规矩认不出（11/6 试过按图像特征去对原卷，
+    女儿的两张照片一张对成了口算卷、一张对成了别的默写卷，不靠谱，删了）。"""
+    from server import practice
+    from server.family import members
+
+    out = []
+    for r in practice.all_for(kid):
+        g = r.get("grade") or {}
+        if r.get("answers") and r.get("graded") and (not day or time.strftime("%Y-%m-%d", time.localtime(r["graded"])) == day):
+            wrong = [x for x in g.get("items") or [] if not x.get("ok")]
+            # 老批改模型会写「看不清」：照家长的规矩算认不出；那时没红圈图，不说「卷子上红圈」
+            t, _ = summary(r["title"], g.get("total") or 0, [{"no": x.get("no", ""), "want": x.get("want", ""),
+                                                               "got": "?" if "看不清" in str(x.get("got") or "") else x.get("got", "")}
+                                                              for x in wrong])
+            t = t.replace("（卷子上红圈）", "")
+            out.append({"at": r["graded"], "photos": r["answers"], "title": r["title"], "text": t})
+    try:
+        msgs = store.get(members.get(kid)["thread"])["messages"]
+    except KeyError:
+        msgs = []
+    for i, m in enumerate(msgs):
+        acts = [a for a in m.get("actions") or [] if a.get("name") == "check_homework"]
+        if not acts or m.get("role") != "assistant" or (day and time.strftime("%Y-%m-%d", time.localtime(m.get("created", 0))) != day):
+            continue
+        try:
+            n = max(1, min(int(json.loads(acts[0].get("arguments") or "{}").get("photos") or 1), MAX_PHOTOS))
+        except (ValueError, TypeError):
+            n = 1
+        pics = [f["id"] for mm in msgs[:i] for f in mm.get("files") or [] if f.get("kind") == "image" and f.get("owner") != "xiaoxin"]
+        if pics:
+            out.append({"at": m.get("created", 0), "photos": pics[-n:], "title": "", "text": m.get("text") or ""})
+    # 同一组照片批了好几次（重问了一遍）：留最新那次
+    seen, uniq = set(), []
+    for o in sorted(out, key=lambda o: -o["at"]):
+        k = tuple(o["photos"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(o)
+    return uniq
+
+
+def show(thread: str, kid: str, kid_name: str, day: str = "", which: str = "last") -> str:
+    """show_checked：有新记录（带红圈图）就直接重发那条；只有老批改（11/6 以前）就发当时交的照片 + 当时的结果。"""
+    recs = records(kid, day)
+    when = f"{day} " if day else ""
+    if recs:
+        pick = recs if which == "all" else recs[:1]
+        for r in reversed(pick):
+            files = [store.file_info(f)[1] for f in r["files"] if store.file_info(f)]
+            t = time.strftime("%m月%d日 %H:%M", time.localtime(r["at"]))
+            store.append(thread, {"role": "assistant", "via": "check", "model": "", "text": f"（{t} 批的）\n{r['text']}",
+                                  "say": "", "files": files, "check_ref": r["id"]})
+        t = "、".join(r["title"] for r in pick)
+        return f"已经把{when}批过的卷子（{t}，带红圈）重新发到聊天里了，共 {len(pick)} 次批改。播报：发出来了，往下看。"
+    old = _old_checks(kid, day)
+    if not old:
+        return f"{when}没有批改记录。要批就把卷子拍下来发过来。播报：{when or '最近'}没有批过的卷子，拍下来发我，我来批。"
+    pick = old if which == "all" else old[:1]
+    for o in reversed(pick):
+        photos = [store.file_info(f)[1] for f in o["photos"] if store.file_info(f)]
+        t = time.strftime("%m月%d日 %H:%M", time.localtime(o["at"]))
+        store.append(thread, {"role": "assistant", "via": "check", "model": "", "say": "", "files": photos,
+                              "text": f"（{t} 批的，那时还没有红圈图，附的是交上来的照片）\n{o['text']}"})
+    return (f"已经把{when}批过的卷子重新发到聊天里了（{len(pick)} 次）。那时是老办法批的，没有红圈图，发的是交上来的照片和当时的结果。"
+            "以后小新出的新卷子（四角有二维码）批完都带红圈图。播报：发出来了，往下看。")
 
 
 def run(name: str, arguments: str) -> str:
@@ -451,6 +569,11 @@ def run(name: str, arguments: str) -> str:
     thread, kid = c.get("thread", ""), c.get("kid", "")
     if not thread:
         return "失败：这里批不了（不在聊天里）"
+    if name == "show_checked":
+        day = str(args.get("date") or "").strip()
+        if day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            return "失败：date 要写成 YYYY-MM-DD"
+        return show(thread, kid, c.get("kid_name", ""), day, str(args.get("which") or "last"))
     n = max(1, min(int(args.get("photos") or 1), MAX_PHOTOS))
     photos = recent_photos(thread, n)
     if not photos:
