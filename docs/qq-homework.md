@@ -106,6 +106,11 @@
 - 联想的内存清理（`ZuiMemoryCleaner_Recents`，在最近任务里一键清理也算）杀掉小新进程后，系统把「小新 · 抓作业」记成
   Crashed，**不再自动绑定**：设置里看着还是开着，其实 pad 再也不来领动作（11/4 17:48 被杀，11/5 三轮全空）。
   `dumpsys accessibility` 里 `Crashed services` 有它就是这个情况，关开一次辅助功能就好。
+  现在三层防护（11/5 实测：kill -9 后 5 秒自己接上；force-stop 连开关都清掉，下次进程起来 70 秒内接上）：
+  1. 安全中心 → 自启管理 → 小新 **开**。不开的话进程被杀后系统想重启它会被 `ZuiAutoRunManager` 拦掉（`process is bad`）。
+  2. 看门狗 `AgentService.watchdog`（闹钟前台服务每分钟调一次）：没绑上就自己关开一次辅助功能。
+     要 adb 授权一次 `pm grant com.xiaoxin.app android.permission.WRITE_SECURE_SETTINGS`；覆盖安装不丢，**卸载重装要重新授权**。
+  3. 服务端 `hw_schedule.precheck`：第一轮前 10 分钟 pad 还不在线，在群里提前告诉家长。
 - 无障碍服务刚装好时系统可能报「process is bad」不绑定：先正常打开一次小新 app，再关开一次辅助功能。
 - 历史里把动作写成「[动作] tap …」文字塞回去，模型会学着回文字不调工具。→ 用真的 tool_call / tool 消息。
 - 一次 DNS 解析失败就把整轮丢了。→ 同一个模型等一等再试 4 次，再换下一个模型。
