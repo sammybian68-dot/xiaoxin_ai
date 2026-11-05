@@ -6,6 +6,9 @@ const state = { conv: null, models: [], model: "", pending: [], sending: false, 
 
 function toast(msg, ms = 2600) {
   const t = $("toast");
+  // showModal 打开的弹窗在最顶层，body 里的提示 z-index 再大也被盖住（设置页点「立即抓取」像没反应）：挪进最上面那个弹窗里
+  const top = [...document.querySelectorAll("dialog[open]")].pop() || document.body;
+  if (t.parentElement !== top) top.appendChild(t);
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toast.timer);
