@@ -603,16 +603,38 @@ async function goReviewOpen(gid) {
     });
   }
   el.hidden = false;
-  el.querySelector(".gor-move").innerHTML = '<div class="gor-text loading">小新在复盘这盘棋，第一次要十几秒…</div>';
+  el.querySelector(".gor-move").innerHTML = '<div class="gor-text loading">打开复盘…</div>';
   el.querySelector(".gor-head h3").textContent = "复盘";
+  gor.gen = (gor.gen || 0) + 1;
   try { gor.r = await goApi(`api/go/${gid}/review`); } catch (e) { toast(e.message); el.hidden = true; return; }
-  const r = gor.r, d = new Date(r.created * 1000);
+  gorHeader();
+  gorGo(gor.r.keys.length ? gor.r.keys[0].n : gor.r.moves.length);
+  if (gor.key?.text) gorSay();   // 一打开就念第一个关键步（孩子不认字）。浏览器拦了自动播放就等他点「听小新讲」
+  gorPoll(gid, gor.gen);
+}
+
+// 讲解在服务端后台生成（一盘结束就开始），这里长轮询：每多好一手就更新；正看着的那手好了就念
+async function gorPoll(gid, gen) {
+  while (gor.r && gor.r.generating && gen === gor.gen && !$("gor").hidden) {
+    const have = gor.r.keys.filter((k) => k.text).length;
+    let r;
+    try { r = await goApi(`api/go/${gid}/review?have=${have}`); } catch (_) { await new Promise((res) => setTimeout(res, 2000)); continue; }
+    if (gen !== gor.gen) return;
+    const waited = gor.key && !gor.key.text ? gor.key.n : null;
+    gor.r = r;
+    gor.key = r.keys.find((k) => k.n === gor.n) || null;
+    gorHeader();
+    gorRender();
+    if (waited && gor.key?.text && gor.saying == null) gorSay();   // 孩子正停在这手等讲解：好了就念
+  }
+}
+
+function gorHeader() {
+  const el = $("gor"), r = gor.r, d = new Date(r.created * 1000);
   el.querySelector(".gor-head h3").textContent = `${d.getMonth() + 1}月${d.getDate()}日 对 ${r.level_name} · ${r.kid_color === "B" ? "执黑" : "执白"}`;
   el.querySelector(".gor-sum").textContent = (r.result ? r.result.text + "。" : "") + r.summary;
-  el.querySelector(".gor-keys").innerHTML = r.keys.map((k) => `<button type="button" class="${k.grade}" data-key="${k.n}">第 ${k.n} 手 ${k.decided ? `-${k.loss_score} 目` : `-${Math.round(k.loss_wr * 100)}%`}</button>`).join("")
+  el.querySelector(".gor-keys").innerHTML = r.keys.map((k) => `<button type="button" class="${k.grade}${k.n === gor.n ? " on" : ""}" data-key="${k.n}">第 ${k.n} 手 ${k.decided ? `-${k.loss_score} 目` : `-${Math.round(k.loss_wr * 100)}%`}${k.pending ? " …" : ""}</button>`).join("")
     || "<small>这盘没有明显下坏的手 👍</small>";
-  gorGo(r.keys.length ? r.keys[0].n : r.moves.length);
-  if (gor.key) gorSay();   // 一打开就念第一个关键步（孩子不认字）。浏览器拦了自动播放就等他点「听小新讲」
 }
 
 // 念讲解（儿子还不认字）：用小新平时的声音（/api/tts），念完按钮变回来。再点一下停
@@ -644,7 +666,7 @@ function gorGo(n) {
   gor.pv = 0;
   gor.key = r.keys.find((k) => k.n === gor.n) || null;
   gorRender();
-  if (wasSaying && gor.key) gorSay();   // 在听的时候跳到下一个关键步：接着念新的
+  if (wasSaying && gor.key?.text) gorSay();   // 在听的时候跳到下一个关键步：接着念新的
 }
 
 function gorRender() {
@@ -687,8 +709,8 @@ function gorRender() {
   if (!k) { box.innerHTML = head; return; }
   const pvLen = (r.pv[n - 1] || []).length;
   box.innerHTML = head
-    + `<div class="gor-text">${esc(k.text || "")}</div>`
-    + `<div class="gor-pv"><button type="button" class="gor-say" data-r="say">${gor.saying === n ? "⏹ 停" : "🔊 听小新讲"}</button>`
+    + (k.text ? `<div class="gor-text">${esc(k.text)}</div>` : `<div class="gor-text loading">小新正在想这手怎么讲给你听…</div>`)
+    + `<div class="gor-pv">${k.text ? `<button type="button" class="gor-say" data-r="say">${gor.saying === n ? "⏹ 停" : "🔊 听小新讲"}</button>` : ""}`
     + `<button type="button" data-r="pv"${gor.pv ? ' class="on"' : ""}>${gor.pv ? `AI 的下法 ${gor.pv} / ${pvLen}（再点一手）` : "看 AI 的下法"}</button>`
     + (gor.pv ? `<button type="button" data-r="pv0">回到实战</button>` : "") + `</div>`
     + (k.source === "template" ? `<div class="src">（讲解没通过核对，换成了固定说法）</div>` : "");
@@ -698,9 +720,9 @@ function gorButton(ev) {
   const b = ev.target.closest("[data-r],[data-key]");
   if (!b) return;
   const r = gor.r;
-  if (b.dataset.key) { gorGo(+b.dataset.key); if (gor.key && gor.saying == null) gorSay(); return; }
+  if (b.dataset.key) { gorGo(+b.dataset.key); if (gor.key?.text && gor.saying == null) gorSay(); return; }
   const k = b.dataset.r;
-  if (k === "close") { gorHush(); $("gor").hidden = true; return; }
+  if (k === "close") { gorHush(); gor.gen++; $("gor").hidden = true; return; }
   if (k === "say") { gorSay(); return; }
   if (k === "first") gorGo(0);
   if (k === "prev") gorGo(gor.n - 1);

@@ -105,6 +105,9 @@ def test_review_and_stats(family, kata):
     g = kid.post(f"/api/go/{g['id']}/resign", json={}).json()
     r = kid.get(f"/api/go/{g['id']}/review").json()
     assert len(r["curve"]) == len(r["moves"]) + 1 and r["level_name"] == "3 级" and r["result"]["by"] == "resign"
+    for t in [t for t in threading.enumerate() if t.name == "go-review"]:
+        t.join(5)
+    assert kid.get(f"/api/go/{g['id']}/review?have=0").json()["generating"] is False
     st = kid.get("/api/go-stats").json()
     assert st["games"][0]["id"] == g["id"] and (st["total"], st["won"], st["lost"]) == (1, 0, 1)   # 下了几手就认输也算一盘输
 
@@ -185,3 +188,31 @@ def test_clear_all_needs_password(family, kata, monkeypatch):
     assert kid.post("/api/games/go/clear", json={"password": "test-pw"}).status_code == 403   # 只有管理员
     assert admin.post("/api/games/go/clear", json={"password": "test-pw"}).json() == {"deleted": 1}
     assert go.all_games() == [] and kid.get("/api/go-stats").json()["games"] == []
+
+
+def test_review_generated_in_background_after_game_ends(family, kata, monkeypatch):
+    """认输那一刻就开始在后台生成讲解；接口不等模型，边生成边长轮询拿。"""
+    import time as _t
+
+    from server.games import go_review
+
+    calls = []
+
+    def slow(fx, chat=None):
+        calls.append(fx["n"])
+        _t.sleep(0.3)
+        return {"text": f"第 {fx['n']} 手讲解", "source": "model", "problems": []}
+    monkeypatch.setattr(go_review, "explain", slow)
+    kid = family["儿子"]
+    g = kid.post("/api/go", json={"level": "3k"}).json()
+    raw = go.get(g["id"])
+    raw["moves"] = [["B", "C3"], ["W", "Q16"], ["B", "C4"], ["W", "Q4"]]
+    a = raw["analysis"][0]
+    raw["analysis"] = [dict(a, winrate=.6), dict(a, winrate=.6), dict(a, winrate=.6), dict(a, winrate=.2, score=-10), dict(a, winrate=.2, score=-10)]
+    go.save(raw)
+    t0 = _t.time()
+    kid.post(f"/api/go/{g['id']}/resign", json={})
+    first = kid.get(f"/api/go/{g['id']}/review").json()
+    assert _t.time() - t0 < 0.25 and first["keys"][0]["n"] == 3        # 不等讲解，马上回
+    later = kid.get(f"/api/go/{g['id']}/review?have=0").json()          # 长轮询：等到第一手讲解好
+    assert later["keys"][0]["text"] == "第 3 手讲解" and calls == [3]

@@ -262,3 +262,20 @@ def test_engine_does_not_resign_early(kata):
     kata.black_wr = 0.995
     g = _done(go.play(go.new("k1", level="10k")["id"], "k1", "K10"))
     assert g["result"] is None and len(g["moves"]) == 2   # 才 1 手，不认输
+
+
+def test_explanation_made_during_game_and_dropped_on_undo(kata, monkeypatch):
+    """下着棋就把亏大的那手讲解生成好；悔棋后作废。"""
+    import threading as _th
+
+    from server.games import go_review
+
+    monkeypatch.setattr(go_review, "explain", lambda fx, chat=None: {"text": f"讲 {fx['n']}", "source": "model", "problems": []})
+    g = go.new("k1", level="3k")
+    kata.black_wr = 0.1              # 孩子落子后胜率从 60% 掉到 10%：大亏
+    g = _done(go.play(g["id"], "k1", "C3"))
+    for t in [t for t in _th.enumerate() if t.name == "go-review"]:
+        t.join(5)
+    assert go.get(g["id"])["review"]["1"]["text"] == "讲 1"
+    g = go.undo(g["id"], "k1")
+    assert go.get(g["id"])["review"] == {}

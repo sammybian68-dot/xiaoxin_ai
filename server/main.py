@@ -492,11 +492,47 @@ def kid_thread(request: Request, kid: str = "", since: str = "", before: str = "
     return _page(conv, msgs, max(0, len(msgs) - n), len(msgs))
 
 
+# 「查找聊天记录」按能力筛：能力 id → (显示名, 这一轮调了哪些工具, 小新后台发来的消息 via)
+SKILLS = {
+    "stroke": ("✍️ 笔顺", {"show_stroke_order", "show_word_writing"}, set()),
+    "go": ("⚫⚪ 下棋", {"play_go", "go_stats", "go_review"}, set()),
+    "draw": ("🎨 画画", {"draw_image"}, {"draw"}),
+    "homework": ("📚 作业", {"homework_report"}, {"homework"}),
+    "practice": ("📝 练习", {"make_exercise", "make_worksheet", "start_practice", "practice_report"}, {"practice"}),
+    "print": ("🖨 打印", {"print_file", "printer_status", "list_printables"}, {"print"}),
+    "clock": ("⏰ 闹钟", {"alarm_set", "alarm_list", "alarm_delete", "alarm_update", "alarm_ring", "timer_start",
+                         "timer_control", "stopwatch"}, set()),
+    "search": ("🔎 上网查", set(), set()),
+}
+
+
+def _skills_of(m: dict) -> set[str]:
+    """一条小新的消息用到了哪些能力：这一轮调的工具、搜没搜、是不是后台发来的（画好的图、作业提醒、打印结果）。"""
+    tools = {a.get("name") for a in m.get("actions") or []}
+    out = {k for k, (_, names, vias) in SKILLS.items() if tools & names or m.get("via") in vias}
+    if m.get("searches"):
+        out.add("search")
+    return out
+
+
+@app.get("/api/thread/skills")
+def kid_thread_skills(request: Request, kid: str = "") -> dict:
+    """「查找聊天记录」的能力筛选：每个能力有几条（没用过的不列）。"""
+    k = kid_for(request, kid)
+    cnt: dict[str, int] = {}
+    for m in store.get(k["thread"])["messages"]:
+        if m["role"] == "assistant":
+            for s_ in _skills_of(m):
+                cnt[s_] = cnt.get(s_, 0) + 1
+    return {"skills": [{"id": i, "name": SKILLS[i][0], "count": cnt[i]} for i in SKILLS if cnt.get(i)]}
+
+
 @app.get("/api/thread/search")
 def kid_thread_search(request: Request, kid: str = "", q: str = "", who_: str = Query("", alias="who"),
-                      kind: str = "", limit: int = 100) -> dict:
+                      kind: str = "", skill: str = "", limit: int = 100) -> dict:
     """查聊天记录（像微信「查找聊天记录」）：关键字 q（不分大小写，多个词空格隔开要都出现）、
-    说话人 who（成员 id、xiaoxin、空 = 全部）、kind（image 图片 / file 文件 / 空 = 全部）。
+    说话人 who（成员 id、xiaoxin、空 = 全部）、kind（image 图片 / file 文件 / 空 = 全部）、
+    skill（能力：笔顺、下棋、画画…… 见 SKILLS，查的是小新那条回答）。
     新的在前，最多 limit 条；每条带上下文要的 id，界面点了用 /api/thread/around 跳过去。"""
     k = kid_for(request, kid)
     conv = store.get(k["thread"])
@@ -514,15 +550,18 @@ def kid_thread_search(request: Request, kid: str = "", q: str = "", who_: str = 
             continue
         if kind == "file" and not any(f.get("kind") != "image" for f in files):
             continue
+        if skill and (m["role"] != "assistant" or skill not in _skills_of(m)):
+            continue
         text = m.get("text") or ""
         hay = (text + " " + " ".join(f.get("name", "") for f in files)).lower()
         if words and not all(w in hay for w in words):
             continue
         out.append({"id": m["id"], "created": m.get("created", 0), "from": frm, "role": m["role"], "text": text[:300],
+                    "skills": sorted(_skills_of(m)) if m["role"] == "assistant" else [],
                     "files": [{"id": f["id"], "name": f.get("name", ""), "kind": f.get("kind", "")} for f in files][:6]})
         if len(out) >= max(1, min(limit, 300)):
             break
-    return {"results": out, "q": q, "who": who_, "kind": kind}
+    return {"results": out, "q": q, "who": who_, "kind": kind, "skill": skill}
 
 
 @app.get("/api/thread/around")

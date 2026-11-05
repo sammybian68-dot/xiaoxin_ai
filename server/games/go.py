@@ -102,7 +102,59 @@ def clear_all() -> int:
         p.unlink(missing_ok=True)
         n += 1
     _active.clear()
+    _reviewing.clear()
     return n
+
+
+_reviewing: set[str] = set()   # 正在后台生成复盘讲解的对局
+
+
+def review_later(gid: str) -> bool:
+    """后台把这盘的复盘讲解生成好（每好一手存一次盘、叫醒等着的界面）。已经在生成就不重复起。"""
+    if gid in _reviewing:
+        return False
+    _reviewing.add(gid)
+
+    def run():
+        from server.games import go_review
+
+        try:
+            g = get(gid)
+            if any(a is None for a in g["analysis"]):
+                return
+
+            def saved(n, c):
+                with lock(gid):
+                    cur = get(gid)
+                    if cur["moves"][:n + 1] != g["moves"][:n + 1]:   # 生成期间悔棋了：这条作废
+                        return
+                    cur.setdefault("review", {})[str(n)] = c
+                    save(cur)
+                with _changed:
+                    _changed.notify_all()
+            go_review.fill(g, on_one=saved)
+        except Exception:  # noqa: BLE001 讲解没生成出来：下次打开复盘再试
+            logging.getLogger("xiaoxin.go").exception("review %s", gid)
+        finally:
+            _reviewing.discard(gid)
+            with _changed:
+                _changed.notify_all()
+    threading.Thread(target=run, daemon=True, name="go-review").start()
+    return True
+
+
+def reviewing(gid: str) -> bool:
+    return gid in _reviewing
+
+
+def wait_review(gid: str, have: int, timeout: float = 25) -> None:
+    """长轮询：等讲解好的手数超过 have，或者生成结束。"""
+    end = time.time() + timeout
+    with _changed:
+        while time.time() < end and gid in _reviewing:
+            if sum("text" in c for c in (get(gid).get("review") or {}).values()) > have:
+                return
+            _changed.wait(min(1.0, end - time.time()))
 
 
 def lock(gid: str) -> threading.Lock:
@@ -239,6 +291,9 @@ def _respond(gid: str) -> None:
                     finish_by_count(g)
             g["thinking"], g["error"] = False, ""
             save(g)
+        # 一盘结束（小新认输、双方停一手数子）要整盘讲解；没结束也起一下：刚才那手要是亏大了，
+        # 趁孩子想下一手的时候就把它的讲解生成好，下完点复盘几乎不用等（fill 只补缺的，没缺的什么都不做）
+        review_later(gid)
     except (EngineError, GameError, R.IllegalMove) as e:
         _fail(gid, str(e))
     except Exception as e:  # noqa: BLE001 线程里的错不能丢：记下来给界面看
@@ -349,6 +404,9 @@ def undo(gid: str, kid: str) -> dict:
         g["analysis"].pop()
         g["undos"] += 1
         g["last_loss"], g["error"] = None, ""
+        # 悔掉的那几手（以及孩子最后一手：它的讲解用到了后面小新的应手）的讲解作废
+        n = len(g["moves"])
+        g["review"] = {k: v for k, v in (g.get("review") or {}).items() if int(k) < n}
         save(g)
         return g
 
@@ -374,7 +432,8 @@ def resign(gid: str, kid: str) -> dict:
         g["result"] = {"winner": g["engine"], "by": "resign", "text": f"{'白' if g['engine'] == 'W' else '黑'}中盘胜（认输）"}
         g["ended"] = time.time()
         save(g)
-        return g
+    review_later(gid)   # 结束就开始生成复盘讲解
+    return g
 
 
 def _zi(x: float) -> str:
@@ -483,7 +542,9 @@ def count(gid: str, kid: str) -> tuple[dict, dict]:
         if check["ok"]:
             finish_by_count(g)
         save(g)
-        return g, check
+    if check["ok"]:
+        review_later(gid)
+    return g, check
 
 
 def _own(gid: str, kid: str) -> dict:

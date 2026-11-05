@@ -1,9 +1,10 @@
 "use strict";
-// 查找聊天记录（顶栏 🗂）：像微信「查找聊天记录」——关键字、按说话人（群成员 + 小新）、只看图片 / 文件。
+// 查找聊天记录（顶栏 🗂）：像微信「查找聊天记录」——关键字、按说话人（群成员 + 小新）、只看图片 / 文件、
+// 按能力（笔顺、下棋、画画、作业、练习、打印、闹钟、上网查：查的是小新那条回答，只列用过的）。
 // 结果新的在前（GET api/thread/search）；点一条跳到聊天里那条（GET api/thread/around，拿它前后一段换掉当前页面），
 // 跳过去后关掉搜索栏、往上照常懒加载；底下出「回到最新」，点了重新打开群（最新一页）。
 
-const hist = { who: "", kind: "", timer: 0, seq: 0 };
+const hist = { who: "", kind: "", skill: "", skills: [], timer: 0, seq: 0 };
 
 function histKidQ() { return state.conv?.kid ? `&kid=${encodeURIComponent(state.conv.kid)}` : ""; }
 
@@ -24,6 +25,8 @@ function histOpen() {
   el.hidden = false;
   histChips();
   histSearch();
+  // 能力：只列这个群里用过的（带条数）
+  api(`api/thread/skills?${histKidQ().slice(1)}`).then(json).then((d) => { hist.skills = d.skills; histChips(); }).catch(() => {});
   setTimeout(() => el.querySelector("input").focus(), 50);
 }
 
@@ -37,7 +40,9 @@ function histChips() {
   $("hist").querySelector(".hist-chips").innerHTML =
     who.map(([id, n]) => `<button type="button" data-who="${esc(id)}"${hist.who === id ? ' class="on"' : ""}>${esc(n.trim())}</button>`).join("")
     + `<span class="sep"></span>`
-    + [["image", "🖼 图片"], ["file", "📄 文件"]].map(([k, n]) => `<button type="button" data-kind="${k}"${hist.kind === k ? ' class="on"' : ""}>${n}</button>`).join("");
+    + [["image", "🖼 图片"], ["file", "📄 文件"]].map(([k, n]) => `<button type="button" data-kind="${k}"${hist.kind === k ? ' class="on"' : ""}>${n}</button>`).join("")
+    + (hist.skills.length ? `<span class="hist-break"></span>` + hist.skills.map((s) =>
+      `<button type="button" data-skill="${esc(s.id)}"${hist.skill === s.id ? ' class="on"' : ""}>${esc(s.name)}<small>${s.count}</small></button>`).join("") : "");
 }
 
 async function histSearch() {
@@ -46,15 +51,15 @@ async function histSearch() {
   const q = el.querySelector("input").value.trim();
   const my = ++hist.seq;
   const list = el.querySelector(".hist-list"), count = el.querySelector(".hist-count");
-  if (!q && !hist.who && !hist.kind) {
+  if (!q && !hist.who && !hist.kind && !hist.skill) {
     count.textContent = "";
-    list.innerHTML = '<div class="hist-empty">输入关键字，或者点上面按人、按图片文件筛</div>';
+    list.innerHTML = '<div class="hist-empty">输入关键字，或者点上面按人、图片文件、能力（笔顺、下棋、画画……）筛</div>';
     return;
   }
   count.textContent = "搜索中…";
   let d;
   try {
-    d = await api(`api/thread/search?q=${encodeURIComponent(q)}&who=${encodeURIComponent(hist.who)}&kind=${hist.kind}${histKidQ()}`).then(json);
+    d = await api(`api/thread/search?q=${encodeURIComponent(q)}&who=${encodeURIComponent(hist.who)}&kind=${hist.kind}&skill=${encodeURIComponent(hist.skill)}${histKidQ()}`).then(json);
   } catch (e) { count.textContent = e.message; return; }
   if (my !== hist.seq) return;   // 打字快：只画最后一次的
   count.textContent = d.results.length ? `找到 ${d.results.length >= 100 ? "100+" : d.results.length} 条` : "";
@@ -83,16 +88,17 @@ function histItem(m, words) {
     ? `<div class="thumbs">${imgs.map((f) => `<img src="api/files/${f.id}?v=thumb" alt="${esc(f.name)}" loading="lazy">`).join("")}`
       + `${docs.map((f) => `<span>📄 ${histMark(f.name, words)}</span>`).join("")}</div>` : "";
   return `<button type="button" class="hist-item" data-mid="${esc(m.id)}"><span class="av">${av}</span><span>`
-    + `<span class="who"><b>${esc(p.name)}</b><span>${when}</span></span>`
+    + `<span class="who"><b>${esc(p.name)}${(m.skills || []).map((k) => ` <em class="tag">${esc((hist.skills.find((s) => s.id === k)?.name || "").split(" ")[0])}</em>`).join("")}</b><span>${when}</span></span>`
     + (m.text ? `<span class="txt">${histMark(m.text, words)}</span>` : "") + thumbs + `</span></button>`;
 }
 
 function histClick(e) {
-  const b = e.target.closest("[data-h],[data-who],[data-kind],.hist-item");
+  const b = e.target.closest("[data-h],[data-who],[data-kind],[data-skill],.hist-item");
   if (!b) return;
   if (b.dataset.h === "close") { histClose(); return; }
   if (b.dataset.who !== undefined) { hist.who = hist.who === b.dataset.who ? "" : b.dataset.who; histChips(); histSearch(); return; }
   if (b.dataset.kind) { hist.kind = hist.kind === b.dataset.kind ? "" : b.dataset.kind; histChips(); histSearch(); return; }
+  if (b.dataset.skill) { hist.skill = hist.skill === b.dataset.skill ? "" : b.dataset.skill; histChips(); histSearch(); return; }
   if (b.dataset.mid) histJump(b.dataset.mid);
 }
 

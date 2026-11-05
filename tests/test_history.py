@@ -49,3 +49,22 @@ def test_kid_only_searches_own_thread(family):
     _seed(family)
     son = family["儿子"]
     assert son.get(f"/api/thread/search?kid={family['ids']['女儿']}&q=作业").json()["results"] == []  # 孩子拿到的永远是自己的群
+
+
+def test_filter_by_skill(family):
+    dau = family["ids"]["女儿"]
+    c = family["admin"]
+    tid = c.get(f"/api/thread?kid={dau}").json()["id"]
+    a = store.append(tid, {"role": "assistant", "text": "这个字的写法参考笔顺图。",
+                           "actions": [{"name": "show_stroke_order", "arguments": "{}", "result": "ok"}]})["id"]
+    b = store.append(tid, {"role": "assistant", "text": "卞依一，图片画好了，请看。", "via": "draw"})["id"]
+    d = store.append(tid, {"role": "assistant", "text": "好呀，点开始就来一盘。",
+                           "actions": [{"name": "play_go", "arguments": "{}", "result": "ok"}]})["id"]
+    e = store.append(tid, {"role": "assistant", "text": "搜到了", "searches": [{"queries": ["x"], "ok": True, "sources": []}]})["id"]
+    store.append(tid, {"role": "user", "text": "画一只猫", "from": dau})   # 孩子说的话不算「画画」的结果
+    ids = lambda sk: [m["id"] for m in c.get(f"/api/thread/search?kid={dau}&skill={sk}").json()["results"]]
+    assert ids("stroke") == [a] and ids("draw") == [b] and ids("go") == [d] and ids("search") == [e]
+    r = c.get(f"/api/thread/search?kid={dau}&skill=go").json()["results"][0]
+    assert r["skills"] == ["go"]
+    sk = {s["id"]: s["count"] for s in c.get(f"/api/thread/skills?kid={dau}").json()["skills"]}
+    assert sk == {"stroke": 1, "draw": 1, "go": 1, "search": 1}   # 没用过的不列

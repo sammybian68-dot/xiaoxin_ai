@@ -147,6 +147,8 @@ def test_v8_review_caches_explanations():
     assert len(calls) == 1 and r1["keys"][0]["text"] == r2["keys"][0]["text"] == "你下在 A1，AI 建议下在 D16。"
     assert r1["curve"] == [.5, .5, .5, .2, .2] and r1["stats"]["big"] == 1
     assert "第 3 手" in r1["summary"]
+    r3 = V.review({**g, "review": {}}, chat=chat, wait=False)   # 不等：讲解没有，数字先给
+    assert r3["pending"] == 1 and r3["keys"][0]["pending"] and "text" not in r3["keys"][0] and r3["keys"][0]["facts"]
 
 
 def test_facts_full_game_uses_real_board():
@@ -198,20 +200,23 @@ def test_missed_capture_fact():
     assert V._group_facts(b, after, "B", before) == ["小新中腹一共 5 颗子（K12 一带），这手之前 AI 判断你能吃掉，这手之后活了"]
 
 
-def test_flip_beats_late_point_loss():
-    """胜率 57% → 2% 的翻盘手，要排在「已经输定以后又亏 17 目」前面（实战里前者曾经没挑上）。"""
+def test_all_big_losses_no_limit():
+    """「亏大发」的手全讲，不限手数：12 手大亏就讲 12 手；没有大亏时讲最大的 3 手小亏。"""
     moves, ana = [], [_a(.5, 0)]
-    for i in range(1, 31):
+    for i in range(1, 41):
         moves.append(["B" if i % 2 else "W", "pass"])
         ana.append(_a(.5, 0))
-    ana[18], ana[19] = _a(.57, 1), _a(.02, -8)   # 孩子（黑）第 19 手：57% → 2%
-    for i in range(20, 31):
-        ana[i] = _a(.01, -8 - (i - 19) * 3)
-    for k in (21, 23, 25, 27, 29):          # 输定以后每手亏 ≥ 8 目
-        ana[k] = _a(.005, ana[k - 1]["score"] - 17)
-    g = _game(moves, ana)
-    keys = [k["n"] for k in V.key_moves(g)]
-    assert 19 in keys and keys.index(19) == 0
+    big = list(range(1, 25, 2))                 # 12 手（孩子的手是奇数）
+    for n in big:
+        ana[n] = _a(.5, -9)                     # 每手亏 9 目
+        ana[n + 1] = _a(.5, 0)                  # 小新那手又回来
+    keys = [k["n"] for k in V.key_moves(_game(moves, ana))]
+    assert keys == big
+    ana2 = [_a(.5, 0)] * 41
+    ana2 = list(ana2)
+    for n, d in ((3, 5), (7, 6), (11, 4.5), (15, 7)):
+        ana2[n] = _a(.5, -d)
+    assert [k["n"] for k in V.key_moves(_game(moves, ana2))] == [3, 7, 15]
 
 
 def test_best_connects_two_blocks():

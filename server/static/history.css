@@ -12,6 +12,9 @@
   color: var(--muted); font-size: 14px; display: inline-flex; align-items: center; gap: 4px; }
 .hist-chips button.on { background: var(--me); border-color: var(--me); color: #fff; }
 .hist-chips .sep { width: 1px; background: var(--line); margin: 4px 2px; }
+.hist-chips .hist-break { flex-basis: 100%; height: 0; }
+.hist-chips button small { margin-left: 4px; font-size: 12px; opacity: .7; }
+.hist-item .tag { font-style: normal; font-weight: 400; margin-left: 2px; }
 .hist-count { padding: 2px 16px 6px; font-size: 13px; color: var(--muted); }
 .hist-list { flex: 1; overflow-y: auto; padding: 0 8px 16px; }
 .hist-item { display: grid; grid-template-columns: 32px 1fr; gap: 10px; width: 100%; text-align: left; padding: 10px 8px;

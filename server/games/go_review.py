@@ -18,7 +18,7 @@ log = logging.getLogger("xiaoxin.go_review")
 BIG = (0.20, 8.0)     # 胜率掉 ≥ 20% 或目差掉 ≥ 8 目：大失误
 MID = (0.10, 4.0)     # ≥ 10% 或 ≥ 4 目：失误
 DECIDED = 0.05        # 孩子胜率 < 5% 或 > 95%：胜负已定，只看目差
-MAX_KEY = 8          # 一盘最多讲几手：胜率大跌的优先占满，剩下的给「已定以后亏目多的」
+MID_FALLBACK = 3     # 一手大亏都没有时，讲几手小亏
 DEAD, DANGER = 0.75, 0.4   # 一块棋的子平均归对方 ≥ 0.75「很可能被吃」，≥ 0.4「危险」
 AREA_MIN = 3.0        # 一个区域（角 / 边 / 中腹）归属合计变了 ≥ 3 个点才说
 LOCAL_R = 2           # 「这手本身起没起作用」看落点周围 5×5
@@ -62,12 +62,14 @@ def _weight(x: dict) -> float:
 
 
 def key_moves(g: dict) -> list[dict]:
-    bad = [x for x in losses(g) if x["grade"]]
-    flips = [x for x in bad if not x["decided"] and x["loss_wr"] >= BIG[0]]   # 胜率大跌的：一个都不能漏
-    rest = sorted((x for x in bad if x not in flips), key=lambda x: (-_weight(x), x["n"]))
-    flips.sort(key=lambda x: (-_weight(x), x["n"]))
-    pick = flips[:MAX_KEY] + rest[:max(0, MAX_KEY - len(flips))]
-    return sorted(pick, key=lambda x: x["n"])
+    """要讲的手：所有「大亏」的（胜率掉 ≥ 20% 或目差掉 ≥ 8 目），不限手数（家长 2026-11-04：有多少亏大发的都要讲）。
+    一手大亏都没有时，挑小亏（≥ 10% 或 ≥ 4 目）里最大的 MID_FALLBACK 手讲，免得复盘里什么都没有。"""
+    ls = losses(g)
+    big = [x for x in ls if x["grade"] == "big"]
+    if big:
+        return big
+    mid = sorted((x for x in ls if x["grade"] == "mid"), key=lambda x: (-_weight(x), x["n"]))
+    return sorted(mid[:MID_FALLBACK], key=lambda x: x["n"])
 
 
 # ------------------------------------------------------------ 事实（全是代码算的）
@@ -393,35 +395,58 @@ def explain(fx: dict, chat=None) -> dict:
     return {"text": template(fx), "source": "template", "problems": problems}
 
 
-def review(g: dict, *, chat=None, with_text: bool = True) -> dict:
-    """整盘复盘：胜率曲线（孩子视角）、每手损失、关键步（带事实和讲解）。讲解缓存在 g["review"]（调用方负责存盘）。"""
+WORKERS = 8   # 讲解并行生成几手（每手一次模型调用 ~10 秒）
+
+
+def review(g: dict, *, chat=None, with_text: bool = True, wait: bool = True) -> dict:
+    """整盘复盘：胜率曲线（孩子视角）、每手损失、关键步（带事实和讲解）。讲解缓存在 g["review"]（调用方负责存盘）。
+    wait=False：只给已经生成好的讲解，没好的那几手 text 为空、pending=True（界面先出曲线和棋盘，讲解后台补，见 warm）。"""
     me = g["kid_color"]
     curve = [round(_mine(a, me)[0], 3) if a else None for a in g["analysis"]]
     score = [round(_mine(a, me)[1], 1) if a else None for a in g["analysis"]]
     keys = key_moves(g)
     cache = g.setdefault("review", {})
-    todo = [k for k in keys if not cache.get(str(k["n"])) or (with_text and "text" not in cache[str(k["n"])])]
-
-    def one(k):
-        fx = facts(g, k["n"])
-        c = {"facts": fx["lines"], "best": fx["best"]}
-        if with_text:
-            c.update(explain(fx, chat))   # 一步 ~10 秒，五步并行
-        return k["n"], c
-    if todo:
-        with ThreadPoolExecutor(min(5, len(todo))) as ex:
-            for n, c in ex.map(one, todo):
-                cache[str(n)] = c
+    if wait:
+        fill(g, keys, chat=chat, with_text=with_text)
     for k in keys:
-        k.update(cache[str(k["n"])])
+        c = cache.get(str(k["n"]))
+        if c is None:
+            fx = facts(g, k["n"])     # 事实是纯代码，很快：讲解没好也先给数字
+            c = {"facts": fx["lines"], "best": fx["best"]}
+        k.update(c)
+        k["pending"] = with_text and "text" not in c
     mine = losses(g)
     return {"id": g["id"], "kid_color": me, "curve": curve, "score": score, "keys": keys,
+            "pending": sum(k["pending"] for k in keys),
             "summary": summary(g, keys), "moves": g["moves"], "stones": g.get("stones", []),
             "best": [a["best"][0]["move"] if a and a.get("best") else "" for a in g["analysis"]],
             "pv": [a["best"][0]["pv"][:PV_LEN] if a and a.get("best") else [] for a in g["analysis"]],
             "stats": {"moves": len(mine), "big": sum(x["grade"] == "big" for x in mine),
                       "mid": sum(x["grade"] == "mid" for x in mine),
                       "avg_loss": round(sum(max(0, x["loss_score"]) for x in mine) / max(1, len(mine)), 2)}}
+
+
+def fill(g: dict, keys: list[dict] | None = None, *, chat=None, with_text: bool = True, on_one=None) -> int:
+    """把缺的讲解补上（并行），写进 g["review"]。on_one(n, c)：每好一手调一次（后台生成时用它存盘、叫醒界面）。返回补了几手。"""
+    keys = key_moves(g) if keys is None else keys
+    cache = g.setdefault("review", {})
+    todo = [k for k in keys if not cache.get(str(k["n"])) or (with_text and "text" not in cache[str(k["n"])])]
+    if g.get("result") is None:   # 还在下：小新还没应的那手（讲解要用小新的应手）先不讲
+        todo = [k for k in todo if k["n"] + 1 < len(g["analysis"])]
+
+    def one(k):
+        fx = facts(g, k["n"])
+        c = {"facts": fx["lines"], "best": fx["best"]}
+        if with_text:
+            c.update(explain(fx, chat))
+        return k["n"], c
+    if todo:
+        with ThreadPoolExecutor(min(WORKERS, len(todo))) as ex:
+            for n, c in ex.map(one, todo):
+                cache[str(n)] = c
+                if on_one:
+                    on_one(n, c)
+    return len(todo)
 
 
 def summary(g: dict, keys: list[dict]) -> str:
@@ -432,5 +457,7 @@ def summary(g: dict, keys: list[dict]) -> str:
     big = [k for k in keys if k["grade"] == "big"]
     if not keys:
         return head + "没有明显的坏棋，下得很稳。"
-    names = "、".join(f"第 {k['n']} 手" for k in (big or keys)[:3])
-    return head + (f"主要是 {names}亏得多。" if big else f"可以改进的是 {names}。")
+    top = sorted(big or keys, key=lambda k: -_weight(k))[:3]
+    names = "、".join(f"第 {k['n']} 手" for k in sorted(top, key=lambda k: k["n"]))
+    more = f"（一共 {len(big)} 手亏得多，下面都有讲）" if len(big) > 3 else ""
+    return head + (f"最亏的是 {names}{more}。" if big else f"可以改进的是 {names}。")

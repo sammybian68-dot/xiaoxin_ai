@@ -166,18 +166,21 @@ def go_retry(request: Request, gid: str, body: dict = Body(default={})) -> dict:
 
 # ------------------------------------------------------------ 复盘、看板
 @router.get("/api/go/{gid}/review")
-def go_review_get(request: Request, gid: str, kid: str = "") -> dict:
-    """整盘复盘（关键步讲解第一次生成要十几秒，之后缓存在棋谱里）。没下完的也能看到目前为止的。"""
+def go_review_get(request: Request, gid: str, kid: str = "", have: int = -1) -> dict:
+    """整盘复盘。曲线、关键步、事实马上给；讲解在后台生成（一盘结束就开始），没好的那几手 pending。
+    have=界面已经有几手讲解：还在生成就等到多出一手再回（长轮询，最多 25 秒），界面边出边看。没下完的也能看到目前为止的。"""
     k = _kid(request, kid)
     g = _game(gid, k)
     if any(a is None for a in g["analysis"]):
         raise HTTPException(409, "小新还在想，等这一手下完再复盘")
-    with go.lock(gid):
-        g = go.get(gid)
-        r = go_review.review(g)
-        go.save(g)   # 讲解缓存
+    if have >= 0:
+        go.wait_review(gid, have)
+    g = go.get(gid)
+    r = go_review.review(g, wait=False)
+    if r["pending"]:
+        go.review_later(gid)   # 没在生成（老对局、服务重启过）就起一个
     return {**r, "level_name": go.LEVEL_NAME[g["level"]], "result": g["result"], "created": g["created"],
-            "komi": g["komi"]}
+            "komi": g["komi"], "generating": go.reviewing(gid) or bool(r["pending"])}
 
 
 def summary_row(g: dict) -> dict:
