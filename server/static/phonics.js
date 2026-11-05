@@ -15,10 +15,11 @@ function phonicsBox(word) {
   if (!/^[A-Za-z][A-Za-z '\-]*$/.test(String(word || "").trim())) { box.hidden = true; return box; }
   const w = encodeURIComponent(String(word).trim());
   let tries = 0;
-  const load = () => api(`api/english/phonics/${w}?wait=${tries ? 0 : 8}`).then(json).then((d) => {
+  // 不等拆法：音标马上显示；拆法后台在做（pending）就每 2 秒再要一次，最多半分钟
+  const load = () => api(`api/english/phonics/${w}`).then(json).then((d) => {
     phonicsFill(box, d);
-    if (d.pending && ++tries < 6) setTimeout(load, 2500);   // 后台在拆：过一会儿再要
-  }).catch(() => { box.querySelector(".ph-ipa").textContent = ""; });
+    if (d.pending && ++tries < 15) setTimeout(load, 2000);
+  }).catch(() => { if (++tries < 3) setTimeout(load, 2000); else box.querySelector(".ph-ipa").textContent = ""; });
   load();
   return box;
 }

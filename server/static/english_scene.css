@@ -113,3 +113,5 @@
 .ens-wc .x { position: absolute; right: 12px; top: 10px; width: 40px; height: 40px; border-radius: 20px; border: 0; background: #f1e6cf; font-size: 22px; }
 .ens-wc .tip { color: var(--ens-soft); font-size: 12px; }
 .ens-bubble .w[data-ww] { cursor: pointer; }
+/* 长按单词不要弹系统的「复制 / 分享 / 全选」（孩子是想点词，不是选字） */
+.ens, .ens-wordcard { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
