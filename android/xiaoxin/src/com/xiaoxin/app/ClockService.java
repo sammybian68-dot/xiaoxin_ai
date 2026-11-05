@@ -84,7 +84,21 @@ public class ClockService extends Service {
         alive = true;
         running = this;
         new Thread(this::poll, "clock-poll").start();
+        new Thread(this::agentWatch, "agent-watch").start();
         main.post(this::tick);
+    }
+
+    /** 抓作业的辅助功能被系统丢掉了（内存清理杀进程后不再绑定）就自己接上。这个服务是前台常驻的，被杀了也会被系统拉回来。 */
+    private void agentWatch() {
+        long born = System.currentTimeMillis();
+        while (alive) {
+            sleep(60_000);
+            try {
+                AgentService.watchdog(this, System.currentTimeMillis() - born);
+            } catch (Exception e) {
+                Log.w(TAG, "agent watch: " + e.getMessage());
+            }
+        }
     }
 
     @Override

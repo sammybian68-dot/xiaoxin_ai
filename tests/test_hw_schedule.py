@@ -103,6 +103,34 @@ def test_no_tell_when_some_subjects_exist(env):
     assert not told(kid()["thread"])
 
 
+def test_precheck_tells_once_when_pad_offline(env, monkeypatch):
+    """第一轮前 10 分钟 pad 不在线：提前告诉家长一次，还来得及去开辅助功能。"""
+    from server.agent_bus import bus
+
+    monkeypatch.setattr(bus, "online", lambda within=90: False)
+    t = kid()["thread"]
+    fired = set()
+    env["now"] = "16:39"
+    hs.tick(fired)
+    assert not told(t)                   # 还没到预检窗口
+    env["now"] = "16:41"
+    assert hs.tick(fired) == "还没到点"   # 预检不占用抓取
+    assert len(told(t)) == 1 and "辅助功能" in told(t)[0]["text"]
+    env["now"] = "16:45"
+    hs.tick(fired)
+    assert len(told(t)) == 1             # 一天只说一次
+    assert not env["grabs"]
+
+
+def test_precheck_quiet_when_pad_online(env, monkeypatch):
+    from server.agent_bus import bus
+
+    monkeypatch.setattr(bus, "online", lambda within=90: True)
+    env["now"] = "16:45"
+    hs.tick(set())
+    assert not told(kid()["thread"])
+
+
 def test_notify_off(env):
     store.update_settings(agent={**store.settings()["agent"], "notify": False})
     env["now"] = "17:45"

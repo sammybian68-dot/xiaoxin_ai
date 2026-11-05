@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 抓作业的辅助功能被系统丢掉后自己关开一次接上（AgentService.watchdog）。普通应用拿不到，
+         要 adb 授权一次：pm grant com.xiaoxin.app android.permission.WRITE_SECURE_SETTINGS -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
 
     <!-- 抓作业要打开 QQ（AgentService.openQq）。只声明这一个包：不声明的话 Android 11+ 查不到它，
          这台联想还会每次弹「小新正在尝试读取应用列表」让人点允许（agent 每轮第一步都在点「拒绝」） -->

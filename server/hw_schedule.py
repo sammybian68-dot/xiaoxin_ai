@@ -8,6 +8,7 @@
 存储按学科增量合并（homework.merge_day），读对的不会被重读的版本盖掉。
 
 最后一轮跑完还一科都没有、并且家长要通知 → 小新在群里说一句，一天只说一次。
+第一轮前 10 分钟 pad 不在线 → 也提前说一句（precheck），一天一次。
 「立即抓取当天」随时可点，5 秒内接手（今天已有的话按增量跑）。
 pad 不在线（断网、关机、没开辅助功能）也算这一轮没成，原因写进运行记录。
 """
@@ -85,6 +86,29 @@ def maybe_tell(c: dict, last_why: str) -> None:
         log.info("hw schedule: 今天没抓到，已告诉家长")
 
 
+PRECHECK_MIN = 10  # 第一轮前多少分钟看 pad 在不在线
+
+
+def precheck(c: dict, hm: str, fired: set) -> bool:
+    """第一轮开抓前 10 分钟看一眼 pad 在不在线，不在线就提前告诉家长（一天一次），还来得及去开。
+    pad 的「小新 · 抓作业」会被内存清理弄掉（docs/qq-homework.md），pad 自己会尝试接上，接不上才走到这里。"""
+    from server.agent_bus import bus
+
+    first = min(c.get("at") or ["16:50"])
+    key = (today(), "precheck")
+    if (key in fired or not c.get("notify", True) or not (_plus(first, -PRECHECK_MIN) <= hm < first)
+            or homework.get_day(today())):
+        return False
+    fired.add(key)
+    if bus.online():
+        return False
+    tell_parents(f"{first} 要去 QQ 群抓作业了，可是 pad 现在连不上（没联网、关机，或者「辅助功能 → 小新 · 抓作业」没在跑）。"
+                 "麻烦看一下 pad：设置 → 辅助功能 → 小新 · 抓作业，关掉再打开。")
+    homework.log_run({"since": today(), "until": today(), "ok": False, "why": "开抓前 pad 不在线，已告诉家长",
+                      "trigger": "precheck"})
+    return True
+
+
 def mode_for(c: dict, at: str) -> str:
     """这一轮用哪种模式：今天还一科都没有 → full；最后一个时刻 → verify（重读核对）；其余 → incremental。"""
     if not homework.get_day(today()):
@@ -110,6 +134,8 @@ def tick(fired: set) -> str:
         return "自动抓关着"
     if time.localtime().tm_wday + 1 not in (c.get("weekdays") or [1, 2, 3, 4, 5]):
         return "今天不是抓取日"
+    if precheck(c, now_hm(), fired):
+        log.info("hw schedule: 开抓前 pad 不在线，已告诉家长")
     at = due(c, now_hm(), fired)
     if not at:
         return "还没到点"

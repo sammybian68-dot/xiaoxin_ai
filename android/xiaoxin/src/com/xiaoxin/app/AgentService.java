@@ -65,6 +65,8 @@ public class AgentService extends AccessibilityService {
     @Override
     protected void onServiceConnected() {
         alive = true;
+        bound = true;
+        getSharedPreferences("xiaoxin", MODE_PRIVATE).edit().putBoolean("agent_want", true).apply();
         new Thread(this::loop, "agent-poll").start();
         Log.i(TAG, "connected");
     }
@@ -72,7 +74,58 @@ public class AgentService extends AccessibilityService {
     @Override
     public void onDestroy() {
         alive = false;
+        bound = false;
         super.onDestroy();
+    }
+
+    // ---------------------------------------------------------------- 看门狗（ClockService 每分钟调一次）
+
+    /** 这个进程里服务绑上了没有。进程被杀重启后是 false，直到系统再绑一次。 */
+    private static volatile boolean bound;
+    private static long lastRebind;
+
+    /**
+     * 联想的内存清理（ZuiMemoryCleaner）杀掉小新后，系统把这个服务记成 Crashed、不再自动绑定：
+     * 设置里还开着，其实没在跑，pad 不来领动作，抓作业整天落空（2026-11-05 就是这样）。
+     * 开关是开着、服务却没绑上的话，自己把开关关了再开一次，系统就会重新绑定。
+     * 要 WRITE_SECURE_SETTINGS（adb 授权一次：pm grant com.xiaoxin.app android.permission.WRITE_SECURE_SETTINGS，
+     * 覆盖安装不丢）。没授权就什么都不做，只能等人去辅助功能里关开一次。
+     */
+    static void watchdog(Context c, long upMs) {
+        // 开关被清掉也要接上：force-stop（有的清理工具就是这么杀的）会把它从已开列表里删掉，不是家长关的。
+        // 只要这台 pad 上开过一次（want），就一直保持开着；真不想抓了在小新设置里关「每天自动抓」
+        SharedPreferences p = c.getSharedPreferences("xiaoxin", MODE_PRIVATE);
+        if (enabled(c) && !p.getBoolean("agent_want", false)) {
+            p.edit().putBoolean("agent_want", true).apply();
+        }
+        boolean want = p.getBoolean("agent_want", false);
+        if (bound || !want || upMs < 30_000) {
+            return;  // 绑着；这台从没开过；进程刚起来，先给系统机会自己绑
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastRebind < 5 * 60_000) {
+            return;
+        }
+        lastRebind = now;
+        if (c.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "watchdog: 服务没绑上，但没有 WRITE_SECURE_SETTINGS，自己接不上");
+            return;
+        }
+        android.content.ContentResolver r = c.getContentResolver();
+        String me = new ComponentName(c, AgentService.class).flattenToString();
+        String on = Settings.Secure.getString(r, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        StringBuilder rest = new StringBuilder();
+        for (String s : (on == null ? "" : on).split(":")) {
+            if (!s.isEmpty() && !s.equals(me)) {
+                rest.append(rest.length() > 0 ? ":" : "").append(s);
+            }
+        }
+        Log.w(TAG, "watchdog: 服务没绑上（开关" + (enabled(c) ? "开着" : "被清掉了") + "），关开一次辅助功能");
+        Settings.Secure.putString(r, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, rest.toString());
+        sleep(1500);
+        Settings.Secure.putString(r, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                rest.length() > 0 ? rest + ":" + me : me);
+        Settings.Secure.putString(r, Settings.Secure.ACCESSIBILITY_ENABLED, "1");
     }
 
     @Override
