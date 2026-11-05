@@ -624,6 +624,10 @@ async function worksheetCard(row, wid) {
 function showAction(row, a) {
   // 下棋（go.js）：开局卡片、看板、复盘
   if (["play_go", "go_stats", "go_review"].includes(a.name) && typeof goAction === "function" && goAction(row, a)) return;
+  if (a.name === "english_scene" && /w_[0-9a-f]{16}/.test(a.result || "")) {   // 小剧场默写：出的是练习纸，走练习纸卡片
+    worksheetCard(row, /w_([0-9a-f]{16})/.exec(a.result)[1]);
+    return;
+  }
   // 英语小剧场（english_scene.js）：课程卡片、做新场景、看板
   if (a.name.startsWith("english_scene") && typeof ensAction === "function" && ensAction(row, a)) return;
   if (a.name === "make_exercise" || a.name === "make_worksheet") {

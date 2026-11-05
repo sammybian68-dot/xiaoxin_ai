@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -80,6 +81,25 @@ def english_word(w: str) -> FileResponse:
             build.word_audio(w)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(502, f"这个词读不出来：{e}")
+    return FileResponse(p, headers={"Cache-Control": "private, max-age=2592000"})
+
+
+@router.get("/api/english/say.mp3")
+def english_say(text: str, slow: int = 0) -> FileResponse:
+    """英音读一句（默写听写时小新念句子用）：英音女声，落盘缓存，同一句只合成一次。"""
+    import hashlib
+
+    t = " ".join(str(text).split())[:200]
+    if not t or not re.fullmatch(r"[A-Za-z0-9 ,.!?'’\-:;]+", t):
+        raise HTTPException(400, "只读英文句子")
+    d = drill.root() / "say"
+    d.mkdir(exist_ok=True)
+    p = d / f"{hashlib.sha1((t + str(bool(slow))).encode()).hexdigest()[:16]}.mp3"
+    if not p.is_file():
+        try:
+            build.say(t, build.WORD_VOICE, p, slow=bool(slow))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"读不出来：{e}")
     return FileResponse(p, headers={"Cache-Control": "private, max-age=2592000"})
 
 
@@ -162,6 +182,30 @@ def _report(k: dict, s: dict) -> None:
                                    "english": {"session": s["id"], "lesson": s["lesson"]}})
     except Exception:  # noqa: BLE001 发不出去不影响练习本身
         pass
+
+
+@router.post("/api/english/dictation")
+def english_dictation(request: Request, body: dict = Body(...)) -> dict:
+    """出一张这课的默写卷（听写句子 + 补全对话），存成练习纸；以小新的身份发进群里（带练习纸卡片：打印、开始练习、
+    拍照交卷批改都在卡片上，和语文生词默写同一套）。"""
+    from server import store, worksheet
+
+    k = _kid(request, str(body.get("kid") or ""))
+    lid = str(body.get("lesson") or "")
+    try:
+        L = drill.lesson(lid)
+        ws = worksheet.create("scene_dictation", subject="english", for_kid=k["id"], lesson=lid,
+                              role=str(body.get("role") or ""), kid=k["id"])
+    except KeyError:
+        raise HTTPException(404, "没有这一课")
+    except worksheet.WorksheetError as e:
+        raise HTTPException(400, str(e))
+    worksheet.page_file(ws, kid_name=k["name"])
+    msg = store.append(k["thread"], {"role": "assistant", "via": "english", "model": "",
+                                     "text": f"「{L['zh']}」的默写出好了：先听写句子，再补全对话。可以打印出来写，也可以点「开始练习」，我来念。",
+                                     "actions": [{"name": "make_exercise", "arguments": json.dumps({"topic": "scene_dictation"}),
+                                                  "result": f"已出好 {worksheet.summary(ws)}（w_{ws['id']}）"}]})
+    return {"worksheet": ws["id"], "message": msg["id"]}
 
 
 # ------------------------------------------------------------ 现场生成一课（异步，和画图一样）

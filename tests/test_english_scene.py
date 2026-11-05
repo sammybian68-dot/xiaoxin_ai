@@ -202,3 +202,52 @@ def test_silence_not_sent_to_xfyun():
     with pytest.raises(ValueError, match="没听到声音"):
         drill.score_line(s["id"], "k1", 1, quiet.getvalue(), assess=lambda t, p: called.append(1))
     assert not called
+
+
+# ---------------------------------------------------------------- 默写小练习：出题、排版、听写读句子、批改答案
+def test_dictation_sheet_from_lesson():
+    from server import practice, worksheet
+
+    _lesson()
+    ws = worksheet.create("scene_dictation", subject="english", for_kid="k1", lesson="icecream", kid="k1")
+    listen = [it for it in ws["items"] if it["part"] == "listen"]
+    write = [it for it in ws["items"] if it["part"] == "write"]
+    assert listen and all(it["en"] for it in listen) and {it["a"] for it in listen} <= {"Hello, Mr. Bear. I'd like ice cream.", "Two, please."}
+    assert len(write) == 1 and len(write[0]["lines"]) == 4 and write[0]["bank"].startswith("词库：")   # 没练熟：给词库
+    blanks = [b for line in write[0]["lines"] for b in __import__("re").findall(r"\{([^}]*)\}", line)]
+    assert blanks and not {b.lower() for b in blanks} & {"i", "a", "the", "lily", "bear", "mr"}           # 不挖虚词和人名
+    assert all(line.split(": ")[0] in ("Lily", "Mr. Bear") for line in write[0]["lines"])
+    words = practice.listen_words(ws)
+    assert words[0]["en"] and words[0]["wait_s"] >= 8                                                    # 英文按句子长度等
+    key = practice.answer_key(ws)
+    assert len(key) == len(listen) + len(blanks)
+    for p in range(len(worksheet.pages(ws))):                                                            # 能排版
+        assert worksheet._render_dictation(ws, False, "卞依一", p)[:2] == b"\xff\xd8"
+
+
+def test_dictation_no_bank_when_ripe():
+    from server import worksheet
+
+    _lesson()
+    d = dt.date.today()
+    _play("k1", "icecream", "lily", 92, d)            # 熟练
+    ws = worksheet.create("scene_dictation", subject="english", for_kid="k1", lesson="icecream", kid="k1")
+    assert not next(it for it in ws["items"] if it["part"] == "write")["bank"]
+
+
+def test_dictation_api_posts_card(family):
+    _lesson()
+    kid = family["ids"]["女儿"]
+    r = family["女儿"].post("/api/english/dictation", json={"lesson": "icecream"}).json()
+    msgs = family["admin"].get(f"/api/thread?kid={kid}").json()["messages"]
+    assert f"w_{r['worksheet']}" in msgs[-1]["actions"][0]["result"] and "默写出好了" in msgs[-1]["text"]
+    assert family["女儿"].get(f"/api/worksheets/{r['worksheet']}").status_code == 200
+
+
+def test_say_only_english():
+    from fastapi.testclient import TestClient
+
+    from server import main
+
+    with TestClient(main.app) as c:
+        assert c.get("/api/english/say.mp3?text=你好").status_code in (400, 401)

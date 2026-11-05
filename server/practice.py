@@ -20,7 +20,7 @@ from server import store, worksheet
 log = logging.getLogger(__name__)
 LISTEN_GAP_S = 5          # 每遍读完等几秒
 LISTEN_PER_WORD_S = 14    # 估一个词要多久（两遍 + 两次等待），算限时用
-GRADE_MODELS = ["claude-sonnet-5-5", "deepseek-v4.1-flash"]
+GRADE_MODELS = ["claude-sonnet-5-5", "claude-opus-5-5"]   # 2026-11-05 英语默写实测：两个都对，deepseek 回的 JSON 坏了
 _lock = threading.Lock()
 
 
@@ -58,7 +58,14 @@ def all_for(kid: str) -> list[dict]:
 
 
 def listen_words(ws: dict) -> list[dict]:
-    return [{"no": i + 1, "word": it["a"]} for i, it in enumerate(it for it in ws["items"] if it.get("part") == "listen")]
+    """听写要读的：中文是词；英文（小剧场默写）是整句，带 en 标记，界面用英音读、按句子长度留时间写。"""
+    out = []
+    for i, it in enumerate(it for it in ws["items"] if it.get("part") == "listen"):
+        w = {"no": i + 1, "word": it["a"]}
+        if it.get("en"):
+            w.update(en=True, wait_s=max(8, min(30, len(it["a"].split()) * 3)))
+        out.append(w)
+    return out
 
 
 def default_limit_s(ws: dict) -> int:
@@ -67,7 +74,8 @@ def default_limit_s(ws: dict) -> int:
     from server.exercises.chinese.word_dictation import BLANK
 
     items = ws["items"]
-    listen = sum(1 for it in items if it.get("part") == "listen") * LISTEN_PER_WORD_S
+    listen = sum(LISTEN_PER_WORD_S if not it.get("en") else 2 * max(8, min(30, len(it["a"].split()) * 3)) + 8
+                 for it in items if it.get("part") == "listen")
     if ws["kind"] == "dictation":
         blanks = sum(len(BLANK.findall(line)) for it in items if it.get("part") == "write" for line in it["lines"])
         write = max(300, blanks * 30) if blanks else 0
@@ -149,7 +157,10 @@ GRADE_PROMPT = """你是小学老师，批改孩子手写的卷子。下面是�
 逐题对照：孩子写的字和答案一个字一个字比，写错字、少写、多写、没写都算错；字迹潦草但能认出是对的字算对。看不清的写「看不清」。
 只输出一个 JSON，不要别的字：
 {"items":[{"no":"题号或题目","want":"答案","got":"孩子写的（没写就空）","ok":true/false}],"right":对了几个,"total":一共几个,"comment":"一两句给孩子的话，先夸再说要注意的"}
-听写的每个词算一题（no 用题号）；古诗、积累的每个空算一题（no 用诗题或句子开头几个字）；口算每道算一题。"""
+听写的每个词算一题（no 用题号）；古诗、积累的每个空算一题（no 用诗题或句子开头几个字）；口算每道算一题。
+英语卷子：听写的每一句算一题，单词拼错、漏词、多词都算错，got 写她写的整句，comment 里点出错在哪个词；
+大小写和标点不算错（句首没大写、少了句号都算对），I'm 写成 Im 这类撇号漏了也算对；字母 a、d、b、p 像手写体能认出就算对。
+补全对话的每个空算一题（no 用说话人和空前面两三个词）。"""
 
 
 def answer_key(ws: dict) -> list[dict]:

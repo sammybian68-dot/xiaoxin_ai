@@ -216,6 +216,7 @@ async function ensClick(e) {
   if (b.dataset.again) { ensStart(b.dataset.again); return; }
   const k = b.dataset.e, l = ens.L.lines[ens.i];
   if (k === "pause" || k === "close") { ensPause(); return; }
+  if (k === "dict") { ensDictation(ens.L.id, b, ens.me); return; }
   if (k === "zh") { ens.zh = !ens.zh; b.setAttribute("aria-pressed", String(ens.zh)); return; }
   if (k === "listen") { ensDemoGenStop(); await ensSpeak(ens.i); $("ens-bubble").classList.remove("show"); }
   if (k === "demo") ensDemo();
@@ -245,8 +246,20 @@ async function ensFinish() {
     ${sm.weak?.length ? `<div class="ens-words">还要多练：${sm.weak.slice(0, 4).map(([w]) => `<span>${esc(w)}</span>`).join("")}</div>` : ""}
     <div class="ens-roles"><button type="button" class="ens-role" data-again="${ens.me}"><img src="api/english/char/${ens.me}.png" alt=""><b>再演一遍</b></button>
       <button type="button" class="ens-role" data-again="${other.id}"><img src="api/english/char/${other.id}.png" alt=""><b>换演 ${esc(other.name)}</b></button></div>
-    <button type="button" class="ens-btn" data-e="close">回到聊天</button></div>`;
+    <div class="ens-row" style="justify-content:center"><button type="button" class="ens-btn primary" data-e="dict">✍️ 来一张默写小练习</button>
+      <button type="button" class="ens-btn" data-e="close">回到聊天</button></div></div>`;
   ensResumeBtn();
+}
+
+// 默写小练习：服务端出卷（听写句子 + 补全对话），以小新的消息发进群里，带练习纸卡片（打印 / 开始练习 / 拍照交卷）
+async function ensDictation(lid, btn, role) {
+  if (btn) { btn.textContent = "出题中…"; btn.style.pointerEvents = "none"; }
+  try {
+    await ensApi("api/english/dictation", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lesson: lid, role: role || "", kid: state.conv?.kid }) });
+    if (btn) btn.textContent = "✓ 出好了，看下面";
+    if ($("ens") && !$("ens").hidden) ensPause();   // 从结束页点的：回聊天看卷子
+  } catch (e) { toast(e.message); if (btn) { btn.textContent = "✍️ 默写小练习"; btn.style.pointerEvents = ""; } }
 }
 
 // ---------------------------------------------------------------- 顶栏「继续英语」：有暂停着的就亮
@@ -270,14 +283,18 @@ async function ensResumeBtn() {
 // ---------------------------------------------------------------- 聊天里：工具结果 → 卡片；小新后台发来的「做好了」→ 卡片
 function ensCard(row, lid, sid, autoOpen) {
   const card = document.createElement("button");
-  card.type = "button"; card.className = "ens-chip";
-  card.innerHTML = `<img src="api/english/asset/${lid}/bg.jpg" alt=""><span><b>英语小剧场</b><small>读取中…</small><br><span class="go">${sid ? "▶ 接着练" : "▶ 开始练"}</span></span>`;
+  card.type = "button"; card.className = "ens-chip";   // 两个按钮：练口语（全屏）/ 默写小练习（出卷子）
+  card.innerHTML = `<img src="api/english/asset/${lid}/bg.jpg" alt=""><span><b>英语小剧场</b><small>读取中…</small><br>
+    <span class="go" data-k="talk">${sid ? "▶ 接着练口语" : "🗣 练口语"}</span> <span class="go dict" data-k="dict">✍️ 默写小练习</span></span>`;
   ensApi(`api/english/lesson/${lid}`).then((L) => {
     const p = L.progress || {};
     card.querySelector("b").textContent = `${L.name} · ${L.zh}`;
     card.querySelector("small").textContent = p.times ? `练过 ${p.times} 次 · ${["没练过", "会读", "熟练", "掌握 👑"][p.level || 0]}` : "还没练过";
   }).catch(() => { card.querySelector("small").textContent = "这一课不在了"; });
-  card.addEventListener("click", () => ensOpen(lid, sid));
+  card.addEventListener("click", (e) => {
+    if (e.target.closest('[data-k="dict"]')) ensDictation(lid, e.target.closest('[data-k="dict"]'));
+    else ensOpen(lid, sid);
+  });
   row.querySelector(".bubble").insertBefore(card, row.querySelector(".bubble .text"));
   requestAnimationFrame(() => typeof revealRow === "function" && revealRow(row));
   if (autoOpen) ensOpen(lid, sid);

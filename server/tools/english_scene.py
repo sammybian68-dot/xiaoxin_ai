@@ -16,6 +16,7 @@ SPECS = [
         "parameters": {"type": "object", "properties": {
             "lesson": {"type": "string", "description": "孩子说的课名，原话就行（「冰淇淋店」「小熊那个」「独库公路」）；没指定就不填（小新推荐）"},
             "resume": {"type": "boolean", "description": "「继续上次的 / 接着练」填 true"},
+            "dictation": {"type": "boolean", "description": "要的是这课的默写卷子（「冰淇淋店的默写」「出一张小剧场默写」）填 true"},
         }},
     }},
     {"type": "function", "function": {
@@ -106,6 +107,23 @@ def run(name: str, arguments: str) -> str:
         L = drill.lesson(cur["lesson"])
         return f"屏幕上接着上次的练习：「{L['zh']}」，演 {cur['role']}。[en:{cur['lesson']}:{cur['id']}]\n播报：好，我们接着练「{L['zh']}」。"
     lid = str(args.get("lesson") or "").strip()
+    if args.get("dictation"):
+        from server import worksheet
+
+        L = find(lid, k["id"]) if lid else None
+        if not L:
+            last = next(iter(drill.sessions(k["id"])), None)
+            L = drill.lesson(last["lesson"]) if last else None
+        if not L:
+            return f"失败：要说是哪一课的默写。现有的课：{catalog_text()}"
+        try:
+            ws = worksheet.create("scene_dictation", subject="english", for_kid=k["id"], lesson=L["id"], kid=k["id"])
+        except worksheet.WorksheetError as e:
+            return f"失败：{e}"
+        worksheet.page_file(ws, kid_name=k["name"])
+        printer_tools.ctx.get()["made"] = ws["id"]
+        return (f"已出好 {worksheet.summary(ws)}（w_{ws['id']}），预览在屏幕上。\n"
+                f"播报：「{L['zh']}」的默写出好了，可以打印出来写，也可以点开始练习，我来念。")
     if lid:
         L = find(lid, k["id"])
         if not L:

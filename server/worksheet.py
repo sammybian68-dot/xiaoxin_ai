@@ -33,6 +33,9 @@ FONTS = {
               "/System/Library/Fonts/Hiragino Sans GB.ttc"],
     "bold": ["/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "/System/Library/Fonts/STHeiti Medium.ttc",
              "/System/Library/Fonts/Hiragino Sans GB.ttc"],
+    # 英文（小剧场默写）：字母要清楚、a 和 g 是印刷体，孩子照着认
+    "en": ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"],
+    "en_bold": ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
 }
 KINDS = ("math", "tian", "essay", "dictation")  # 排版：口算、田字格（看拼音写词语、听写）、作文稿纸、生词默写（多页）
 
@@ -235,6 +238,14 @@ def pages(ws: dict) -> list[list[dict]]:
         y += h
 
     listen = [it for it in ws["items"] if it.get("part") == "listen"]
+    if listen and listen[0].get("en"):   # 英语：一句一行四线三格
+        put({"head": "一、听写句子（听小新读，每句读两遍）"}, 80)
+        for it in listen:
+            put({"en_line": it}, EN_LINE_H)
+        listen = []
+        ws_en = True
+    else:
+        ws_en = False
     if listen:
         put({"head": "一、听写词语（听小新读，每个词读两遍）"}, 80)
         row, w = [], 0
@@ -258,9 +269,17 @@ def pages(ws: dict) -> list[list[dict]]:
             else:
                 groups.append([write[i]])
                 i += 1
-        head = {"head": ("二、" if listen else "") + "古诗和积累"}
+        head = {"head": ("二、" if listen or ws_en else "") + ("补全对话" if ws_en else "古诗和积累")}
+        if ws_en:   # 英文对话：一句一块（整段一块太高，会整个挤到下一页，第一页下半截空着）
+            it = write[0]
+            put({"head": head["head"]}, 80)
+            if it.get("bank"):   # 词库：单独一个框，按宽度换行
+                put({"en_bank": it["bank"]}, _bank_rows(it["bank"]) * EN_ROW + 40)
+            for line in it["lines"]:
+                put({"en_dialogue": {**it, "lines": [line]}}, _write_rows({"en": True, "lines": [line]}) * EN_ROW)
+            groups = []
         for k, g in enumerate(groups):
-            h = max((90 if it["q"] else 0) + len(it["lines"]) * 96 for it in g) + 30
+            h = max((90 if it["q"] else 0) + _write_rows(it) * 96 for it in g) + 30
             if k == 0:
                 put({"head_with": head["head"], "write": g}, h + 90)  # 大标题跟着第一题，不单独落在页底
             else:
@@ -270,10 +289,26 @@ def pages(ws: dict) -> list[list[dict]]:
     return out
 
 
+EN_LINE_H = 200   # 英文听写一行：句号 + 四线三格
+EN_ROW = 72       # 英文对话一行的高度（估算和实际画都用它，分页才准）
+EN_CHARS = 52     # 英文 44 号字一行大约放多少个字符
+
+
+def _write_rows(it: dict) -> int:
+    """填空题占几行：中文按原行；英文对话长句按宽度折行（估：每行 ~38 个字符）。"""
+    if not it.get("en"):
+        return len(it["lines"])
+    return sum(max(1, -(-len(line) // EN_CHARS)) for line in it["lines"])
+
+
+def _bank_rows(bank: str) -> int:
+    return max(1, -(-len(bank) // (EN_CHARS - 4)))
+
+
 def _whole_poem(it: dict) -> bool:
     from server.exercises.chinese.word_dictation import BLANK
 
-    return bool(it["q"]) and all(BLANK.sub("", line).strip("，。；、 ") == "" for line in it["lines"])
+    return not it.get("en") and bool(it["q"]) and all(BLANK.sub("", line).strip("，。；、 ") == "" for line in it["lines"])
 
 
 def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> bytes:
@@ -294,6 +329,30 @@ def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> byte
         if "head" in b:
             d.text((MARGIN, y + 10), b["head"], font=fhead, fill=INK)
             y += 80
+        elif "en_dialogue" in b:
+            y = _en_dialogue(d, b["en_dialogue"], MARGIN + 10, y, W - 2 * MARGIN - 20, answers, red)
+        elif "en_bank" in b:
+            fbk = _font("en", 40)
+            h = _bank_rows(b["en_bank"]) * EN_ROW + 16
+            d.rounded_rectangle([MARGIN, y, W - MARGIN, y + h], radius=16, outline=GRID, width=2)
+            x, yy = MARGIN + 24, y + 14
+            label, _, words = b["en_bank"].partition("：")
+            d.text((x, yy + 10), label + "：", font=_font("sans", 34), fill=MUTED)
+            x += d.textlength(label + "：", font=_font("sans", 34)) + 8
+            for tok in words.split(" "):
+                wd = d.textlength(tok + " ", font=fbk)
+                if x + wd > W - MARGIN - 20:
+                    x, yy = MARGIN + 24, yy + EN_ROW
+                d.text((x, yy + 8), tok, font=fbk, fill=INK)
+                x += wd
+            y += h + 24
+        elif "en_line" in b:
+            it = b["en_line"]
+            d.text((MARGIN, y + 30), it["q"], font=_font("sans", 34), fill=MUTED)
+            _four_lines(d, MARGIN + 60, W - MARGIN, y + 20)
+            if answers:   # 写在第三条线（基线）上，和孩子写字一样
+                d.text((MARGIN + 80, y + 20 + 64), it["a"], font=_font("en", 52), fill=red, anchor="ls")
+            y += EN_LINE_H
         elif "row" in b:
             x = MARGIN
             for it in b["row"]:
@@ -318,6 +377,10 @@ def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> byte
                     if it.get("by"):
                         d.text((x0 + d.textlength(it["q"], font=_font("bold", 46)) + 24, yy + 22), it["by"], font=fby, fill=MUTED)
                     yy += 90
+                if it.get("en"):
+                    yy = _en_dialogue(d, it, x0 + 20, yy, col_w - 40, answers, red)
+                    bottom = max(bottom, yy)
+                    continue
                 for line in it["lines"]:
                     x = x0 + 30
                     for k, part in enumerate(BLANK.split(line)):
@@ -339,6 +402,50 @@ def _render_dictation(ws: dict, answers: bool, kid_name: str, page: int) -> byte
     buf = io.BytesIO()
     im.save(buf, "JPEG", quality=90, dpi=(200, 200))
     return buf.getvalue()
+
+
+def _four_lines(d, x0: int, x1: int, y: int) -> None:
+    """英语本的四线三格：上下两条细线、中间两条（第三条是基线，红色），格高 96。"""
+    for k, (col, wd) in enumerate([(GRID, 2), (GRID_DASH, 2), ((214, 120, 120), 3), (GRID, 2)]):
+        d.line([(x0, y + k * 32), (x1, y + k * 32)], fill=col, width=wd)
+
+
+def _en_dialogue(d, it: dict, x0: int, y: int, width: int, answers: bool, red) -> int:
+    """英文对话填空：一个词一个词排，放不下换行；空格留横线（按答案长度），答案页填红字。返回画完的 y。"""
+    from server.exercises.chinese.word_dictation import BLANK
+
+    f, fb = _font("en", 44), _font("en_bold", 44)
+    space = d.textlength(" ", font=f)
+    for line in it["lines"]:
+        who, _, rest = line.partition(": ")
+        x, yy = x0, y
+        d.text((x, yy + 20), who + ":", font=fb, fill=INK)
+        x += d.textlength(who + ": ", font=fb)
+        indent = x
+        prev_blank = False
+        for tok in re.split(r"(\{[^}]*\}|\s+)", rest):
+            if not tok:
+                continue
+            if tok.isspace():
+                prev_blank = False
+                continue
+            m = BLANK.fullmatch(tok) if tok.startswith("{") else None
+            wd = (max(4, len(m.group(1))) * 26 + 30) if m else d.textlength(tok, font=f)
+            glue = prev_blank and not m and re.fullmatch(r"[.,!?;:']+\S*", tok)   # 「____ .」→「____.」标点贴着空
+            if glue:
+                x -= space
+            if x + wd > x0 + width and not glue:
+                x, yy = indent, yy + EN_ROW
+            if m:
+                d.line([(x + 4, yy + 62), (x + wd - 4, yy + 62)], fill=INK, width=2)
+                if answers:
+                    d.text((x + wd / 2, yy + 14), m.group(1), font=f, fill=red, anchor="ma")
+            else:
+                d.text((x, yy + 14), tok, font=f, fill=INK)
+            x += wd + space
+            prev_blank = bool(m)
+        y = yy + EN_ROW
+    return y
 
 
 def page_files(ws: dict, answers: bool = False, kid_name: str = "") -> list[dict]:

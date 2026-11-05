@@ -69,7 +69,8 @@
   color: #f3ece0; max-width: 460px; text-align: left; cursor: pointer; }
 .ens-chip img { width: 120px; height: 75px; object-fit: cover; border-radius: 10px; }
 .ens-chip b { font-size: 16px; display: block; } .ens-chip small { color: #cbbfae; font-size: 13px; }
-.ens-chip .go { display: inline-block; margin-top: 6px; background: #e0452b; color: #fff; border-radius: 14px; padding: 3px 12px; font-size: 14px; font-weight: 600; }
+.ens-chip .go { display: inline-block; margin-top: 6px; background: #e0452b; color: #fff; border-radius: 14px; padding: 4px 12px; font-size: 14px; font-weight: 600; }
+.ens-chip .go.dict { background: #3c5b3a; }
 .ens-making { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 14px; background: #2e271f; color: #f3ece0; max-width: 420px; }
 .ens-making i { width: 18px; height: 18px; border-radius: 50%; border: 3px solid #e0452b; border-right-color: transparent; animation: ens-spin 1s linear infinite; }
 @keyframes ens-spin { to { transform: rotate(360deg); } }

@@ -22,6 +22,14 @@ async function pracSay(text) {
   });
 }
 const pracSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function pracPlay(src) {   // 放一段音频（英文听写的句子），放完才返回
+  return new Promise((resolve) => {
+    const a = new Audio(src);
+    prac.audio = a;
+    a.onended = a.onerror = () => resolve();
+    a.play().catch(() => resolve());
+  });
+}
 
 // 练习 / 考试一开始：小新立刻闭嘴——手动朗读、自动朗读队列、正在流的那一轮语音、自由对话里正在说的，全停；
 // 练习中也不再自动朗读（app.js 里按 pracBusy() 判断），不然和听写抢喇叭、两个声音叠在一起
@@ -111,19 +119,28 @@ function pracTick() {
 async function pracListen(from = prac.listenAt) {
   const gen = ++prac.gen;
   const r = prac.r;
-  if (from === 0) { await pracSay(`开始听写，一共 ${r.listen.length} 个词，每个词读两遍。`); await pracSleep(1500); }
+  if (from === 0) {
+    const en = r.listen[0]?.en;
+    await pracSay(en ? `开始听写，一共 ${r.listen.length} 句英语，每句读两遍，第二遍慢一点。` : `开始听写，一共 ${r.listen.length} 个词，每个词读两遍。`);
+    await pracSleep(1500);
+  }
   for (let i = from; i < r.listen.length; i++) {
     if (gen !== prac.gen) return;
     prac.listenAt = i;
     const w = r.listen[i];
     const big = $("prac-word"), step = $("prac-step");
-    if (big) big.textContent = `第 ${w.no} 个`;
+    if (big) big.textContent = w.en ? `第 ${w.no} 句` : `第 ${w.no} 个`;
     if (step) step.textContent = `听写 · ${w.no} / ${r.listen.length}`;
     for (let k = 0; k < 2; k++) {
       if (gen !== prac.gen) return;
-      await pracSay(k === 0 ? `第${w.no}个，${w.word}` : w.word);
+      if (w.en) {   // 英语小剧场默写：中文报题号，句子用英音读（第二遍慢一点），按句子长短留时间写
+        if (k === 0) await pracSay(`第${w.no}句`);
+        await pracPlay(`api/english/say.mp3?text=${encodeURIComponent(w.word)}&slow=${k}`);
+      } else {
+        await pracSay(k === 0 ? `第${w.no}个，${w.word}` : w.word);
+      }
       if (gen !== prac.gen) return;
-      await pracSleep(5000);
+      await pracSleep(w.en ? (w.wait_s || 10) * 1000 : 5000);
     }
   }
   if (gen !== prac.gen) return;

@@ -7,6 +7,7 @@
       chinese/words.py       看拼音写词语、听写
       chinese/essay.py       作文稿纸
       chinese/word_dictation.py  生词默写（三年级上册按单元：听写 + 古诗积累填空，练习模式里小新念）
+      english/scene_dictation.py 英语小剧场默写（一课对话：听写句子 + 补全对话，题由程序从剧本出）
 
 加一个题型：在学科目录里新建 <topic>.py，写 SUBJECT、TOPIC、NAME（卷子标题）、GRADE、LAYOUT（math / tian / essay，
 怎么排版）、DEFAULT_COUNT、MAX_COUNT、HELP（给小新看的参数说明）和 generate(count, rnd, **参数) -> (标题, [{q, a}])，
@@ -21,10 +22,12 @@ from __future__ import annotations
 import random
 
 from server.exercises.chinese import essay, word_dictation, words
+from server.exercises.english import scene_dictation
 from server.exercises.math import arithmetic, zero_end_mul_div
 
-TOPICS = {m.TOPIC: m for m in (zero_end_mul_div, arithmetic, words.PINYIN, words.DICTATION, essay, word_dictation)}
-SUBJECTS = {"math": "数学", "chinese": "语文"}
+TOPICS = {m.TOPIC: m for m in (zero_end_mul_div, arithmetic, words.PINYIN, words.DICTATION, essay, word_dictation,
+                               scene_dictation)}
+SUBJECTS = {"math": "数学", "chinese": "语文", "english": "英语"}
 
 
 class ExerciseError(ValueError):
