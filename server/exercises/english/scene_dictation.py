@@ -53,6 +53,7 @@ def _core(w: str) -> str:
 # 词组的头一个词（good morning、see you、ice cream）：单挖一个字孩子不知道要填半个词组，不挖；
 # 词组后半（morning、you、cream）照常可以挖
 PHRASE_HEAD = {"good", "see", "ice", "how", "what", "thank"}
+ALONE_NO = {"good", "see"}   # 单独出现也不挖（「Good, Lily.」里的 Good 考了没意义）
 
 
 def _pick_blanks(lines: list[dict], names: set[str], prefer: set[str], seen: dict[str, int], wrong: set[str],
@@ -63,14 +64,19 @@ def _pick_blanks(lines: list[dict], names: set[str], prefer: set[str], seen: dic
     for l in lines:
         best = None
         toks = _tokens(l["en"])
+        kk = _core(l.get("key") or "").lower()
         for k, w in enumerate(toks):
             c = _core(w).lower()
-            if len(c) < 2 or c in STOP or _core(w) in names or c in used or "'" in c:
+            if c in used or _core(w) in names or len(c) < 2:
+                continue
+            if c != kk and (c in STOP or "'" in c):   # Opus 标的 key（如 Let's）照挖；不是 key 的虚词、缩写不挖
                 continue
             nxt = _core(toks[k + 1]).lower() if k + 1 < len(toks) else ""
             if c in PHRASE_HEAD and nxt and w[-1].isalpha():   # 「Good morning」「See you」「How much」：不挖前一半
                 continue
-            is_key = c == _core(l.get("key") or "").lower()
+            if c in ALONE_NO and c != kk:
+                continue
+            is_key = c == kk
             if not is_key and c not in prefer and c not in CORE:
                 continue
             # 上次写错的 > 考得少的 > 这句的核心词（Opus 标的） > 生词句型词 > 核心词表；同样随机

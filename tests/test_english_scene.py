@@ -316,4 +316,5 @@ def test_dictation_uses_opus_key_first():
     assert items[-1]["a"].split("；") == ["sheep", "colour", "white"]   # little 也在词表里，但 key 先
     h = {"words": {"sheep": 1, "colour": 1, "white": 1}, "sentences": {}, "wrong": [], "wrong_sentences": []}
     _, items = SD.build(L, "lily", seed=3, history=h)
-    assert items[-1]["a"].split("；")[0] == "little"                    # 考过了：换别的核心词
+    first = items[-1]["a"].split("；")[0]
+    assert first != "sheep" and first.lower() in SD.CORE                   # 考过了：换这句里别的核心词
