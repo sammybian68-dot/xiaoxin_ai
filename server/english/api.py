@@ -76,7 +76,7 @@ def english_word(w: str, slow: int = 0) -> FileResponse:
     w = build.word_key(w)
     if not w:
         raise HTTPException(404, "没有这个词")
-    p = drill.root() / "words" / (f"{w}.mp3" if not slow else f"{w}_slow.mp3")
+    p = build.root() / "words" / (f"{w}.mp3" if not slow else f"{w}_slow.mp3")   # build.root 会建 words/
     if not p.is_file():
         try:
             if slow:
