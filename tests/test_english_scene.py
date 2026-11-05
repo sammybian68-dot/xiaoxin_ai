@@ -301,3 +301,19 @@ def test_check_homework_tool(family, monkeypatch):
         assert seen["photos"] == ["f1"] and "对了 1 / 2" in out and "应为「36」（进位忘了）" in out
     finally:
         printer_tools.ctx.reset(tok)
+
+
+def test_dictation_uses_opus_key_first():
+    """剧本里每句标了 key（Opus 标的最该考的词）：第一张默写挖的就是它；考过以后才轮到别的词。"""
+    from server.exercises.english import scene_dictation as SD
+
+    L = _lesson()
+    L["lines"] = [{"role": "mum", "en": "Look at that little sheep.", "zh": "", "key": "sheep"},
+                  {"role": "lily", "en": "What colour is it, Mum?", "zh": "", "key": "colour"},
+                  {"role": "mum", "en": "It's white. I like white sheep.", "zh": "", "key": "white"}]
+    L["roles"] = [{"id": "lily", "name": "Lily", "zh": ""}, {"id": "mum", "name": "Mum", "zh": ""}]
+    _, items = SD.build(L, "lily", seed=3)
+    assert items[-1]["a"].split("；") == ["sheep", "colour", "white"]   # little 也在词表里，但 key 先
+    h = {"words": {"sheep": 1, "colour": 1, "white": 1}, "sentences": {}, "wrong": [], "wrong_sentences": []}
+    _, items = SD.build(L, "lily", seed=3, history=h)
+    assert items[-1]["a"].split("；")[0] == "little"                    # 考过了：换别的核心词

@@ -3,8 +3,9 @@
   二、补全对话：整段对话印出来，挖掉关键词。刚学的课（没到「熟练」）下面给词库；熟练以后不给词库，靠记忆和上下文。
 
 题全由程序从剧本里出（不用模型）：答案就是原文，不会错。挖哪个词：
-  1. 只挖「值得记」的词：这课的生词 > 这课句型里的词 > 三年级核心词表（CORE：颜色、数字、家人、食物、文具、动物、
-     常用动词形容词、礼貌用语）。不在这三类里的不挖（「Mm」「OK」、人名、the 这类）；
+  0. 剧本里每句有 key（Opus 写剧本时标的「这句最该考的词」）：第一次默写就挖它；
+  1. 只挖「值得记」的词：这句的 key > 这课的生词 > 这课句型里的词 > 三年级核心词表（CORE：颜色、数字、家人、食物、文具、动物、
+     常用动词形容词、礼貌用语）。不在这几类里的不挖（「Mm」「OK」、人名、the 这类）；
   2. 每次都会变：她以前默写里考过的词记着次数，考得少的、上次写错的先挖（同样条件随机），一课练几次能轮到每个核心词；
   3. 听写句子也轮换：没听写过的句子优先，上次写错的那句再来一次。
 """
@@ -56,8 +57,8 @@ PHRASE_HEAD = {"good", "see", "ice", "how", "what", "thank"}
 
 def _pick_blanks(lines: list[dict], names: set[str], prefer: set[str], seen: dict[str, int], wrong: set[str],
                  rnd: random.Random) -> list[list[int]]:
-    """每句最多挖一个词。候选只要「值得记」的（prefer 生词 / 句型词，或者 CORE）；排序：上次写错的 > 考得少的 >
-    生词句型词 > 核心词，同样的随机。同一个词一张卷子只挖一次。"""
+    """每句最多挖一个词。候选只要「值得记」的（这句的 key、prefer 生词 / 句型词，或者 CORE）；排序：上次写错的 > 考得少的 >
+    这句的 key > 生词句型词 > 核心词，同样的随机。同一个词一张卷子只挖一次。"""
     used, out = set(), []
     for l in lines:
         best = None
@@ -69,9 +70,11 @@ def _pick_blanks(lines: list[dict], names: set[str], prefer: set[str], seen: dic
             nxt = _core(toks[k + 1]).lower() if k + 1 < len(toks) else ""
             if c in PHRASE_HEAD and nxt and w[-1].isalpha():   # 「Good morning」「See you」「How much」：不挖前一半
                 continue
-            if c not in prefer and c not in CORE:
+            is_key = c == _core(l.get("key") or "").lower()
+            if not is_key and c not in prefer and c not in CORE:
                 continue
-            key = (0 if c in wrong else 1, seen.get(c, 0), 0 if c in prefer else 1, rnd.random())
+            # 上次写错的 > 考得少的 > 这句的核心词（Opus 标的） > 生词句型词 > 核心词表；同样随机
+            key = (0 if c in wrong else 1, seen.get(c, 0), 0 if is_key else 1 if c in prefer else 2, rnd.random())
             if best is None or key < best[0]:
                 best = (key, k, c)
         if best:

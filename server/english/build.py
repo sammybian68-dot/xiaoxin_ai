@@ -65,7 +65,10 @@ PROMPT = """为一个中国小学三年级女孩写一段英语场景对话，�
 - 句子自然、像真的在对话，有一点小情节和结尾（比如说再见、谢谢）。
 - 用英式拼写和英式说法（Mum 不是 Mom，colour 不是 color）。不要用缩写以外的生僻标点，不要表情符号。
 - 每句给中文意思（给家长看，简短）。
-只输出 JSON：{{"lines":[{{"role":"{aid}","en":"...","zh":"..."}},...],"new_words":[{{"en":"...","zh":"..."}}],"title_zh":"{zh}"}}"""
+- 每句标出 key：这句里最该让孩子记住、默写时最该考的那一个词（原样照抄句子里的写法）。挑这一课的句型词、生词、
+  三年级该会的实词（颜色、数字、家人、食物、动物、常用动词形容词）；不要挑人名、a / the / I、Mm / OK 这类，
+  也不要挑词组的半截（Good morning 里的 Good）。这句实在没有值得考的词就写 ""。
+只输出 JSON：{{"lines":[{{"role":"{aid}","en":"...","zh":"...","key":"..."}},...],"new_words":[{{"en":"...","zh":"..."}}],"title_zh":"{zh}"}}"""
 
 
 def write_script(lesson: tuple) -> dict:
@@ -83,6 +86,9 @@ def write_script(lesson: tuple) -> dict:
             d = json.loads(t[t.index("{"): t.rindex("}") + 1])
             lines = [l for l in d["lines"] if l.get("role") in roles and l.get("en")]
             if len(lines) >= 8 and {l["role"] for l in lines} == set(roles):
+                for l in lines:   # 核心词得是这句里真有的词，不是就当没标（出题时退回规则挑）
+                    k = str(l.get("key") or "").strip()
+                    l["key"] = k if k and k.lower() in {word_key(w) for w in l["en"].split()} else ""
                 d["lines"] = lines[:12]
                 return d
         except (ValueError, KeyError):
@@ -304,6 +310,39 @@ def custom(ask: str) -> dict:
     out["order"] = 1000 + int(time.time()) % 100000
     (root() / "lessons" / out["id"] / "lesson.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     return out
+
+
+KEY_PROMPT = """下面是一段给小学三年级孩子练口语的英语对话（这一课练：{target}；生词：{new}）。
+默写时每句要挖掉一个词让她填。请给每句挑出最该考的那一个词：这一课的句型词、生词、三年级该会的实词（颜色、数字、家人、
+食物、动物、常用动词形容词）优先；不要挑人名、a / the / I、Mm / OK，也不要挑词组的半截（Good morning 的 Good）。
+原样照抄句子里的写法（大小写、复数都照抄）。这句实在没有值得考的就写 ""。
+{lines}
+只输出 JSON 数组，和句子一一对应：["词1","词2",...]"""
+
+
+def mark_keys(lid: str) -> list[str]:
+    """给已经做好的课补上每句的核心词（剧本不重写，只标注）。核心词必须是这句里真有的词，不是就当没标。"""
+    from src.llm import client
+
+    p = root() / "lessons" / lid / "lesson.json"
+    L = json.loads(p.read_text(encoding="utf-8"))
+    body = "\n".join(f"{i + 1}. {l['en']}" for i, l in enumerate(L["lines"]))
+    q = KEY_PROMPT.format(target=L.get("target") or "", new="、".join(w["en"] for w in L.get("new_words") or []) or "无", lines=body)
+    for _ in range(3):
+        t = client.chat_full(WRITER, q, max_tokens=800, timeout=90).text.strip().strip("`")
+        try:
+            keys = json.loads(t[t.index("["): t.rindex("]") + 1])
+        except ValueError:
+            continue
+        if len(keys) == len(L["lines"]):
+            break
+    else:
+        raise RuntimeError(f"{lid} 核心词标不出来")
+    for l, k in zip(L["lines"], keys):
+        k = str(k or "").strip()
+        l["key"] = k if k and k.lower() in {word_key(w) for w in l["en"].split()} else ""
+    p.write_text(json.dumps(L, ensure_ascii=False, indent=1), encoding="utf-8")
+    return [l["key"] for l in L["lines"]]
 
 
 def main(ids: list[str]) -> None:
