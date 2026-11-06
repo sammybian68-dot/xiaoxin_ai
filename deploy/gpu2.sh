@@ -16,6 +16,14 @@ rsync -az --delete \
   "$ROOT/" "$HOST:$DEST/"
 # .env 单独传，权限 600
 scp -q "$ROOT/.env" "$HOST:$DEST/.env" && ssh "$HOST" "chmod 600 $DEST/.env"
+# 翻唱用的 QQ 音乐组件单独一个环境（为什么见 server/sing/qq_cli.py）。依赖变了才重装；
+# pip.conf 放进 venv 里盖掉 /etc/pip.conf 的 sjtu 源（那个源在 gpu2 上经常卡住）
+ssh "$HOST" "cd $DEST && R=server/sing/requirements.txt && V=.venv-qqmusic && \
+  if ! cmp -s \$R \$V/requirements.txt; then \
+    [ -x \$V/bin/python ] || python3 -m venv \$V; \
+    printf '[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple/\nextra-index-url =\ntimeout = 60\n' > \$V/pip.conf; \
+    \$V/bin/pip install -q -r \$R && cp \$R \$V/requirements.txt && echo 'qqmusic venv ready'; \
+  fi"
 ssh "$HOST" "bash $DEST/server/run.sh"
 
 if [[ "${1:-}" == "--proxy" ]]; then

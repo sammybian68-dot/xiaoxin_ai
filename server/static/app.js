@@ -158,7 +158,7 @@ function hubConnect() {
 // 小新在说话的，等它结束再来（每 5 秒看一次，最多等 30 分钟，过了就不等了下次打开自然是新的）
 const myVersion = document.querySelector('meta[name="xiaoxin-version"]')?.content || "";
 function appBusy() {
-  return !!(window.pracBusy?.() || ($("go") && !$("go").hidden) || ($("ens") && !$("ens").hidden) || talk.on
+  return !!(window.pracBusy?.() || ($("go") && !$("go").hidden) || ($("ens") && !$("ens").hidden) || talk.on || window.singBusy?.()
     || (typeof call !== "undefined" && call.cur) || state.sending || player.audio);
 }
 function remoteReload(ev, waited = 0) {
@@ -258,7 +258,7 @@ function hubMessage(m, kind) {
   if (kind !== "msg" || m.role === "note") return;
   if ($("messages").querySelector(`[data-mid="${CSS.escape(m.id)}"]`)) return;  // 本地已经画了
   // 打印结果、画好的图是后台发来的，不是这台正在出字的那条
-  if (m.role === "assistant" && !["print", "draw", "english", "check", "resend"].includes(m.via) && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
+  if (m.role === "assistant" && !["print", "draw", "english", "check", "resend", "sing"].includes(m.via) && (state.sending || talk.row)) return;  // 自己这台正在流式出字，答完那条就是它
   if (m.role === "user" && m.via === "talk" && talk.on) return;      // 自己这台在自由对话：那句由 heard 画（带原声小喇叭）
   if (m.role === "user" && state.sending) return;                     // 自己刚发的，SSE 的 user 事件会画
   const row = appendMessage(m);
@@ -269,7 +269,7 @@ function hubMessage(m, kind) {
     renderSide();
   }
   // 孩子的 pad：小新后台画好的图，念一句「XX，图片画好了，请看」（排在正在说的话后面，不打断）
-  if (m.role === "assistant" && (m.via === "draw" || (m.via === "english" && m.english?.new)) && m.text && state.me?.role !== "parent"
+  if (m.role === "assistant" && (m.via === "draw" || m.via === "sing" || (m.via === "english" && m.english?.new)) && m.text && state.me?.role !== "parent"
       && prefs.autoread && !window.pracBusy?.()) sayLater(m, row, true);
   // 批改结果：念短的那句（m.say），群里那条长的留着看
   if (m.role === "assistant" && m.via === "check" && m.say && state.me?.role !== "parent"
@@ -288,7 +288,7 @@ function sayLater(m, row, self = false) {
 function sayNext() {
   const job = sayQueue[0];
   if (!job) return;
-  if (window.pracBusy?.()) { setTimeout(sayNext, 3000); return; }  // 练习中：等练完再读家长的话
+  if (window.pracBusy?.() || window.singBusy?.()) { setTimeout(sayNext, 3000); return; }  // 练习中、录唱歌、放歌：等完了再读
   if (talk.on || state.sending || player.audio || player.stream) { setTimeout(sayNext, 1500); return; }
   const btn = job.row.querySelector('[data-act="say"]') || document.createElement("button");
   const p = person(job.m.from);
@@ -509,7 +509,8 @@ function appendMessage(m) {
       + `${m.via === "voice" ? '<div class="via">🎤 语音输入</div>' : m.via === "talk" ? '<div class="via">📞 自由对话</div>' : ""}</div>`;
     if (replay) row.querySelector(".replay").addEventListener("click", (e) => replayUtterance(m, row, e.currentTarget));
   } else {
-    row.innerHTML = `<img src="static/icon.png" alt="" class="avatar sm"><div class="bubble">${attachmentsHtml(m.files)}<div class="text"></div>`
+    const files = m.sing ? (m.files || []).filter((f) => f.id !== m.sing.file) : m.files;  // 翻唱的 mp3 在音乐卡片里放，不再列成附件
+    row.innerHTML = `<img src="static/icon.png" alt="" class="avatar sm"><div class="bubble">${attachmentsHtml(files)}<div class="text"></div>`
       + `<div class="sources" hidden></div>`
       + `<div class="actions"><button type="button" data-act="copy">复制</button><button type="button" data-act="read">朗读</button></div>`
       + `<div class="meta"></div></div>`;
@@ -520,6 +521,7 @@ function appendMessage(m) {
     renderSources(row, m.searches);
     for (const a of m.actions || []) showAction(row, a);
     if (m.english && typeof ensMessage === "function") ensMessage(row, m);   // 小新后台发来的「新场景做好了」
+    if (m.sing && typeof singCard === "function") singCard(row, m);          // 翻唱好了：音乐卡片（sing.js）
     row.dataset.reply = m.text || "";
     wireActions(row);
   }
@@ -636,6 +638,8 @@ function showAction(row, a) {
   }
   // 英语小剧场（english_scene.js）：课程卡片、做新场景、看板
   if (a.name.startsWith("english_scene") && typeof ensAction === "function" && ensAction(row, a)) return;
+  // 翻唱（sing.js）：录唱歌声音的入口、「在唱了」
+  if ((a.name === "record_singing_voice" || a.name === "sing_song") && typeof singAction === "function" && singAction(row, a)) return;
   if (a.name === "make_exercise" || a.name === "make_worksheet") {
     const wid = /w_([0-9a-f]{16})/.exec(a.result || "")?.[1];
     if (wid) { worksheetCard(row, wid); return; }
@@ -1238,12 +1242,18 @@ function startOriginals(pending) {
 // ---------------------------------------------------------------- 录音（按住说话 / 录声音共用）
 
 // 麦克风 → 16 kHz 单声道 Int16，边录边回调电平。不用 AudioWorklet，老平板浏览器也能跑。
+// opts.raw：录唱歌（sing.js）——降噪、回声消除、自动增益都关（唱歌被降噪会发闷、长音被吃掉），按声卡原生采样率录，不重采样
 class Recorder {
-  constructor(onLevel, onChunk) { this.onLevel = onLevel; this.onChunk = onChunk; this.chunks = []; this.rate = 16000; }
+  constructor(onLevel, onChunk, opts = {}) {
+    this.onLevel = onLevel; this.onChunk = onChunk; this.chunks = []; this.rate = 16000; this.raw = !!opts.raw;
+  }
   async start() {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("这个页面拿不到麦克风（要 https）");
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: this.raw
+      ? { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      : { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (this.raw) this.rate = this.ctx.sampleRate;
     const src = this.ctx.createMediaStreamSource(this.stream);
     this.node = this.ctx.createScriptProcessor(2048, 1, 1);  // 约 43 ms 一块，攒到 100 ms 发
     const ratio = this.ctx.sampleRate / this.rate;
@@ -1824,6 +1834,8 @@ function showPane(name) {
   if (name === "model") renderModels();
   if (name === "homework") loadHomeworkSettings();
   if (name === "games" && typeof loadGamesSettings === "function") loadGamesSettings();
+  if (name === "sing" && typeof loadSingSettings === "function") loadSingSettings();
+  if (name !== "sing" && typeof singSettingsLeave === "function") singSettingsLeave();
   if (name === "voice") {
     if (!$("voice-text").value) $("voice-text").value = SAMPLE_TEXT;
     loadEngines();
@@ -1838,6 +1850,7 @@ $("open-settings").addEventListener("click", () => openSettings());
 $("settings-close").addEventListener("click", () => $("settings").close());
 $("settings").addEventListener("close", async () => {
   stopPreview();
+  if (typeof singSettingsLeave === "function") singSettingsLeave();
   if (vrec.rec) { await vrec.rec.stop(); vrec.rec = null; resetVoiceBtn(); }
   history.replaceState(null, "", location.pathname);
 });

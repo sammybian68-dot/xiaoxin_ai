@@ -67,6 +67,8 @@ def _startup() -> None:
         from server import holidays, hw_schedule
         holidays.start_refresher()
         hw_schedule.start()  # 抓作业的定时器（每天到点让 pad 去 QQ 群抓，docs/qq-homework.md）
+        from server.sing import qq as qqmusic
+        qqmusic.start_refresher()  # 翻唱用的 QQ 音乐凭证 3 天过期：后台自己续
         import threading
 
         from server.games.katago import engine
@@ -79,6 +81,9 @@ app.include_router(games_router)
 from server.english.api import router as english_router  # noqa: E402  英语小剧场：/api/english/*
 
 app.include_router(english_router)
+from server.sing.api import router as sing_router  # noqa: E402  翻唱：/api/sing/*
+
+app.include_router(sing_router)
 
 
 # ---------------------------------------------------------------- 登录
@@ -524,6 +529,7 @@ SKILLS = {
     "stroke": ("✍️ 笔顺", {"show_stroke_order", "show_word_writing"}, set()),
     "go": ("⚫⚪ 下棋", {"play_go", "go_stats", "go_review"}, set()),
     "draw": ("🎨 画画", {"draw_image"}, {"draw"}),
+    "sing": ("🎤 唱歌", {"record_singing_voice", "sing_song"}, {"sing"}),
     "homework": ("📚 作业", {"homework_report"}, {"homework"}),
     "practice": ("📝 练习", {"make_exercise", "make_worksheet", "start_practice", "practice_report"}, {"practice"}),
     "print": ("🖨 打印", {"print_file", "printer_status", "list_printables"}, {"print"}),

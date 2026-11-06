@@ -19,6 +19,7 @@
 <link rel="stylesheet" href="static/history.css">
 <link rel="stylesheet" href="static/english_scene.css">
 <link rel="stylesheet" href="static/homework.css">
+<link rel="stylesheet" href="static/sing.css">
 </head>
 <body>
 <div id="login" class="login" hidden>
@@ -253,6 +254,7 @@
       <button type="button" role="tab" data-pane="model">模型</button>
       <button type="button" role="tab" data-pane="homework">作业</button>
       <button type="button" role="tab" data-pane="games">下棋</button>
+      <button type="button" role="tab" data-pane="sing">唱歌</button>
       <button type="button" role="tab" data-pane="talk">语音对话</button>
       <button type="button" role="tab" data-pane="wake">唤醒</button>
       <button type="button" role="tab" data-pane="voice">音色</button>
@@ -342,6 +344,37 @@
       <h4>记录</h4>
       <div class="row"><label><b>清空所有下棋记录</b><small>看板、复盘都会清掉，不能恢复。要输密码</small></label>
         <button id="go-clear" type="button" class="danger-btn">清空</button></div>
+    </section>
+
+    <section class="pane" role="tabpanel" data-pane="sing" hidden>
+      <h3>唱歌</h3>
+      <p class="voice-tip">对小新说「我是爸爸，录一下我唱歌的声音」，唱 30 秒；之后说「用爸爸的声音唱江南」，小新从 QQ 音乐拿原曲，
+        换成爸爸的声音，聊天里出一张音乐卡片。翻唱在 gpu2 上的 SoulX-Singer 做，一首 4 分钟的歌大约一分钟。</p>
+      <div class="row"><label><b>唱歌服务</b><small id="sing-svc">读取中…</small></label></div>
+      <h4>QQ 音乐</h4>
+      <p class="voice-tip">原曲从 QQ 音乐拿，要一个会员账号。扫一次码就行，之后小新每天自己续期；凭证只存在 gpu2 上。</p>
+      <div class="row">
+        <label><b>账号</b><small id="sing-qq">读取中…</small></label>
+        <span class="sing-btns"><button id="sing-qq-login" type="button" class="primary-btn">扫码登录</button>
+          <button id="sing-qq-logout" type="button" class="danger-btn" hidden>退出</button></span>
+      </div>
+      <div id="sing-qr" class="sing-qr" hidden>
+        <div class="seg" role="tablist" aria-label="用什么扫" id="sing-qr-kind">
+          <button type="button" role="tab" data-k="mobile" aria-selected="true">QQ 音乐 App</button>
+          <button type="button" role="tab" data-k="qq">手机 QQ</button>
+          <button type="button" role="tab" data-k="wx">微信</button>
+        </div>
+        <div class="sing-qr-box"><img id="sing-qr-img" alt="QQ 音乐登录二维码" hidden><span id="sing-qr-wait">二维码生成中…</span></div>
+        <p id="sing-qr-tip" class="voice-tip"></p>
+        <button id="sing-qr-cancel" type="button">取消</button>
+      </div>
+      <h4>唱歌的声音</h4>
+      <div id="sing-voices" class="sing-voices"></div>
+      <div class="row">
+        <label for="sing-new-name"><b>录一个新的</b><small>写上是谁（「爸爸」「卞依一」），同一个人重录会换掉旧的</small></label>
+        <span class="sing-btns"><input id="sing-new-name" class="wake-input" maxlength="20" placeholder="谁的声音">
+          <button id="sing-new" type="button" class="primary-btn">🎤 录</button></span>
+      </div>
     </section>
 
     <section class="pane" role="tabpanel" data-pane="general" hidden>
@@ -532,6 +565,7 @@
 <script src="static/go.js"></script>
 <script src="static/history.js"></script>
 <script src="static/english_scene.js"></script>
+<script src="static/sing.js"></script>
 <script src="static/timecard.js"></script>
 <script src="static/alarmcard.js"></script>
 </body>

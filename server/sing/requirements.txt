@@ -1,0 +1,2 @@
+# 只给 .venv-qqmusic 用（qq_cli.py），不进小新的环境：它会升级 pydantic / cryptography，还带 urllib3-future 顶替 urllib3
+qqmusic-api-python==0.8.2
