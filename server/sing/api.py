@@ -197,21 +197,44 @@ def sing_video_file(request: Request, name: str) -> FileResponse:
 
 @router.post("/api/sing/karaoke")
 async def sing_karaoke(request: Request, body: dict = Body(...)) -> dict:
-    """AI 翻唱那首去掉人声的伴奏：{file}（AI 版的文件 id）。好了 state=ready、带 url；making 隔一秒再要；error 报一次，再要就重做。"""
+    """AI 翻唱那首去掉人声的伴奏：{file}（AI 版的文件 id）。好了 state=ready、带 url（原样的伴奏）、
+    play（跟唱时放的：按段放大到和 AI 版一样响）和 vox（AI 人声，领唱用）；
+    making 隔一秒再要；error 报一次，再要就重做。"""
     fid = str(body.get("file") or "")
     audio, _, _, _ = await asyncio.to_thread(_sing_file, request, fid, False)
     st = karaoke.ensure(fid, audio)
     if st["state"] == "ready":
         st["url"] = f"api/sing/karaoke/{fid}.mp3"
+        try:
+            await asyncio.to_thread(karaoke.extras, fid, audio)
+        except karaoke.KaraokeError:
+            pass
+        if karaoke.acc_path(fid, "mon"):
+            st["play"] = f"api/sing/karaoke/{fid}.mon.mp3"
+        if karaoke.acc_path(fid, "vox"):
+            st["vox"] = f"api/sing/karaoke/{fid}.vox.mp3"
     return st
+
+
+def _guide(v: str) -> list[tuple[float, float]]:
+    """「AI 领唱」开着的几段：12.3-40.1,50-60（歌里的秒）。"""
+    out = []
+    for part in filter(None, v.split(",")[:50]):
+        try:
+            a, b = (float(x) for x in part.split("-", 1))
+        except ValueError:
+            raise HTTPException(400, "领唱的时间不对")
+        if b > a:
+            out.append((a, b))
+    return out
 
 
 @router.get("/api/sing/karaoke/{name}")
 def sing_karaoke_file(request: Request, name: str) -> FileResponse:
     from server.main import _can_file
 
-    fid = name.removesuffix(".mp3")
-    p = karaoke.acc_path(fid)
+    fid, _, part = name.removesuffix(".mp3").partition(".")
+    p = karaoke.acc_path(fid, part) if part in ("", "vox", "mon") else None
     info = store.file_info(fid) if p else None
     if info is None or not _can_file(_who(request), info[1]):
         raise HTTPException(404, "伴奏还没好")
@@ -219,19 +242,20 @@ def sing_karaoke_file(request: Request, name: str) -> FileResponse:
 
 
 @router.post("/api/sing/real")
-async def sing_real(request: Request, file: str, s0: float, singer: str = "") -> dict:
+async def sing_real(request: Request, file: str, s0: float, singer: str = "", guide: str = "") -> dict:
     """跟着伴奏唱的录音（wav，原声）：file 是 AI 版的文件 id，s0 是录音第 0 个点对着歌里第几秒（前端拿播放进度估的，
-    真正的延迟这边对出来）。混成真人版挂到这张卡片上（再唱一次就换掉），返回新的 sing 字段。"""
+    真正的延迟这边对出来），guide 是开着「AI 领唱」的几段。混成真人版挂到这张卡片上（再唱一次就换掉），返回新的 sing 字段。"""
     w = _who(request)
     data = await request.body()
     if len(data) > karaoke.MAX_REC_BYTES:
         raise HTTPException(413, "录音太大了")
-    _, sing, thread, m = await asyncio.to_thread(_sing_file, request, file, False)
+    spans = _guide(guide)
+    song, sing, thread, m = await asyncio.to_thread(_sing_file, request, file, False)
     acc = karaoke.acc_path(file)
     if acc is None:
         raise HTTPException(409, "伴奏还没好")
     try:
-        mp3, info = await asyncio.to_thread(karaoke.make_real, data, acc, s0)
+        mp3, info = await asyncio.to_thread(karaoke.make_real, data, acc, s0, song, spans, karaoke.acc_path(file, "mon"))
     except karaoke.KaraokeError as e:
         raise HTTPException(400, str(e))
     who = singer.strip()[:12] or sing["singer"]
@@ -242,8 +266,9 @@ async def sing_real(request: Request, file: str, s0: float, singer: str = "") ->
     except Exception:
         store.abort(fid)
         raise
+    await asyncio.to_thread(karaoke.keep_recording, fid, data)
     old = (sing.get("real") or {}).get("file")
-    real = {"file": fid, "singer": who, "by": w.id, **info}
+    real = {"file": fid, "singer": who, "by": w.id, "guide": bool(spans), **info}
     files = [f for f in (m.get("files") or []) if f.get("id") != old] + [meta]
     out = store.update_message(thread, m["id"], sing={**sing, "real": real}, files=files)
     return {"sing": out["sing"], "files": out["files"]}

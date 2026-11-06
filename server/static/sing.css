@@ -58,7 +58,10 @@
 .sgc-kara[data-phase="rec"] .sgk-say { color: #ff8a80; text-shadow: 0 0 calc(var(--lv) * 14px) rgba(255,80,80,.9); }
 .sgk-btns { display: flex; gap: 14px; }
 .sgk-btns button { border: 0; border-radius: 26px; padding: 12px 22px; font-size: 16px; color: #fff; }
-.sgk-x { background: rgba(255,255,255,.14); }
+.sgk-x, .sgk-ai { background: rgba(255,255,255,.14); }
+.sgk-ai[hidden], .sgk-guide[hidden] { display: none; }
+.sgk-guide { border: 1px solid rgba(255,255,255,.3); background: none; color: rgba(255,255,255,.85); border-radius: 16px; padding: 5px 14px; font-size: 14px; }
+.sgk-guide[aria-pressed="true"] { background: var(--sg); border-color: var(--sg); color: #fff; font-weight: 600; }
 .sgk-go { background: #e5484d; font-weight: 700; min-width: 140px; box-shadow: 0 6px 16px rgba(229,72,77,.4); }
 .sgk-go:disabled { opacity: .5; }
 .sgc.kara .sgc-lines p { cursor: pointer; }
