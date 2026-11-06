@@ -47,6 +47,40 @@ def test_render_a_short_clip(tmp_path):
     assert not list(tmp_path.glob("*.part.mp4"))
 
 
+def test_parallel_frames_same_as_serial(tmp_path, monkeypatch):
+    """长一点的段分给几个进程画：喂给 ffmpeg 的帧、顺序和单进程一样。"""
+    spec = {"audio": "", "out": str(tmp_path / "x.mp4"), "start": 0.0, "end": 6.0, "seconds": 6.0, "cover": "",
+            "lrc": LRC, "off": 0, "title": "小星星", "artist": "儿歌", "singer": "爸爸"}
+    fed = {}
+
+    class Pipe:
+        def __init__(self, ff, stdin=None):
+            self.stdin, self.frames, self.returncode = self, [], 0
+            fed.setdefault("runs", []).append(self.frames)
+            Path(ff[-1]).write_bytes(b"")
+
+        def write(self, b):
+            self.frames.append(b)
+
+        def close(self):
+            pass
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(video.subprocess, "Popen", Pipe)
+    monkeypatch.setattr(video, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(video, "WORKERS", 1)
+    video.render(spec)
+    monkeypatch.setattr(video, "WORKERS", 3)
+    video.render(spec)
+    serial, parallel = fed["runs"]
+    assert len(serial) == 6 * video.FPS and serial == parallel
+
+
 @pytest.fixture
 def song(client):
     """第一个孩子线程里一张翻唱卡片（mp3 是假的，画视频换成直接写个文件）。"""

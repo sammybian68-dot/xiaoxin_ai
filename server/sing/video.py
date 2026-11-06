@@ -30,6 +30,7 @@ MIN_S = 3.0
 FADE_S = 2.5
 KEEP = 40            # 视频最多留几个（一首整的 10 MB 上下）
 MAX_RUNNING = 2
+WORKERS = 8          # 一个视频几个进程一起画帧
 FONTS = {
     "bold": ["/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "/System/Library/Fonts/STHeiti Medium.ttc",
              "/System/Library/Fonts/Hiragino Sans GB.ttc"],
@@ -239,50 +240,110 @@ def _clock(t: float) -> str:
     return f"{t // 60}:{t % 60:02d}"
 
 
-def render(spec: dict, progress=None) -> None:
-    from PIL import Image, ImageChops, ImageDraw
+class _Scene:
+    """一个视频的画面：不变的部分（底图、唱片、渐隐蒙版）先做好，frame(n) 画第 n 帧（rgb24 字节）。"""
 
-    from server.sing.practice import parse_lrc
+    disc_r, disc_c = 210, (W // 2, 500)
+    ly_top, ly_h, lh = 780, 330, 62
+    bar_y, bar_x0, bar_x1 = 1160, 90, W - 90
+
+    def __init__(self, spec: dict):
+        from PIL import Image, ImageDraw
+
+        from server.sing.practice import parse_lrc
+
+        self.a, b = float(spec["start"]), float(spec["end"])
+        self.dur = b - self.a
+        cover = spec.get("cover") or ""
+        self.lines = [(t - float(spec.get("off") or 0), w) for t, w in parse_lrc(spec.get("lrc") or "")]
+
+        base = _background(cover)
+        title = f"《{spec.get('title') or '这首歌'}》"
+        t_im = _text(title, _fit(title, "bold", 58, W - 80), (255, 255, 255, 255))
+        base.alpha_composite(t_im, ((W - t_im.width) // 2, 96))
+        sub = f"{spec.get('singer') or '家里人'} 的 AI 翻唱" + (f" · 原唱 {spec['artist']}" if spec.get("artist") else "")
+        s_im = _text(sub, _fit(sub, "sans", 30, W - 100), (255, 255, 255, 190))
+        base.alpha_composite(s_im, ((W - s_im.width) // 2, 96 + t_im.height + 14))
+        mark = _text("小新 · AI 翻唱", _font("sans", 22), (255, 255, 255, 120))
+        base.alpha_composite(mark, ((W - mark.width) // 2, H - 66))
+        self.base = base
+        self.disc = _disc(cover, self.disc_r)
+        self.ly_mid = self.ly_h // 2 - 26
+        self.cache = {}
+        self.fade = Image.new("L", (W, self.ly_h), 0)
+        fd = ImageDraw.Draw(self.fade)
+        for y in range(self.ly_h):
+            e = min(y, self.ly_h - 1 - y) / 70
+            fd.line([(0, y), (W, y)], fill=int(255 * min(1.0, e)))
+        self.f_clock = _font("sans", 22)
+
+    def line_im(self, i: int, cur: bool):
+        if (i, cur) not in self.cache:
+            f = _fit(self.lines[i][1], "bold" if cur else "sans", 40 if cur else 31, W - 80)
+            self.cache[i, cur] = _text(self.lines[i][1], f, (255, 255, 255, 255) if cur else (255, 255, 255, 140))
+        return self.cache[i, cur]
+
+    def frame(self, n: int) -> bytes:
+        from PIL import Image, ImageChops, ImageDraw
+
+        lines, lh = self.lines, self.lh
+        vt = n / FPS
+        st = self.a + vt
+        fr = self.base.copy()
+        rot = self.disc.rotate(-(st * 360 / 18) % 360, resample=Image.BICUBIC)
+        fr.alpha_composite(rot, (self.disc_c[0] - self.disc_r, self.disc_c[1] - self.disc_r))
+
+        if lines:
+            idx = -1
+            for i, (t, _) in enumerate(lines):
+                if t <= st:
+                    idx = i
+                else:
+                    break
+            pos = float(idx)
+            if idx >= 0 and st - lines[idx][0] < 0.35:
+                x = (st - lines[idx][0]) / 0.35
+                pos = idx - 1 + (1 - (1 - x) ** 3)
+            layer = Image.new("RGBA", (W, self.ly_h), (0, 0, 0, 0))
+            for j in range(max(0, int(pos) - 3), min(len(lines), int(pos) + 5)):
+                y = self.ly_mid + round((j - pos) * lh)
+                if -lh < y < self.ly_h:
+                    im = self.line_im(j, j == idx)
+                    layer.paste(im, ((W - im.width) // 2, y - (im.height - 40) // 2))   # 行距比字高，不会叠
+            layer.putalpha(ImageChops.multiply(layer.getchannel("A"), self.fade))
+            fr.alpha_composite(layer, (0, self.ly_top))
+
+        d = ImageDraw.Draw(fr)
+        x0, x1, by = self.bar_x0, self.bar_x1, self.bar_y
+        d.rounded_rectangle((x0, by, x1, by + 6), 3, fill=(255, 255, 255, 60))
+        px = x0 + (x1 - x0) * min(1.0, vt / self.dur)
+        d.rounded_rectangle((x0, by, px, by + 6), 3, fill=(255, 255, 255, 230))
+        d.ellipse((px - 8, by - 5, px + 8, by + 11), fill=(255, 255, 255, 255))
+        d.text((x0, by + 18), _clock(vt), font=self.f_clock, fill=(255, 255, 255, 170))
+        tot = _clock(self.dur)
+        d.text((x1 - self.f_clock.getlength(tot), by + 18), tot, font=self.f_clock, fill=(255, 255, 255, 170))
+        return fr.convert("RGB").tobytes()
+
+
+_scene: _Scene | None = None
+
+
+def _scene_init(spec: dict) -> None:
+    global _scene
+    _scene = _Scene(spec)
+
+
+def _scene_frame(n: int) -> bytes:
+    return _scene.frame(n)
+
+
+def render(spec: dict, progress=None) -> None:
+    """一帧要 20 ms（大半是转唱片），单进程画整首要一分钟；分给几个进程一起画，按顺序喂给 ffmpeg。"""
+    import multiprocessing
 
     a, b = float(spec["start"]), float(spec["end"])
     dur = b - a
     seconds = float(spec.get("seconds") or 0)
-    cover = spec.get("cover") or ""
-    lines = [(t - float(spec.get("off") or 0), w) for t, w in parse_lrc(spec.get("lrc") or "")]
-
-    base = _background(cover)
-    title = f"《{spec.get('title') or '这首歌'}》"
-    t_im = _text(title, _fit(title, "bold", 58, W - 80), (255, 255, 255, 255))
-    base.alpha_composite(t_im, ((W - t_im.width) // 2, 96))
-    sub = f"{spec.get('singer') or '家里人'} 的 AI 翻唱" + (f" · 原唱 {spec['artist']}" if spec.get("artist") else "")
-    s_im = _text(sub, _fit(sub, "sans", 30, W - 100), (255, 255, 255, 190))
-    base.alpha_composite(s_im, ((W - s_im.width) // 2, 96 + t_im.height + 14))
-    mark = _text("小新 · AI 翻唱", _font("sans", 22), (255, 255, 255, 120))
-    base.alpha_composite(mark, ((W - mark.width) // 2, H - 66))
-
-    disc_r = 210
-    disc = _disc(cover, disc_r)
-    disc_c = (W // 2, 500)
-
-    ly_top, ly_h, lh = 780, 330, 62
-    ly_mid = ly_h // 2 - 26
-    cache = {}
-
-    def line_im(i: int, cur: bool):
-        if (i, cur) not in cache:
-            f = _fit(lines[i][1], "bold" if cur else "sans", 40 if cur else 31, W - 80)
-            cache[i, cur] = _text(lines[i][1], f, (255, 255, 255, 255) if cur else (255, 255, 255, 140))
-        return cache[i, cur]
-
-    fade = Image.new("L", (W, ly_h), 0)
-    fd = ImageDraw.Draw(fade)
-    for y in range(ly_h):
-        e = min(y, ly_h - 1 - y) / 70
-        fd.line([(0, y), (W, y)], fill=int(255 * min(1.0, e)))
-
-    bar_y, bar_x0, bar_x1 = 1160, 90, W - 90
-    f_clock = _font("sans", 22)
-
     ff = [spec.get("ffmpeg") or ffmpeg_exe(), "-y", "-loglevel", "error",
           "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-",
           "-ss", f"{a:.2f}", "-t", f"{dur:.2f}", "-i", spec["audio"], "-map", "0:v", "-map", "1:a"]
@@ -297,47 +358,21 @@ def render(spec: dict, progress=None) -> None:
     part = out.with_name(out.stem + ".part.mp4")
     ff += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", "-profile:v", "main",
            "-g", str(FPS * 5), "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-movflags", "+faststart", "-shortest", str(part)]
-    p = subprocess.Popen(ff, stdin=subprocess.PIPE)
     frames = max(1, math.ceil(dur * FPS))
+    workers = min(WORKERS, os.cpu_count() or 1, max(1, frames // (FPS * 2)))
+    pool = None
+    if workers > 1:
+        ctx = multiprocessing.get_context("fork" if sys.platform == "linux" else "spawn")
+        pool = ctx.Pool(workers, initializer=_scene_init, initargs=(spec,))
+        it = pool.imap(_scene_frame, range(frames), chunksize=FPS)
+    else:
+        scene = _Scene(spec)
+        it = map(scene.frame, range(frames))
+    p = subprocess.Popen(ff, stdin=subprocess.PIPE)
     last = -1
     try:
-        for n in range(frames):
-            vt = n / FPS
-            st = a + vt
-            fr = base.copy()
-            rot = disc.rotate(-(st * 360 / 18) % 360, resample=Image.BICUBIC)
-            fr.alpha_composite(rot, (disc_c[0] - disc_r, disc_c[1] - disc_r))
-
-            if lines:
-                idx = -1
-                for i, (t, _) in enumerate(lines):
-                    if t <= st:
-                        idx = i
-                    else:
-                        break
-                pos = float(idx)
-                if idx >= 0 and st - lines[idx][0] < 0.35:
-                    x = (st - lines[idx][0]) / 0.35
-                    pos = idx - 1 + (1 - (1 - x) ** 3)
-                layer = Image.new("RGBA", (W, ly_h), (0, 0, 0, 0))
-                for j in range(max(0, int(pos) - 3), min(len(lines), int(pos) + 5)):
-                    y = ly_mid + round((j - pos) * lh)
-                    if -lh < y < ly_h:
-                        im = line_im(j, j == idx)
-                        layer.paste(im, ((W - im.width) // 2, y - (im.height - 40) // 2))   # 行距比字高，不会叠
-                layer.putalpha(ImageChops.multiply(layer.getchannel("A"), fade))
-                fr.alpha_composite(layer, (0, ly_top))
-
-            d = ImageDraw.Draw(fr)
-            d.rounded_rectangle((bar_x0, bar_y, bar_x1, bar_y + 6), 3, fill=(255, 255, 255, 60))
-            px = bar_x0 + (bar_x1 - bar_x0) * min(1.0, vt / dur)
-            d.rounded_rectangle((bar_x0, bar_y, px, bar_y + 6), 3, fill=(255, 255, 255, 230))
-            d.ellipse((px - 8, bar_y - 5, px + 8, bar_y + 11), fill=(255, 255, 255, 255))
-            d.text((bar_x0, bar_y + 18), _clock(vt), font=f_clock, fill=(255, 255, 255, 170))
-            tot = _clock(dur)
-            d.text((bar_x1 - f_clock.getlength(tot), bar_y + 18), tot, font=f_clock, fill=(255, 255, 255, 170))
-
-            p.stdin.write(fr.convert("RGB").tobytes())
+        for n, fr in enumerate(it):
+            p.stdin.write(fr)
             pct = n * 100 // frames
             if progress and pct != last:
                 progress(pct)
@@ -347,6 +382,8 @@ def render(spec: dict, progress=None) -> None:
             raise RuntimeError(f"ffmpeg exit {p.returncode}")
         part.replace(out)
     finally:
+        if pool:
+            pool.terminate()
         if p.poll() is None:
             p.kill()
         part.unlink(missing_ok=True)

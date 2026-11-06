@@ -572,6 +572,7 @@ const singWxBridge = () => { const b = window.XiaoxinNative || window.XiaoxinPar
 function singShareOpen(c) {
   const sh = singShare;
   sh.c = c; sh.gen++; sh.pick = -1;
+  sh.audio?.pause(); sh.audio = null;   // 试听的是这一首：上次开的可能是别的歌
   sh.dur = c.dur || Number(c.s.seconds) || 0;
   sh.a = 0; sh.b = sh.dur;
   c.audio?.pause();
