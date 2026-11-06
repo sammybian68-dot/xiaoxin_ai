@@ -1,4 +1,4 @@
-"""翻唱的接口：/api/sing/*。录声音、试听、删；封面；QQ 音乐扫码登录（只有家长、管理员）。"""
+"""翻唱的接口：/api/sing/*。录声音、试听、删；封面；发到微信的视频；QQ 音乐扫码登录（只有家长、管理员）。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from server import store
-from server.sing import job, practice, qq, voices
+from server.sing import job, practice, qq, video, voices
 
 router = APIRouter()
 MAX_VOICE_BYTES = 8 * 1024 * 1024
@@ -121,6 +121,71 @@ async def sing_practice_audio(request: Request, sid: str) -> FileResponse:
     except practice.PracticeError as e:
         raise HTTPException(404, str(e))
     return FileResponse(p, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ---------------------------------------------------------------- 发到微信的视频
+
+def _sing_of(fid: str) -> dict | None:
+    from server.family import members
+
+    for k in members.kids(active_only=False):
+        try:
+            msgs = store.get(k["thread"])["messages"]
+        except KeyError:
+            continue
+        for m in reversed(msgs):
+            if (m.get("sing") or {}).get("file") == fid:
+                return m["sing"]
+    return None
+
+
+def _sing_file(request: Request, fid: str):
+    """翻唱的那个 mp3 和它的卡片字段；看不到这个文件（孩子看别人线程里的）一律当没有。"""
+    from server.main import _can_file
+
+    info = store.file_info(fid)
+    if info is None or not info[0].is_file() or not _can_file(_who(request), info[1]):
+        raise HTTPException(404, "没有这首歌")
+    sing = _sing_of(fid)
+    if sing is None:
+        raise HTTPException(404, "这不是翻唱的歌")
+    return info[0], sing
+
+
+def _sec(v) -> float | None:
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "时间不对")
+
+
+@router.post("/api/sing/video")
+async def sing_video(request: Request, body: dict = Body(...)) -> dict:
+    """要一段分享用的视频：{file, start?, end?, off?}（秒；不给起止就是整首，off 是卡片上调的歌词提前量）。
+    做好了 state=ready、带 url；还在做是 state=making + pct，隔一秒再要一次（同一段不会重复做）；error 再要一次就重做。"""
+    fid = str(body.get("file") or "")
+    audio, sing = await asyncio.to_thread(_sing_file, request, fid)
+    try:
+        st = video.ensure(fid, audio, sing, _sec(body.get("start")), _sec(body.get("end")), _sec(body.get("off")) or 0.0)
+    except video.VideoError as e:
+        raise HTTPException(400, str(e))
+    if st["state"] == "ready":
+        st["url"] = f"api/sing/video/{st['key']}.mp4"
+    return st
+
+
+@router.get("/api/sing/video/{name}")
+def sing_video_file(request: Request, name: str) -> FileResponse:
+    from server.main import _can_file
+
+    k = name.removesuffix(".mp4")
+    p = video.path(k)
+    info = store.file_info(k.split("_")[0]) if p else None
+    if info is None or not _can_file(_who(request), info[1]):
+        raise HTTPException(404, "视频还没做好")
+    return FileResponse(p, media_type="video/mp4", headers={"Cache-Control": "private, max-age=86400"})
 
 
 # ---------------------------------------------------------------- QQ 音乐登录

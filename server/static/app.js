@@ -3221,6 +3221,7 @@ function findFile(id) {
 // 安卓返回键（小新家长 APK 先问这里）：关大图 > 关设置 > 群里回聊天列表；返回 true 表示处理了
 window.xiaoxinBack = () => {
   if ($("viewer").open) { $("viewer").close(); return true; }
+  if ($("sing-share")?.open) { $("sing-share").close(); return true; }
   if ($("settings").open) { $("settings").close(); return true; }
   if (document.body.classList.contains("parent-mode") && !document.body.classList.contains("in-chats")) { $("back-chats").click(); return true; }
   return false;

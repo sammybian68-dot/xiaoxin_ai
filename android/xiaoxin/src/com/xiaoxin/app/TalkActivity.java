@@ -243,6 +243,17 @@ public class TalkActivity extends Activity {
         return b.endsWith("/") ? b : b + "/";
     }
 
+    /** 发到微信的结果告诉网页（翻唱卡片「发到微信」那个面板）。 */
+    private void shareVideoDone(String state, String msg) {
+        String arg;
+        try {
+            arg = new JSONObject().put("state", state).put("msg", msg).toString();
+        } catch (org.json.JSONException e) {
+            return;
+        }
+        runOnUiThread(() -> web.evaluateJavascript("window.xiaoxinShareVideo && window.xiaoxinShareVideo(" + arg + ")", null));
+    }
+
     @Override
     protected void onStop() {
         super.onStop();
@@ -406,6 +417,75 @@ public class TalkActivity extends Activity {
                     android.util.Log.w("XxSave", "save " + url + ": " + e);
                 }
             }, "save-image").start();
+        }
+
+        /** 翻唱卡片「发到微信」：后台下载这段视频，存进相册 Movies/小新，再拉起微信「发送给朋友」（找不到就让人在微信的几个入口里选，
+         *  没装微信就是系统分享）。好了回调 window.xiaoxinShareVideo({state:'open'})，没成 {state:'error', msg}。 */
+        @android.webkit.JavascriptInterface
+        public void shareVideo(String url, String name) {
+            if (url == null || !url.startsWith(base())) {
+                shareVideoDone("error", "不是小新的视频");
+                return;
+            }
+            new Thread(() -> {
+                Uri dst = null;
+                android.content.ContentResolver cr = getContentResolver();
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                    c.setRequestProperty("Authorization", "Bearer " + key());
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(120000);
+                    if (c.getResponseCode() != 200) {
+                        throw new java.io.IOException("HTTP " + c.getResponseCode());
+                    }
+                    android.content.ContentValues v = new android.content.ContentValues();
+                    String fn = (name == null || name.isEmpty() ? "xiaoxin.mp4" : name.replaceAll("[\\\\/:*?\"<>|]", "_"));
+                    v.put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, fn);
+                    v.put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                    v.put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, android.os.Environment.DIRECTORY_MOVIES + "/小新");
+                    v.put(android.provider.MediaStore.Video.Media.IS_PENDING, 1);
+                    dst = cr.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v);
+                    try (java.io.InputStream in = c.getInputStream(); java.io.OutputStream out = cr.openOutputStream(dst)) {
+                        byte[] buf = new byte[65536];
+                        int n;
+                        while ((n = in.read(buf)) > 0) {
+                            out.write(buf, 0, n);
+                        }
+                    }
+                    v.clear();
+                    v.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0);
+                    cr.update(dst, v, null, null);
+                } catch (Exception e) {
+                    android.util.Log.w("XxShare", "video " + url + ": " + e);
+                    if (dst != null) {
+                        cr.delete(dst, null, null);
+                    }
+                    shareVideoDone("error", "视频没下载下来，网络好点再试");
+                    return;
+                }
+                final Uri video = dst;
+                runOnUiThread(() -> {
+                    Intent it = new Intent(Intent.ACTION_SEND);
+                    it.setType("video/mp4");
+                    it.putExtra(Intent.EXTRA_STREAM, video);
+                    it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    Intent[] tries = {
+                        new Intent(it).setClassName("com.tencent.mm", "com.tencent.mm.ui.tools.ShareImgUI"),
+                        new Intent(it).setPackage("com.tencent.mm"),
+                        Intent.createChooser(it, "发到"),
+                    };
+                    for (Intent t : tries) {
+                        try {
+                            startActivity(t);
+                            shareVideoDone("open", "");
+                            return;
+                        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+                            android.util.Log.i("XxShare", "share " + t + ": " + e);
+                        }
+                    }
+                    shareVideoDone("error", "没找到微信");
+                });
+            }, "share-video").start();
         }
 
         /** 视频来电：亮屏、盖住锁屏、退出熄屏（和闹钟响一样）。 */

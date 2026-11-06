@@ -31,6 +31,31 @@
 .sgc-sub em { font-style: normal; color: var(--sg); font-weight: 600; }
 .sgc-meta small { font-size: 12px; color: rgba(255,255,255,.55); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sgc-shrink { display: none; }
+.sgc-wx { justify-self: start; margin-top: 4px; border: 0; border-radius: 12px; padding: 4px 11px; font-size: 12px; line-height: 1.5;
+  background: rgba(7,193,96,.9); color: #fff; font-weight: 600; box-shadow: 0 3px 10px rgba(7,193,96,.3); }
+.sgc.full .sgc-wx { position: absolute; right: 18px; top: max(14px, env(safe-area-inset-top)); padding: 10px 16px; font-size: 15px; }
+
+/* 发到微信：整首 / 选一段（点歌词、拖两头） */
+.sgs-song { margin: -4px 0 6px; color: var(--muted); font-size: 14px; }
+.sgs-hint { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.sgs-lines { max-height: min(38vh, 300px); overflow-y: auto; border-radius: 12px; background: var(--raised); padding: 4px 0; }
+.sgs-lines p { margin: 0; padding: 7px 12px; font-size: 15px; line-height: 1.4; cursor: pointer; border-left: 3px solid transparent; }
+.sgs-lines p span { display: inline-block; width: 44px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.sgs-lines p.in { background: rgba(7,193,96,.16); border-left-color: #07c160; }
+.sgs-lines p.pick { background: rgba(7,193,96,.32); font-weight: 600; }
+.sgs-lines p.none { color: var(--muted); cursor: default; }
+.sgs-range { position: relative; height: 30px; margin: 10px 4px 0; }
+.sgs-range::before { content: ""; position: absolute; left: 0; right: 0; top: 13px; height: 4px; border-radius: 2px; background: var(--line); }
+.sgs-fill { position: absolute; top: 13px; height: 4px; border-radius: 2px; background: #07c160; }
+.sgs-range input { position: absolute; inset: 0; width: 100%; margin: 0; appearance: none; -webkit-appearance: none; background: none; pointer-events: none; }
+.sgs-range input::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 22px; height: 22px; border-radius: 50%;
+  background: #fff; border: 3px solid #07c160; box-shadow: 0 1px 5px rgba(0,0,0,.35); cursor: grab; }
+.sgs-range input::-moz-range-thumb { pointer-events: auto; width: 18px; height: 18px; border-radius: 50%; background: #fff; border: 3px solid #07c160; }
+.sgs-sum { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.sgs-sum button { border: 1px solid var(--line); background: var(--raised); color: var(--text); border-radius: 12px; padding: 6px 12px; }
+.sgs-note { margin: 10px 0 0; min-height: 1.4em; font-size: 13px; color: var(--muted); }
+.sgs .confirm-btns .primary { background: #07c160; color: #fff; }
+.sgs .confirm-btns .primary:disabled { opacity: .6; }
 
 .sgc-lrc { position: relative; height: 160px; overflow: hidden; margin: 6px 0 2px; cursor: pointer;
   -webkit-mask-image: linear-gradient(transparent, #000 22%, #000 78%, transparent); mask-image: linear-gradient(transparent, #000 22%, #000 78%, transparent); }

@@ -414,7 +414,8 @@ function singCard(row, m) {
         <span class="sgc-vinyl"><span class="sgc-art">${cover ? `<img src="${cover}" alt="">` : "🎵"}</span></span><i class="sgc-arm" aria-hidden="true"></i></button>
       <div class="sgc-meta"><b class="sgc-title">${esc(s.title)}</b>
         <span class="sgc-sub"><em>${esc(s.singer)}</em> 的 AI 翻唱</span>
-        <small>原唱 ${esc(s.artist)}${s.album ? ` · ${esc(s.album)}` : ""}</small></div>
+        <small>原唱 ${esc(s.artist)}${s.album ? ` · ${esc(s.album)}` : ""}</small>
+        ${singWxBridge() ? '<button type="button" class="sgc-wx" data-c="wx">发到微信</button>' : ""}</div>
       <button type="button" class="sgc-shrink" data-c="full" aria-label="收起">⌄</button>
     </div>
     <div class="sgc-lrc" data-c="lrc"><div class="sgc-lines">${c.lines.length
@@ -458,6 +459,7 @@ function singCardClick(c, e) {
   const k = e.target.closest("[data-c]")?.dataset.c;
   if (k === "play") singPlay(c);
   else if (k === "full") singFull(c);
+  else if (k === "wx") singShareOpen(c);
   else if (k === "back" || k === "fwd") {
     singEnsureAudio(c);
     const t = Math.min(Math.max(0, c.audio.currentTime + (k === "fwd" ? 10 : -10)), c.dur || 1e9);
@@ -556,6 +558,167 @@ function singFull(c) {
   c.idx = -2;
   requestAnimationFrame(() => singSync(c, c.audio?.currentTime || 0));
 }
+
+// ---------------------------------------------------------------- 发到微信
+// 整首或者选一段，服务端做成视频（/api/sing/video：封面 + 转唱片 + 滚动歌词），APK 下载进相册「Movies/小新」再拉起微信发。
+// 选一段：点一句当开头、再点一句当结尾（结尾那句唱完），也可以拖两头。
+
+const SING_VIDEO_MAX = 299;   // 微信聊天视频最长 5 分钟，和 server/sing/video.py 的 MAX_S 一样
+const SING_CLIP_MIN = 3;
+const SING_CREDIT = /^[^：:]{0,14}[：:]|^.{0,40} - .{0,40}$/;   // 「词：某某」「泡沫 - 邓紫棋」，同 server/sing/practice.py
+const singShare = { c: null, mode: "all", a: 0, b: 0, dur: 0, pick: -1, gen: 0, audio: null, idx: [] };
+const singWxBridge = () => { const b = window.XiaoxinNative || window.XiaoxinParent; return b?.shareVideo ? b : null; };
+
+function singShareOpen(c) {
+  const sh = singShare;
+  sh.c = c; sh.gen++; sh.pick = -1;
+  sh.dur = c.dur || Number(c.s.seconds) || 0;
+  sh.a = 0; sh.b = sh.dur;
+  c.audio?.pause();
+  $("sgs-song").textContent = `《${c.s.title}》 · ${c.s.singer} 的 AI 翻唱`;
+  sh.idx = c.lines.map((l, i) => i).filter((i) => !SING_CREDIT.test(c.lines[i].text));
+  $("sgs-lines").innerHTML = sh.idx.length
+    ? sh.idx.map((i) => `<p data-i="${i}"><span>${singTime(singShareT(i))}</span>${esc(c.lines[i].text)}</p>`).join("")
+    : '<p class="none">这首没有歌词，拖下面的两头选</p>';
+  for (const id of ["sgs-a", "sgs-b"]) $(id).max = String(Math.round(sh.dur * 10));
+  $("sgs-go").disabled = false;
+  singShareMode("all");
+  $("sing-share").showModal();
+}
+
+/** 第 i 句在 mp3 里的秒（卡片上调过「词快点 / 词慢点」也算上）。 */
+function singShareT(i) {
+  const c = singShare.c;
+  return Math.max(0, c.lines[i].t - c.off);
+}
+
+function singShareMode(m) {
+  const sh = singShare;
+  sh.mode = m;
+  for (const b of document.querySelectorAll("#sgs-mode [data-m]")) b.setAttribute("aria-selected", String(b.dataset.m === m));
+  $("sgs-part").hidden = m !== "part";
+  if (m === "part" && sh.a <= 0 && sh.b >= sh.dur) {   // 刚切过来：先给一段（第一句起 30 秒），再让人改
+    sh.a = sh.idx.length ? Math.max(0, singShareT(sh.idx[0]) - 0.3) : 0;
+    sh.b = Math.min(sh.dur, sh.a + 30);
+  }
+  singShareSync();
+}
+
+function singShareLine(i) {
+  const sh = singShare, n = sh.c.lines.length;
+  const end = (j) => (j + 1 < n ? Math.min(sh.dur, singShareT(j + 1) + 0.8) : sh.dur);
+  if (sh.pick < 0 || i < sh.pick) {
+    sh.pick = i;
+    sh.a = Math.max(0, singShareT(i) - 0.3);
+    sh.b = end(i);
+  } else {
+    sh.a = Math.max(0, singShareT(sh.pick) - 0.3);
+    sh.b = end(i);
+    sh.pick = -1;
+  }
+  singShareStopTry();
+  singShareSync();
+}
+
+function singShareSync() {
+  const sh = singShare, part = sh.mode === "part";
+  const len = part ? sh.b - sh.a : sh.dur;
+  $("sgs-a").value = String(Math.round(sh.a * 10));
+  $("sgs-b").value = String(Math.round(sh.b * 10));
+  const pct = (t) => `${(t / Math.max(1, sh.dur)) * 100}%`;
+  $("sgs-fill").style.left = pct(sh.a);
+  $("sgs-fill").style.width = pct(sh.b - sh.a);
+  $("sgs-sum").textContent = `${singTime(sh.a)} – ${singTime(sh.b)} · ${Math.round(sh.b - sh.a)} 秒`;
+  $("sgs-hint").textContent = sh.pick < 0 ? "点一句当开头，再点一句当结尾" : "再点一句当结尾（点的这句唱完）";
+  document.querySelectorAll("#sgs-lines p[data-i]").forEach((p) => {
+    const i = Number(p.dataset.i), t = singShareT(i);
+    p.classList.toggle("in", t >= sh.a + 0.2 && t < sh.b - 0.85);   // 开头往前让了 0.3 秒，结尾多留了 0.8 秒
+    p.classList.toggle("pick", i === sh.pick);
+  });
+  $("sgs-note").textContent = len > SING_VIDEO_MAX
+    ? `微信里的视频最长 5 分钟，只发${part ? "这段" : ""}前 ${singTime(SING_VIDEO_MAX)}，结尾淡出`
+    : (part ? "" : `整首 ${singTime(sh.dur)}`);
+}
+
+function singShareDrag(which) {
+  const sh = singShare;
+  const v = Number($(which === "a" ? "sgs-a" : "sgs-b").value) / 10;
+  if (which === "a") sh.a = Math.min(v, sh.b - SING_CLIP_MIN);
+  else sh.b = Math.max(v, sh.a + SING_CLIP_MIN);
+  sh.a = Math.max(0, sh.a); sh.b = Math.min(sh.dur, sh.b);
+  sh.pick = -1;
+  singShareSync();
+}
+
+function singShareTry() {
+  const sh = singShare;
+  if (sh.audio && !sh.audio.paused) { singShareStopTry(); return; }
+  const a = sh.audio || (sh.audio = new Audio(fileUrl({ id: sh.c.s.file })));
+  a.ontimeupdate = () => { if (a.currentTime >= sh.b) singShareStopTry(); };
+  a.currentTime = sh.mode === "part" ? sh.a : 0;
+  stopSpeaking();
+  a.play().then(() => { $("sgs-try").textContent = "❚❚ 停"; }).catch((err) => toast("放不了：" + err.message));
+}
+
+function singShareStopTry() {
+  singShare.audio?.pause();
+  $("sgs-try").textContent = "▶ 试听这段";
+}
+
+async function singShareGo() {
+  const sh = singShare, c = sh.c, gen = ++sh.gen, part = sh.mode === "part";
+  const bridge = singWxBridge();
+  if (!bridge) return;
+  singShareStopTry();
+  const go = $("sgs-go"), note = $("sgs-note");
+  go.disabled = true;
+  note.textContent = "正在做视频…";
+  const body = JSON.stringify({ file: c.s.file, off: c.off, ...(part ? { start: sh.a, end: sh.b } : {}) });
+  try {
+    for (;;) {
+      const st = await api("api/sing/video", { method: "POST", headers: { "Content-Type": "application/json" }, body }).then(json);
+      if (gen !== sh.gen) return;
+      if (st.state === "ready") {
+        const name = `${c.s.singer}唱的《${c.s.title}》${part ? "（片段）" : ""}.mp4`;
+        note.textContent = "视频好了，正在打开微信…";
+        bridge.shareVideo(new URL(st.url, location.href).href, name);
+        return;
+      }
+      if (st.state === "error") throw new Error(`${st.error || "视频没做出来"}，再点一次试试`);
+      note.textContent = `正在做视频… ${st.pct || 0}%`;
+      await new Promise((r) => setTimeout(r, 1000));
+      if (gen !== sh.gen) return;
+    }
+  } catch (err) {
+    if (gen !== sh.gen) return;
+    note.textContent = err.message;
+    go.disabled = false;
+  }
+}
+
+/** 原生下载完、拉起了微信（open），或者没成（error + msg）。 */
+window.xiaoxinShareVideo = (e) => {
+  const d = $("sing-share");
+  if (!d?.open) return;
+  if (e?.state === "open") { d.close(); toast("视频也存进相册了"); return; }
+  $("sgs-note").textContent = e?.msg || "没发出去，再试一次";
+  $("sgs-go").disabled = false;
+};
+
+$("sgs-mode")?.addEventListener("click", (e) => {
+  const m = e.target.closest("[data-m]")?.dataset.m;
+  if (m && m !== singShare.mode) singShareMode(m);
+});
+$("sgs-lines")?.addEventListener("click", (e) => {
+  const p = e.target.closest("p[data-i]");
+  if (p) singShareLine(Number(p.dataset.i));
+});
+$("sgs-a")?.addEventListener("input", () => singShareDrag("a"));
+$("sgs-b")?.addEventListener("input", () => singShareDrag("b"));
+$("sgs-try")?.addEventListener("click", singShareTry);
+$("sgs-go")?.addEventListener("click", singShareGo);
+$("sgs-no")?.addEventListener("click", () => $("sing-share").close());
+$("sing-share")?.addEventListener("close", () => { singShare.gen++; singShareStopTry(); });
 
 // ---------------------------------------------------------------- 设置 → 唱歌
 

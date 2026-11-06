@@ -207,6 +207,28 @@
   <div class="confirm-btns"><button type="button" id="share-no">取消</button><button type="button" id="share-yes" class="primary">发送</button></div>
 </dialog>
 
+<!-- 翻唱卡片「发到微信」：整首或者选一段（点歌词定开头、结尾，或者拖两头），做成视频交给 APK 发微信 -->
+<dialog id="sing-share" class="share sgs" aria-labelledby="sgs-title">
+  <h2 id="sgs-title">发到微信</h2>
+  <p id="sgs-song" class="sgs-song"></p>
+  <div class="seg" role="tablist" aria-label="发多少" id="sgs-mode">
+    <button type="button" role="tab" data-m="all" aria-selected="true">整首</button>
+    <button type="button" role="tab" data-m="part" aria-selected="false">选一段</button>
+  </div>
+  <div id="sgs-part" class="sgs-part" hidden>
+    <p class="sgs-hint" id="sgs-hint">点一句当开头，再点一句当结尾</p>
+    <div id="sgs-lines" class="sgs-lines"></div>
+    <div class="sgs-range" id="sgs-range">
+      <div class="sgs-fill" id="sgs-fill"></div>
+      <input type="range" id="sgs-a" min="0" max="10" step="1" value="0" aria-label="开头">
+      <input type="range" id="sgs-b" min="0" max="10" step="1" value="10" aria-label="结尾">
+    </div>
+    <div class="sgs-sum"><span id="sgs-sum"></span><button type="button" id="sgs-try">▶ 试听这段</button></div>
+  </div>
+  <p id="sgs-note" class="sgs-note"></p>
+  <div class="confirm-btns"><button type="button" id="sgs-no">取消</button><button type="button" id="sgs-go" class="primary">发到微信</button></div>
+</dialog>
+
 <!-- 看大图：点气泡里的缩略图、侧栏的文件。不跳页（APK 里跳出去就回不来了） -->
 <dialog id="viewer" class="viewer" aria-label="看图">
   <div id="viewer-stage" class="viewer-stage">
