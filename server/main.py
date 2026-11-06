@@ -1009,6 +1009,22 @@ def print_jobs(request: Request, kid: str = "", pending: int = 0) -> dict:
     return {"jobs": printing.pending(tid) if pending else printing.jobs(tid)}
 
 
+@app.get("/api/print/{jid}/doc.pwg")
+def print_doc(request: Request, jid: str) -> FileResponse:
+    """pad 取整份任务（多页 / 多份）的 PWG Raster，一个打印任务发完（server/pwg.py）。没有就 404，pad 退回一页一页发。"""
+    from server import printing
+
+    try:
+        job = printing.get_job(jid)
+    except KeyError:
+        raise HTTPException(404, "没有这个打印任务")
+    own_thread(request, job["thread"])
+    p = printing.doc_path(jid)
+    if p is None:
+        raise HTTPException(404, "这个任务没有整份文档")
+    return FileResponse(p, media_type="image/pwg-raster")
+
+
 @app.get("/api/print/{jid}/page/{i}")
 def print_page(request: Request, jid: str, i: int) -> FileResponse:
     """pad 取要打的第 i 页（A4 JPEG）。"""
@@ -1041,6 +1057,10 @@ def print_result(request: Request, jid: str, body: dict = Body(...)) -> dict:
         raise HTTPException(400, "state 只能是 printing / done / error")
     fields = {"state": state, "error": str(body.get("error") or "")[:200], "printer": str(body.get("printer") or "")[:60],
               "finished": time.time() if state in ("done", "error") else None}
+    if state == "printing":
+        fields["printing_at"] = time.time()   # 卡在打印中太久的判断从这里算（printing.STUCK_S）
+    if body.get("how"):
+        fields["how"] = str(body["how"])[:20]  # pad 用的哪种发法：pwg（一个任务）/ jpeg（一页一个），测速度用
     if isinstance(body.get("done_pages"), int):
         fields["done_pages"] = max(0, body["done_pages"])  # 多页任务打到一半出错：前面几页已经出来了
     job = printing.update_job(jid, **fields)

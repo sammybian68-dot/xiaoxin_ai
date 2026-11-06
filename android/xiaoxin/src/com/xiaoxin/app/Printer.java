@@ -23,7 +23,9 @@ import java.util.concurrent.TimeUnit;
  * 家里打印机的最小 IPP 客户端：mDNS 找打印机（_ipp._tcp），Get-Printer-Attributes 看状态，Print-Job 发一页 JPEG。
  * 不走系统打印框（PrintManager 一定会弹预览、要人点），小朋友说一句就出纸。
  *
- * 打印机：HP DeskJet 4800（mDNS 名「HP DeskJet 4800 series [039FA9]」），吃 image/jpeg，不吃 PDF；
+ * 打印机：HP DeskJet 4800（mDNS 名「HP DeskJet 4800 series [039FA9]」），吃 image/jpeg、image/pwg-raster，不吃 PDF；
+ * 多页 / 多份的任务服务端排成一个多页 PWG（printDoc），一个打印任务发完；打印机不收 PWG 再一页一页发 JPEG。
+ * 换了打印机不用改代码：mDNS 自己找，型号、支持的格式开机后查一次。
  * print-color-mode 支持 monochrome / color，中枢那边黑白页已经转成灰度，这里再告诉打印机用 monochrome（只用黑墨）。
  * IPP 是明文 HTTP 在家里局域网：打印机自带的 ipps 是自签证书，内容只是作业纸，局域网内不必加密。
  */
@@ -37,6 +39,8 @@ final class Printer {
         final String names;        // marker-names：tri-color ink,black ink
         final String levels;       // marker-levels：80,100
         final String media;        // media-ready：iso_a4_210x297mm（没纸是空）
+
+        String name = "打印机";      // printer-make-and-model（status 里一起查）
 
         Status(int state, String reasons, String names, String levels, String media) {
             this.state = state;
@@ -57,7 +61,7 @@ final class Printer {
                 inks.put(new org.json.JSONArray().put(n[i].trim()).put(v));
             }
             return new org.json.JSONObject().put("state", state).put("reasons", reasons).put("inks", inks)
-                    .put("media", media).put("name", "HP DeskJet 4800");
+                    .put("media", media).put("name", name);
         }
 
         /** 不能打的原因，用孩子听得懂的话；能打返回 null。 */
@@ -251,11 +255,17 @@ final class Printer {
             ex.add(new Object[] {0x44, "", "marker-names"});
             ex.add(new Object[] {0x44, "", "marker-levels"});
             ex.add(new Object[] {0x44, "", "media-ready"});
+            ex.add(new Object[] {0x44, "", "printer-make-and-model"});
             Object[] r = post(u, request(0x000B, u, ex), null);
             @SuppressWarnings("unchecked") java.util.Map<String, String> a = (java.util.Map<String, String>) r[1];
             int st = Integer.parseInt(a.getOrDefault("printer-state", "3"));
-            return new Status(st, a.getOrDefault("printer-state-reasons", "none"), a.getOrDefault("marker-names", ""),
+            Status s = new Status(st, a.getOrDefault("printer-state-reasons", "none"), a.getOrDefault("marker-names", ""),
                     a.getOrDefault("marker-levels", ""), a.getOrDefault("media-ready", ""));
+            String mm = a.getOrDefault("printer-make-and-model", "");
+            if (!mm.isEmpty()) {
+                s.name = mm;
+            }
+            return s;
         } catch (Exception e) {
             Log.w(TAG, "status " + u + ": " + e);
             return null;
@@ -289,9 +299,59 @@ final class Printer {
         }
     }
 
+    static final String UNSUPPORTED = "这台打印机不收";
+    private String formats = null;    // document-format-supported，查一次记住
+    private String model = null;      // printer-make-and-model
+
+    /** 打印机型号（上报、日志用）；查不到用 mDNS 找到时的默认名。 */
+    String name() {
+        info();
+        return model != null && !model.isEmpty() ? model : "打印机";
+    }
+
+    /** 查一次打印机支持哪些格式、什么型号（换了打印机也自己知道）。 */
+    private void info() {
+        String u = url;
+        if (formats != null || u == null) {
+            return;
+        }
+        try {
+            List<Object[]> ex = new ArrayList<>();
+            ex.add(new Object[] {0x44, "requested-attributes", "document-format-supported"});
+            ex.add(new Object[] {0x44, "", "printer-make-and-model"});
+            Object[] r = post(u, request(0x000B, u, ex), null);
+            @SuppressWarnings("unchecked") java.util.Map<String, String> a = (java.util.Map<String, String>) r[1];
+            formats = a.getOrDefault("document-format-supported", "");
+            model = a.getOrDefault("printer-make-and-model", "");
+            Log.i(TAG, "printer " + model + " formats " + formats);
+        } catch (Exception e) {
+            Log.w(TAG, "info: " + e);
+        }
+    }
+
+    /** 发一份多页文档（一个打印任务）。format 不在打印机支持的里面：返回 UNSUPPORTED 开头的话，调用方退回一页一页发。 */
+    String printDoc(byte[] doc, String format, boolean color, String jobName) {
+        String u = find();
+        if (u == null) {
+            return "找不到家里的打印机，看看打印机开机了没有，pad 是不是连着家里的 Wi‑Fi";
+        }
+        info();
+        if (formats != null && !formats.isEmpty() && !formats.contains(format)) {
+            return UNSUPPORTED + " " + format;
+        }
+        return send(u, doc, format, color, 1, jobName);
+    }
+
     /** 发一页（JPEG）。返回 null 表示收下了；否则是出错原因（给孩子听的）。 */
     String printJpeg(byte[] jpeg, boolean color, int copies, String jobName) {
         String u = find();
+        if (u == null) {
+            return "找不到家里的打印机，看看打印机开机了没有，pad 是不是连着家里的 Wi‑Fi";
+        }
+        return send(u, jpeg, "image/jpeg", color, copies, jobName);
+    }
+
+    private String send(String u, byte[] data, String format, boolean color, int copies, String jobName) {
         if (u == null) {
             return "找不到家里的打印机，看看打印机开机了没有，pad 是不是连着家里的 Wi‑Fi";
         }
@@ -306,7 +366,7 @@ final class Printer {
         try {
             List<Object[]> ex = new ArrayList<>();
             ex.add(new Object[] {0x42, "job-name", jobName.length() > 60 ? jobName.substring(0, 60) : jobName});
-            ex.add(new Object[] {0x49, "document-format", "image/jpeg"});
+            ex.add(new Object[] {0x49, "document-format", format});
             ex.add(new Object[] {0x02});
             ex.add(new Object[] {0x21, "copies", Math.max(1, Math.min(copies, 5))});
             ex.add(new Object[] {0x44, "print-color-mode", color ? "color" : "monochrome"});
@@ -314,10 +374,13 @@ final class Printer {
             ex.add(new Object[] {0x44, "print-scaling", "fit"});
             // 这台打印机一次只收一个任务：上一页还在打时回 0x0507（server-error-busy），等它空下来再发，最多等 3 分钟
             for (int attempt = 0; attempt < 60; attempt++) {
-                Object[] r = post(u, request(0x0002, u, ex), jpeg);
+                Object[] r = post(u, request(0x0002, u, ex), data);
                 int st = (Integer) r[0];
                 if (st <= 0x00FF) {  // 0x0000–0x00FF 成功
                     return null;
+                }
+                if (st == 0x040A && !"image/jpeg".equals(format)) {  // client-error-document-format-not-supported
+                    return UNSUPPORTED + " " + format;
                 }
                 if (st != 0x0507 && st != 0x0502) {  // 不是「忙」也不是「暂时不可用」：别重试了
                     Log.w(TAG, "print-job status 0x" + Integer.toHexString(st) + " " + r[1]);

@@ -191,10 +191,20 @@ def create_job(thread: str, fid: str, *, pages=None, color=None, copies: int = 1
     d.mkdir(parents=True, exist_ok=True)
     for i, data in enumerate(datas):
         (d / f"p{i}.jpg").write_bytes(data)
+    # 几页 / 几份：再存一个多页 PWG（server/pwg.py），新的 pad 一个任务发完，打印机连着走纸，不用每页重来一遍。
+    # 份数直接排进文档（逐份 1-2-3、1-2-3），不靠打印机的 copies。太大的（照片多、彩色）不给，pad 照旧一页一页发
+    pwg_size = 0
+    if len(datas) * copies > 1:
+        from server import pwg
+
+        doc = pwg.document(datas * copies, bool(color))
+        if len(doc) <= PWG_MAX:
+            (d / "doc.pwg").write_bytes(doc)
+            pwg_size = len(doc)
     job = {"id": jid, "thread": thread, "file": fid, "name": info["name"], "pages": [p + 1 for p in idx] if idx else [1],
            "total": total, "sheets": len(datas) * copies, "copies": copies, "color": bool(color), "auto_color": auto,
            "fit": fit, "by": by, "state": "queued", "created": time.time(), "error": "",
-           "batch": batch or jid, "done_pages": 0}
+           "batch": batch or jid, "done_pages": 0, "pwg": bool(pwg_size), "pwg_size": pwg_size}
     store._write_json(d / "job.json", job)
     return job
 
@@ -204,6 +214,11 @@ def get_job(jid: str) -> dict:
     if not p.is_file():
         raise KeyError(jid)
     return json.loads(p.read_text(encoding="utf-8"))
+
+
+def doc_path(jid: str) -> Path | None:
+    p = _jobs_dir() / store._check(jid) / "doc.pwg"
+    return p if p.is_file() else None
 
 
 def page_path(jid: str, i: int) -> Path | None:
@@ -220,6 +235,8 @@ def update_job(jid: str, **fields) -> dict:
 
 
 STALE_S = 30 * 60  # 排着的任务 30 分钟没被 pad 领走就作废：pad 关了一晚上，第二天一开机突然出纸不对
+STUCK_S = 15 * 60  # 「打印中」15 分钟没回结果：pad 那边断了（11/4 有一个一直挂着），标成出错，别一直显示在打
+PWG_MAX = 30 * 1024 * 1024  # 多页 PWG 超过这么大就不给（pad 从公网拉，作业纸一页灰度 ~0.5 MB，彩色照片一页能到 24 MB）
 
 
 def pending(thread: str) -> list[dict]:
@@ -244,6 +261,8 @@ def jobs(thread: str, limit: int = 10) -> list[dict]:
         except (OSError, ValueError):
             continue
         if j["thread"] == thread:
+            if j["state"] == "printing" and time.time() - j.get("printing_at", j["created"]) > STUCK_S:
+                j = update_job(j["id"], state="error", error="一直没收到打完的消息（pad 那边断了），不知道打没打出来，看一眼打印机")
             out.append(j)
     return sorted(out, key=lambda j: j["created"], reverse=True)[:limit]
 

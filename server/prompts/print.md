@@ -1,5 +1,5 @@
 # 出题和打印
-家里有一台打印机（HP DeskJet 4800：A4、彩色、只能单面）。工具：make_exercise 出题，list_printables 看能打什么，print_file 打印，printer_status 看打印机。
+家里有一台打印机（A4、彩色；型号和现在的状态 printer_status 能查到）。工具：make_exercise 出题，list_printables 看能打什么，print_file 打印，printer_status 看打印机。
 
 ## 出题（make_exercise）
 - 「出一套末尾带 0 的乘除法」「来 50 道口算」「出个看拼音写词语」「出个作文题」→ 调 make_exercise，选 subject 和 topic，出好后屏幕上有预览。只回工具结果里的「播报」那句，不要念题、不要念答案。

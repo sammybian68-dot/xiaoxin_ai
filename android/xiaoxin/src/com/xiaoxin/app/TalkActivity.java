@@ -990,6 +990,24 @@ public class TalkActivity extends Activity {
             }
             reportPrint(id, "printing", "", "", -1);
             int pages = job.getJSONArray("pages").length();
+            // 几页 / 几份：服务端排好了一个多页 PWG（job.pwg），一个打印任务发完，打印机连着走纸
+            // （原来一页一个任务、等打完再发下一页，DeskJet 每页都要从头准备 ~25 秒）。打印机不收 PWG 就退回一页一页发
+            if (job.optBoolean("pwg")) {
+                byte[] doc = httpGet(base() + "api/print/" + id + "/doc.pwg");
+                String err = printer.printDoc(doc, "image/pwg-raster", job.optBoolean("color"),
+                        job.optString("name", "小新"));
+                if (err == null) {
+                    printer.waitIdle(60 + 40 * job.optInt("sheets", pages));
+                    reportPrint(id, "done", "", printer.name(), job.optInt("sheets", pages), "pwg");
+                    reportPrinterStatus();
+                    return;
+                }
+                if (!err.startsWith(Printer.UNSUPPORTED)) {   // 缺纸、没开机这类：照实说，不再一页一页试
+                    reportPrint(id, "error", err, "", 0);
+                    return;
+                }
+                android.util.Log.i("XxPrint", "printer took no PWG, page by page: " + err);
+            }
             for (int i = 0; i < pages; i++) {
                 byte[] jpeg = httpGet(base() + "api/print/" + id + "/page/" + i);
                 String err = printer.printJpeg(jpeg, job.optBoolean("color"), job.optInt("copies", 1),
@@ -1000,7 +1018,7 @@ public class TalkActivity extends Activity {
                 }
                 printer.waitIdle(120);  // 等这页出完再发下一页（打印机一次只收一个任务）
             }
-            reportPrint(id, "done", "", "HP DeskJet 4800", pages);
+            reportPrint(id, "done", "", printer.name(), pages, "jpeg");
             reportPrinterStatus();
         } catch (Exception e) {
             android.util.Log.w("XxPrint", "job " + id + ": " + e);
@@ -1062,6 +1080,10 @@ public class TalkActivity extends Activity {
     }
 
     private void reportPrint(String id, String state, String error, String printerName, int donePages) {
+        reportPrint(id, state, error, printerName, donePages, "");
+    }
+
+    private void reportPrint(String id, String state, String error, String printerName, int donePages, String how) {
         try {
             java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(base() + "api/print/" + id + "/result").openConnection();
                 c.setRequestMethod("POST");
@@ -1071,6 +1093,9 @@ public class TalkActivity extends Activity {
             org.json.JSONObject o = new org.json.JSONObject().put("state", state).put("error", error).put("printer", printerName);
             if (donePages >= 0) {
                 o.put("done_pages", donePages);
+            }
+            if (!how.isEmpty()) {
+                o.put("how", how);
             }
             byte[] body = o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
             c.getOutputStream().write(body);
