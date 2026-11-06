@@ -255,7 +255,6 @@ function hubMessage(m, kind) {
   const known = state.conv.messages.findIndex((x) => x.id === m.id);
   if (known >= 0) state.conv.messages[known] = { ...state.conv.messages[known], ...m };
   else if (kind === "msg") state.conv.messages.push(m);
-  if (kind === "msg.update" && m.sing) window.singCardUpdate?.(m);   // 别的设备唱了真人版：卡片上多出「真人唱」
   if (kind !== "msg" || m.role === "note") return;
   if ($("messages").querySelector(`[data-mid="${CSS.escape(m.id)}"]`)) return;  // 本地已经画了
   // 打印结果、画好的图是后台发来的，不是这台正在出字的那条
@@ -510,7 +509,7 @@ function appendMessage(m) {
       + `${m.via === "voice" ? '<div class="via">🎤 语音输入</div>' : m.via === "talk" ? '<div class="via">📞 自由对话</div>' : ""}</div>`;
     if (replay) row.querySelector(".replay").addEventListener("click", (e) => replayUtterance(m, row, e.currentTarget));
   } else {
-    const files = m.sing ? (m.files || []).filter((f) => f.id !== m.sing.file && f.id !== m.sing.real?.file) : m.files;  // 翻唱（和真人版）的 mp3 在音乐卡片里放，不再列成附件
+    const files = m.sing ? (m.files || []).filter((f) => f.id !== m.sing.file) : m.files;  // 翻唱的 mp3 在音乐卡片里放，不再列成附件
     row.innerHTML = `<img src="static/icon.png" alt="" class="avatar sm"><div class="bubble">${attachmentsHtml(files)}<div class="text"></div>`
       + `<div class="sources" hidden></div>`
       + `<div class="actions"><button type="button" data-act="copy">复制</button><button type="button" data-act="read">朗读</button></div>`
@@ -1246,7 +1245,7 @@ function startOriginals(pending) {
 // opts.raw：录唱歌（sing.js）——降噪、回声消除、自动增益都关（唱歌被降噪会发闷、长音被吃掉），按声卡原生采样率录，不重采样
 class Recorder {
   constructor(onLevel, onChunk, opts = {}) {
-    this.onLevel = onLevel; this.onChunk = onChunk; this.chunks = []; this.rate = 16000; this.raw = !!opts.raw; this.rawRate = opts.rate || 0;
+    this.onLevel = onLevel; this.onChunk = onChunk; this.chunks = []; this.rate = 16000; this.raw = !!opts.raw;
   }
   async start() {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("这个页面拿不到麦克风（要 https）");
@@ -1254,7 +1253,7 @@ class Recorder {
       ? { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
       : { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (this.raw) this.rate = Math.min(this.rawRate || this.ctx.sampleRate, this.ctx.sampleRate);
+    if (this.raw) this.rate = this.ctx.sampleRate;
     const src = this.ctx.createMediaStreamSource(this.stream);
     this.node = this.ctx.createScriptProcessor(2048, 1, 1);  // 约 43 ms 一块，攒到 100 ms 发
     const ratio = this.ctx.sampleRate / this.rate;

@@ -31,40 +31,9 @@
 .sgc-sub em { font-style: normal; color: var(--sg); font-weight: 600; }
 .sgc-meta small { font-size: 12px; color: rgba(255,255,255,.55); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sgc-shrink { display: none; }
-.sgc-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.sgc-acts:empty { display: none; }
-.sgc-wx, .sgc-me { border: 0; border-radius: 12px; padding: 4px 11px; font-size: 12px; line-height: 1.5; font-weight: 600; color: #fff; }
-.sgc-wx { background: rgba(7,193,96,.9); box-shadow: 0 3px 10px rgba(7,193,96,.3); }
-.sgc-me { background: rgba(255,255,255,.16); }
-.sgc.full .sgc-acts { position: absolute; z-index: 3; right: 18px; top: max(14px, env(safe-area-inset-top)); margin: 0; gap: 10px; }
-.sgc.full .sgc-wx, .sgc.full .sgc-me { padding: 10px 16px; font-size: 15px; }
-.sgc-ver { display: inline-flex; justify-self: start; margin-top: 4px; padding: 2px; border-radius: 12px; background: rgba(0,0,0,.28); }
-.sgc-ver[hidden] { display: none; }
-.sgc-ver button { border: 0; background: none; color: rgba(255,255,255,.7); font-size: 12px; padding: 4px 10px; border-radius: 10px; }
-.sgc-ver button[aria-selected="true"] { background: var(--sg); color: #fff; font-weight: 600; }
-.sgc.full .sgc-ver { justify-self: center; }
-.sgc.full .sgc-ver button { font-size: 15px; padding: 7px 16px; }
-
-/* 跟着伴奏唱：全屏里把播放控制换成录音面板 */
-.sgc-kara { display: grid; justify-items: center; gap: 10px; padding: 6px 14px 16px; }
-.sgc-kara[hidden], .sgc.kara .sgc-ctl, .sgc.kara .sgc-acts, .sgc.kara .sgc-ver { display: none; }
-.sgc.kara .sgc-seek { pointer-events: none; }
-.sgc.full .sgc-kara { grid-area: ctl; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-.sgk-who { display: flex; gap: 8px; }
-.sgk-who[hidden] { display: none; }
-.sgk-who button { border: 1px solid rgba(255,255,255,.3); background: none; color: #fff; border-radius: 16px; padding: 5px 14px; }
-.sgk-who button[aria-pressed="true"] { background: var(--sg); border-color: var(--sg); font-weight: 600; }
-.sgk-say { --lv: 0; margin: 0; font-size: 15px; color: rgba(255,255,255,.85); text-align: center; min-height: 1.5em; }
-.sgc-kara[data-phase="rec"] .sgk-say { color: #ff8a80; text-shadow: 0 0 calc(var(--lv) * 14px) rgba(255,80,80,.9); }
-.sgk-btns { display: flex; gap: 14px; }
-.sgk-btns button { border: 0; border-radius: 26px; padding: 12px 22px; font-size: 16px; color: #fff; }
-.sgk-x, .sgk-ai { background: rgba(255,255,255,.14); }
-.sgk-ai[hidden], .sgk-guide[hidden] { display: none; }
-.sgk-guide { border: 1px solid rgba(255,255,255,.3); background: none; color: rgba(255,255,255,.85); border-radius: 16px; padding: 5px 14px; font-size: 14px; }
-.sgk-guide[aria-pressed="true"] { background: var(--sg); border-color: var(--sg); color: #fff; font-weight: 600; }
-.sgk-go { background: #e5484d; font-weight: 700; min-width: 140px; box-shadow: 0 6px 16px rgba(229,72,77,.4); }
-.sgk-go:disabled { opacity: .5; }
-.sgc.kara .sgc-lines p { cursor: pointer; }
+.sgc-wx { justify-self: start; margin-top: 4px; border: 0; border-radius: 12px; padding: 4px 11px; font-size: 12px; line-height: 1.5;
+  background: rgba(7,193,96,.9); color: #fff; font-weight: 600; box-shadow: 0 3px 10px rgba(7,193,96,.3); }
+.sgc.full .sgc-wx { position: absolute; right: 18px; top: max(14px, env(safe-area-inset-top)); padding: 10px 16px; font-size: 15px; }
 
 /* 发到微信：整首 / 选一段（点歌词、拖两头） */
 .sgs-song { margin: -4px 0 6px; color: var(--muted); font-size: 14px; }

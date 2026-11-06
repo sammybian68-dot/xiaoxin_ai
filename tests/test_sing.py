@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from server import prompts, store
 from server.family import members
-from server.sing import job, karaoke, qq, video, voices
+from server.sing import job, qq, video, voices
 from server.tools import printer as printer_tools
 from server.tools import registry
 from server.tools import sing as sing_tools
@@ -39,7 +39,7 @@ def home(client):
 @pytest.fixture
 def pipe(monkeypatch):
     """假的 QQ 音乐和 SoulX：搜出伴奏、现场版和原版各一首；fetch 写个假 mp3；convert 记下拿什么转的。"""
-    st = {"fetch": {"ok": True, "quality": "320k"}, "converted": [], "videos": [], "accs": [],
+    st = {"fetch": {"ok": True, "quality": "320k"}, "converted": [], "videos": [],
           "songs": [{**JIANGNAN, "mid": "m_acc", "title": "江南 (伴奏)"}, {**JIANGNAN, "mid": "m_live", "title": "江南 (Live)"}, JIANGNAN]}
     monkeypatch.setattr(job, "service_up", lambda: True)
     monkeypatch.setattr(qq, "usable", lambda: True)
@@ -59,7 +59,6 @@ def pipe(monkeypatch):
     monkeypatch.setattr(qq, "fetch", fetch)
     monkeypatch.setattr(job, "convert", convert)
     monkeypatch.setattr(video, "ensure", lambda fid, audio, sing, *a, **k: st["videos"].append((fid, a, k)))
-    monkeypatch.setattr(karaoke, "ensure", lambda fid, song: st["accs"].append(fid))
     return st
 
 
@@ -151,7 +150,7 @@ def test_sing_song_lands_as_music_card(home, pipe):
     assert s["cover"] == JIANGNAN["album_mid"] and "风到这里就是粘" in s["lrc"] and s["seconds"] == 267.2
     assert pipe["converted"] == [(f"{v['id']}.wav", f"{JIANGNAN['mid']}.mp3")]   # 伴奏、现场版都没挑
     assert (job.songs_dir() / f"{JIANGNAN['mid']}.mp3").exists()                 # 原曲缓存着，下次不用再下
-    assert pipe["videos"] == [(f["id"], (), {})] and pipe["accs"] == [f["id"]]     # 整首的分享视频、跟着唱的伴奏先做着
+    assert pipe["videos"] == [(f["id"], (), {})]                                   # 整首的分享视频先做着
 
 
 def test_sing_with_my_own_voice_says_you(home, pipe):

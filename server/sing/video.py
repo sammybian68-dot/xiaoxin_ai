@@ -118,7 +118,7 @@ def ensure(fid: str, audio: Path, sing: dict, start: float | None = None, end: f
     spec = {"audio": str(audio), "out": str(d / f"{k}.mp4"), "start": a, "end": b, "seconds": seconds,
             "cover": str(cover) if cover and cover.exists() else "", "lrc": sing.get("lrc") or "",
             "off": float(off or 0), "title": sing.get("title", ""), "artist": sing.get("artist", ""),
-            "singer": sing.get("singer", ""), "person": sing.get("real") is True}
+            "singer": sing.get("singer", "")}
     with _lock:
         if (_jobs.get(k) or {}).get("state") == "making":
             return {"key": k, **_jobs[k]}
@@ -254,10 +254,10 @@ def render(spec: dict, progress=None) -> None:
     title = f"《{spec.get('title') or '这首歌'}》"
     t_im = _text(title, _fit(title, "bold", 58, W - 80), (255, 255, 255, 255))
     base.alpha_composite(t_im, ((W - t_im.width) // 2, 96))
-    sub = f"{spec.get('singer') or '家里人'} {'亲自唱' if spec.get('person') else '的 AI 翻唱'}" + (f" · 原唱 {spec['artist']}" if spec.get("artist") else "")
+    sub = f"{spec.get('singer') or '家里人'} 的 AI 翻唱" + (f" · 原唱 {spec['artist']}" if spec.get("artist") else "")
     s_im = _text(sub, _fit(sub, "sans", 30, W - 100), (255, 255, 255, 190))
     base.alpha_composite(s_im, ((W - s_im.width) // 2, 96 + t_im.height + 14))
-    mark = _text("小新 · 跟着伴奏唱" if spec.get("person") else "小新 · AI 翻唱", _font("sans", 22), (255, 255, 255, 120))
+    mark = _text("小新 · AI 翻唱", _font("sans", 22), (255, 255, 255, 120))
     base.alpha_composite(mark, ((W - mark.width) // 2, H - 66))
 
     disc_r = 210

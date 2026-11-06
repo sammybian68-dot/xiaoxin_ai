@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 from server import store
-from server.sing import karaoke, qq, video, voices
+from server.sing import qq, video, voices
 
 log = logging.getLogger("xiaoxin.sing")
 
@@ -193,10 +193,9 @@ def _work(thread: str, kid: dict, voice: dict, info: dict) -> None:
         store.append(thread, {"role": "assistant", "model": "", "via": "sing", "files": [meta], "sing": sing,
                               "text": f"{_call(name)}{who}唱的《{info['title']}》做好了，点播放听听吧。"})
         try:
-            video.ensure(fid, p, sing)   # 整首的分享视频、跟着唱的伴奏先做着，点的时候就不用等
+            video.ensure(fid, p, sing)   # 整首的分享视频先做着，点「发到微信」就不用等
         except video.VideoError as e:
             log.warning("sing video %s: %s", fid, e)
-        karaoke.ensure(fid, p)
     except SingError as e:
         store.append(thread, {"role": "assistant", "model": "", "via": "sing", "text": f"{_call(name)}{e}。"})
     except Exception as e:  # noqa: BLE001 网络、磁盘：说一句没唱成，原因记下来
