@@ -132,7 +132,7 @@ function hubConnect() {
   clearTimeout(hub.timer);
   const url = new URL("api/hub", location.href).href.replace(/^http/, "ws");
   const ws = hub.ws = new WebSocket(url);
-  ws.onopen = () => { hub.wait = 2000; hubCatchUp(); printCatchUp(); window.pracResume?.(); };
+  ws.onopen = () => { hub.wait = 2000; hubCatchUp(); printCatchUp(); window.pracResume?.(); checkVersion(); };
   ws.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (ev.type === "ping") { ws.send('{"type":"pong"}'); return; }
@@ -179,6 +179,17 @@ function remoteReload(ev, waited = 0) {
     if (n <= 0) { clearInterval(t); location.reload(); }
   }, 1000);
 }
+
+// 退到后台的设备（手机上的家长 App）被系统冻住，部署时的 reload 收不到，回来只补消息、一直是旧网页（2026-11-07 手机上开了
+// 10 小时的页面没有 sing.js，翻唱卡片出不来）：hub 重连、回到前台时自己问一下版本
+async function checkVersion() {
+  if (!myVersion) return;
+  try {
+    const { web } = await api("api/version").then(json);
+    if (web && web !== myVersion) remoteReload({ version: web, why: "小新更新了" });
+  } catch (_) { /* 连不上：下次重连再看 */ }
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkVersion(); });
 
 // ---------------------------------------------------------------- 侧栏：群信息（成员、下一个闹钟、爸妈发的文件）
 
