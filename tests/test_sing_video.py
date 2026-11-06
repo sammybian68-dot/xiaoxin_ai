@@ -144,6 +144,30 @@ def test_api_rejects_unknown_and_non_sing_files(client, song, fake_render):
     assert client.get(f"/api/sing/video/{song['fid']}.mp4").status_code == 404   # 还没做
 
 
+def test_api_wait_returns_when_ready(client, song, fake_render, monkeypatch):
+    """带 wait：还在做就在服务端等着，做好了一次就回 ready（手机经公网一来一回有时 3 秒，少问几次）。"""
+    import threading
+
+    real = video._run
+    monkeypatch.setattr(video, "_run", lambda k, spec: threading.Timer(0.4, real, (k, spec)).start())
+    t = time.monotonic()
+    st = client.post("/api/sing/video", json={"file": song["fid"], "start": 5, "end": 20, "wait": 3}).json()
+    assert st["state"] == "ready" and st["url"].endswith("_50_200.mp4") and time.monotonic() - t < 2.5
+    st = client.post("/api/sing/video", json={"file": song["fid"], "start": 5, "end": 30, "wait": 0.1}).json()
+    assert st["state"] == "making"                                  # 没等够：照旧回进度
+
+
+def test_api_wait_error_reported_once(client, song, fake_render, monkeypatch):
+    import threading
+
+    real = video._run
+    monkeypatch.setattr(video, "_run", lambda k, spec: threading.Timer(0.3, real, (k, {**spec, "fail": len(fake_render) == 0})).start())
+    st = client.post("/api/sing/video", json={"file": song["fid"], "wait": 3}).json()
+    assert st["state"] == "error"
+    assert _until_ready(client, {"file": song["fid"], "wait": 3})["state"] == "ready"   # 再要就重做，不会再报一次错
+    assert len(fake_render) == 2
+
+
 def test_api_error_then_retry_renders_again(client, song, fake_render, monkeypatch):
     real = video._run
 

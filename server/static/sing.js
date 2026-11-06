@@ -561,18 +561,20 @@ function singFull(c) {
 
 // ---------------------------------------------------------------- 发到微信
 // 整首或者选一段，服务端做成视频（/api/sing/video：封面 + 转唱片 + 滚动歌词），APK 下载进相册「Movies/小新」再拉起微信发。
-// 选一段：点一句当开头、再点一句当结尾（结尾那句唱完），也可以拖两头。
+// 选一段：点一句当开头、再点一句当结尾（结尾那句唱完），也可以拖两头。试听着改选段不停，从改的那头接着放。
+// 手机经公网下载视频只有 0.2～0.8 MB/s：选好停 1.2 秒（整首 4 秒）就先让服务端做、APK 先下（prepareVideo，换了选段 APK
+// 把没人等的旧的停掉），点「发到微信」多半已经在手机上了。
 
 const SING_VIDEO_MAX = 299;   // 微信聊天视频最长 5 分钟，和 server/sing/video.py 的 MAX_S 一样
 const SING_CLIP_MIN = 3;
 const SING_CREDIT = /^[^：:]{0,14}[：:]|^.{0,40} - .{0,40}$/;   // 「词：某某」「泡沫 - 邓紫棋」，同 server/sing/practice.py
-const singShare = { c: null, mode: "all", a: 0, b: 0, dur: 0, pick: -1, gen: 0, audio: null, idx: [] };
+const singShare = { c: null, mode: "all", a: 0, b: 0, dur: 0, pick: -1, gen: 0, audio: null, idx: [], drag: "", prep: 0, prepTimer: 0 };
 const singWxBridge = () => { const b = window.XiaoxinNative || window.XiaoxinParent; return b?.shareVideo ? b : null; };
 
 function singShareOpen(c) {
   const sh = singShare;
-  sh.c = c; sh.gen++; sh.pick = -1;
-  sh.audio?.pause(); sh.audio = null;   // 试听的是这一首：上次开的可能是别的歌
+  singShareRelease();   // 试听的是这一首：上次开的可能是别的歌
+  sh.c = c; sh.gen++; sh.pick = -1; sh.drag = "";
   sh.dur = c.dur || Number(c.s.seconds) || 0;
   sh.a = 0; sh.b = sh.dur;
   c.audio?.pause();
@@ -585,6 +587,7 @@ function singShareOpen(c) {
   $("sgs-go").disabled = false;
   singShareMode("all");
   $("sing-share").showModal();
+  singShareAudio();
 }
 
 /** 第 i 句在 mp3 里的秒（卡片上调过「词快点 / 词慢点」也算上）。 */
@@ -603,11 +606,13 @@ function singShareMode(m) {
     sh.b = Math.min(sh.dur, sh.a + 30);
   }
   singShareSync();
+  singShareFollow("a");
 }
 
 function singShareLine(i) {
   const sh = singShare, n = sh.c.lines.length;
   const end = (j) => (j + 1 < n ? Math.min(sh.dur, singShareT(j + 1) + 0.8) : sh.dur);
+  let which = "a";
   if (sh.pick < 0 || i < sh.pick) {
     sh.pick = i;
     sh.a = Math.max(0, singShareT(i) - 0.3);
@@ -616,9 +621,10 @@ function singShareLine(i) {
     sh.a = Math.max(0, singShareT(sh.pick) - 0.3);
     sh.b = end(i);
     sh.pick = -1;
+    which = "b";
   }
-  singShareStopTry();
   singShareSync();
+  singShareFollow(which);
 }
 
 function singShareSync() {
@@ -639,6 +645,7 @@ function singShareSync() {
   $("sgs-note").textContent = len > SING_VIDEO_MAX
     ? `微信里的视频最长 5 分钟，只发${part ? "这段" : ""}前 ${singTime(SING_VIDEO_MAX)}，结尾淡出`
     : (part ? "" : `整首 ${singTime(sh.dur)}`);
+  singSharePrepSoon();
 }
 
 function singShareDrag(which) {
@@ -648,22 +655,84 @@ function singShareDrag(which) {
   else sh.b = Math.max(v, sh.a + SING_CLIP_MIN);
   sh.a = Math.max(0, sh.a); sh.b = Math.min(sh.dur, sh.b);
   sh.pick = -1;
+  sh.drag = which;
   singShareSync();
 }
 
+// 试听用卡片自己的播放器：听过的那部分已经缓冲在手机上，跳来跳去不用再下。公网那台机器带宽小，有别的在下载时
+// 每次重新要一段 mp3 要排 3～6 秒（2026-11-07 手机上实测开始试听 6.6 秒、点一句跳过去 6.4 秒）
+function singShareAudio() {
+  const sh = singShare;
+  if (!sh.audio) {
+    const a = sh.audio = singEnsureAudio(sh.c);
+    a.ontimeupdate = () => { if (!sh.drag && sh.mode === "part" && a.currentTime >= sh.b) singShareStopTry(); };
+    a.onended = () => singShareStopTry();
+  }
+  return sh.audio;
+}
+
+function singShareRelease() {
+  const a = singShare.audio;
+  if (!a) return;
+  a.pause();
+  a.ontimeupdate = a.onended = null;   // 卡片接着用这个播放器：别再按选段停
+  singShare.audio = null;
+}
+
+const singShareTrying = () => !!singShare.audio && !singShare.audio.paused;
+
 function singShareTry() {
   const sh = singShare;
-  if (sh.audio && !sh.audio.paused) { singShareStopTry(); return; }
-  const a = sh.audio || (sh.audio = new Audio(fileUrl({ id: sh.c.s.file })));
-  a.ontimeupdate = () => { if (a.currentTime >= sh.b) singShareStopTry(); };
+  if (singShareTrying()) { singShareStopTry(); return; }
+  const a = singShareAudio();
+  if (sing.cur && sing.cur !== sh.c) sing.cur.audio?.pause();
+  sing.cur = sh.c;
   a.currentTime = sh.mode === "part" ? sh.a : 0;
   stopSpeaking();
   a.play().then(() => { $("sgs-try").textContent = "❚❚ 停"; }).catch((err) => toast("放不了：" + err.message));
 }
 
+/** 试听着改了选段：不停，改开头就从开头放，改结尾就放结尾前 3 秒。 */
+function singShareFollow(which) {
+  const sh = singShare;
+  if (!singShareTrying() || sh.mode !== "part") return;
+  sh.audio.currentTime = which === "b" ? Math.max(sh.a, sh.b - 3) : sh.a;
+}
+
 function singShareStopTry() {
   singShare.audio?.pause();
   $("sgs-try").textContent = "▶ 试听这段";
+}
+
+function singShareBody() {
+  const sh = singShare, part = sh.mode === "part";
+  return JSON.stringify({ file: sh.c.s.file, off: sh.c.off, wait: 6, ...(part ? { start: sh.a, end: sh.b } : {}) });
+}
+
+/** 等服务端把这段做好（每次在服务端等最多 6 秒），给下载地址；onPct 报做到多少。alive() 不成立了（改了选段、关了）返回 null。 */
+async function singShareMake(body, alive, onPct) {
+  for (;;) {
+    const st = await api("api/sing/video", { method: "POST", headers: { "Content-Type": "application/json" }, body }).then(json);
+    if (!alive()) return null;
+    if (st.state === "ready") return new URL(st.url, location.href).href;
+    if (st.state === "error") throw new Error(`${st.error || "视频没做出来"}，再点一次试试`);
+    onPct(st.pct || 0);
+    await new Promise((r) => setTimeout(r, 100));
+    if (!alive()) return null;
+  }
+}
+
+function singSharePrepSoon() {
+  const sh = singShare;
+  clearTimeout(sh.prepTimer);
+  const prep = ++sh.prep;
+  if (!singWxBridge()?.prepareVideo) return;   // 老 APK 没有「先下着」：只让服务端先做也省不了多少，点了再做
+  sh.prepTimer = setTimeout(() => {
+    if (!$("sing-share").open || sh.drag) return;
+    singShareMake(singShareBody(), () => prep === sh.prep && $("sing-share").open, () => {})
+      .then((url) => { if (url && prep === sh.prep) singWxBridge()?.prepareVideo(url); })
+      .catch(() => {});
+  }, sh.mode === "part" ? 1200 : 4000);   // 一打开是整首（10 MB 上下），多半接着要选一段：多等一会儿再下
 }
 
 async function singShareGo() {
@@ -674,22 +743,11 @@ async function singShareGo() {
   const go = $("sgs-go"), note = $("sgs-note");
   go.disabled = true;
   note.textContent = "正在做视频…";
-  const body = JSON.stringify({ file: c.s.file, off: c.off, ...(part ? { start: sh.a, end: sh.b } : {}) });
   try {
-    for (;;) {
-      const st = await api("api/sing/video", { method: "POST", headers: { "Content-Type": "application/json" }, body }).then(json);
-      if (gen !== sh.gen) return;
-      if (st.state === "ready") {
-        const name = `${c.s.singer}唱的《${c.s.title}》${part ? "（片段）" : ""}.mp4`;
-        note.textContent = "视频好了，正在打开微信…";
-        bridge.shareVideo(new URL(st.url, location.href).href, name);
-        return;
-      }
-      if (st.state === "error") throw new Error(`${st.error || "视频没做出来"}，再点一次试试`);
-      note.textContent = `正在做视频… ${st.pct || 0}%`;
-      await new Promise((r) => setTimeout(r, 1000));
-      if (gen !== sh.gen) return;
-    }
+    const url = await singShareMake(singShareBody(), () => gen === sh.gen, (pct) => { note.textContent = `正在做视频… ${pct}%`; });
+    if (!url) return;
+    note.textContent = "视频好了，正在打开微信…";
+    bridge.shareVideo(url, `${c.s.singer}唱的《${c.s.title}》${part ? "（片段）" : ""}.mp4`);
   } catch (err) {
     if (gen !== sh.gen) return;
     note.textContent = err.message;
@@ -697,10 +755,11 @@ async function singShareGo() {
   }
 }
 
-/** 原生下载完、拉起了微信（open），或者没成（error + msg）。 */
+/** 原生下载着（progress + pct）、下完拉起了微信（open），或者没成（error + msg）。 */
 window.xiaoxinShareVideo = (e) => {
   const d = $("sing-share");
   if (!d?.open) return;
+  if (e?.state === "progress") { $("sgs-note").textContent = `正在下载视频… ${e.pct}%`; return; }
   if (e?.state === "open") { d.close(); toast("视频也存进相册了"); return; }
   $("sgs-note").textContent = e?.msg || "没发出去，再试一次";
   $("sgs-go").disabled = false;
@@ -716,10 +775,14 @@ $("sgs-lines")?.addEventListener("click", (e) => {
 });
 $("sgs-a")?.addEventListener("input", () => singShareDrag("a"));
 $("sgs-b")?.addEventListener("input", () => singShareDrag("b"));
+for (const w of ["a", "b"]) {
+  const done = () => { if (singShare.drag !== w) return; singShare.drag = ""; singShareFollow(w); singSharePrepSoon(); };
+  for (const ev of ["change", "pointerup", "touchend", "pointercancel"]) $(`sgs-${w}`)?.addEventListener(ev, done);
+}
 $("sgs-try")?.addEventListener("click", singShareTry);
 $("sgs-go")?.addEventListener("click", singShareGo);
 $("sgs-no")?.addEventListener("click", () => $("sing-share").close());
-$("sing-share")?.addEventListener("close", () => { singShare.gen++; singShareStopTry(); });
+$("sing-share")?.addEventListener("close", () => { singShare.gen++; singShareStopTry(); singShareRelease(); });
 
 // ---------------------------------------------------------------- 设置 → 唱歌
 

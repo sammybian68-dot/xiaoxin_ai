@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -163,14 +164,22 @@ def _sec(v) -> float | None:
 
 @router.post("/api/sing/video")
 async def sing_video(request: Request, body: dict = Body(...)) -> dict:
-    """要一段分享用的视频：{file, start?, end?, off?}（秒；不给起止就是整首，off 是卡片上调的歌词提前量）。
-    做好了 state=ready、带 url；还在做是 state=making + pct，隔一秒再要一次（同一段不会重复做）；error 再要一次就重做。"""
+    """要一段分享用的视频：{file, start?, end?, off?, wait?}（秒；不给起止就是整首，off 是卡片上调的歌词提前量）。
+    做好了 state=ready、带 url；还在做是 state=making + pct，再要一次（同一段不会重复做）；error 再要一次就重做。
+    wait（最多 8 秒）：还在做就在这儿等着，做好了马上回。手机经公网一来一回有时要 3 秒，一秒问一次光问就要多花好几秒。"""
     fid = str(body.get("file") or "")
     audio, sing = await asyncio.to_thread(_sing_file, request, fid)
+    start, end, off = _sec(body.get("start")), _sec(body.get("end")), _sec(body.get("off")) or 0.0
     try:
-        st = video.ensure(fid, audio, sing, _sec(body.get("start")), _sec(body.get("end")), _sec(body.get("off")) or 0.0)
+        st = video.ensure(fid, audio, sing, start, end, off)
     except video.VideoError as e:
         raise HTTPException(400, str(e))
+    until = time.monotonic() + min(8.0, max(0.0, _sec(body.get("wait")) or 0.0))
+    while st["state"] == "making" and time.monotonic() < until:
+        await asyncio.sleep(0.2)
+        st = video.state(st["key"])
+        if st["state"] == "error":   # 等着的时候做坏了：照 ensure 的规矩只报这一次，下回再要就重做
+            st = video.ensure(fid, audio, sing, start, end, off)
     if st["state"] == "ready":
         st["url"] = f"api/sing/video/{st['key']}.mp4"
     return st

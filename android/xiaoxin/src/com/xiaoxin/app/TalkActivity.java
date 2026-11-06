@@ -56,6 +56,7 @@ public class TalkActivity extends Activity {
     private static final String DEFAULT_BASE = "https://47.116.13.227:8183/xiaoxin/";
 
     private SharedPreferences prefs;
+    private VideoShare videos;
     private WebView web;
     private Talk talk;
     // 待命唤醒：本机模型认出唤醒词才连服务端。standbyOn 是用户开没开；woken 表示这通电话是唤醒起来的，挂断后回待命
@@ -83,6 +84,7 @@ public class TalkActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("xiaoxin", MODE_PRIVATE);
+        videos = new VideoShare(new java.io.File(getCacheDir(), "share-video"), this::key);
         takeConfig(getIntent());
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().setStatusBarColor(0xFF0F1115);
@@ -254,6 +256,11 @@ public class TalkActivity extends Activity {
         runOnUiThread(() -> web.evaluateJavascript("window.xiaoxinShareVideo && window.xiaoxinShareVideo(" + arg + ")", null));
     }
 
+    private void shareVideoProgress(int pct) {
+        runOnUiThread(() -> web.evaluateJavascript(
+                "window.xiaoxinShareVideo && window.xiaoxinShareVideo({state:'progress',pct:" + pct + "})", null));
+    }
+
     @Override
     protected void onStop() {
         super.onStop();
@@ -419,8 +426,22 @@ public class TalkActivity extends Activity {
             }, "save-image").start();
         }
 
-        /** 翻唱卡片「发到微信」：后台下载这段视频，存进相册 Movies/小新，再拉起微信「发送给朋友」（找不到就让人在微信的几个入口里选，
-         *  没装微信就是系统分享）。好了回调 window.xiaoxinShareVideo({state:'open'})，没成 {state:'error', msg}。 */
+        /** 「发到微信」面板里选好一段：先在后台下着（VideoShare），点了发就不用再等下载。 */
+        @android.webkit.JavascriptInterface
+        public void prepareVideo(String url) {
+            if (url == null || !url.startsWith(base())) {
+                return;
+            }
+            try {
+                videos.prepare(url);
+            } catch (java.io.IOException e) {
+                android.util.Log.i("XxShare", "prepare " + url + ": " + e);
+            }
+        }
+
+        /** 翻唱卡片「发到微信」：等这段视频下完（prepareVideo 已经在下就接着等，下着报 {state:'progress', pct}），存进相册
+         *  Movies/小新，再拉起微信「发送给朋友」（找不到就让人在微信的几个入口里选，没装微信就是系统分享）。
+         *  好了回调 window.xiaoxinShareVideo({state:'open'})，没成 {state:'error', msg}。 */
         @android.webkit.JavascriptInterface
         public void shareVideo(String url, String name) {
             if (url == null || !url.startsWith(base())) {
@@ -428,38 +449,12 @@ public class TalkActivity extends Activity {
                 return;
             }
             new Thread(() -> {
-                Uri dst = null;
-                android.content.ContentResolver cr = getContentResolver();
+                Uri dst;
                 try {
-                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-                    c.setRequestProperty("Authorization", "Bearer " + key());
-                    c.setConnectTimeout(8000);
-                    c.setReadTimeout(120000);
-                    if (c.getResponseCode() != 200) {
-                        throw new java.io.IOException("HTTP " + c.getResponseCode());
-                    }
-                    android.content.ContentValues v = new android.content.ContentValues();
-                    String fn = (name == null || name.isEmpty() ? "xiaoxin.mp4" : name.replaceAll("[\\\\/:*?\"<>|]", "_"));
-                    v.put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, fn);
-                    v.put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4");
-                    v.put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, android.os.Environment.DIRECTORY_MOVIES + "/小新");
-                    v.put(android.provider.MediaStore.Video.Media.IS_PENDING, 1);
-                    dst = cr.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v);
-                    try (java.io.InputStream in = c.getInputStream(); java.io.OutputStream out = cr.openOutputStream(dst)) {
-                        byte[] buf = new byte[65536];
-                        int n;
-                        while ((n = in.read(buf)) > 0) {
-                            out.write(buf, 0, n);
-                        }
-                    }
-                    v.clear();
-                    v.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0);
-                    cr.update(dst, v, null, null);
+                    java.io.File f = videos.get(url, TalkActivity.this::shareVideoProgress);
+                    dst = VideoShare.toGallery(getContentResolver(), f, name);
                 } catch (Exception e) {
                     android.util.Log.w("XxShare", "video " + url + ": " + e);
-                    if (dst != null) {
-                        cr.delete(dst, null, null);
-                    }
                     shareVideoDone("error", "视频没下载下来，网络好点再试");
                     return;
                 }

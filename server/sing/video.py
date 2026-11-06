@@ -356,8 +356,10 @@ def render(spec: dict, progress=None) -> None:
         ff += ["-af", ",".join(af)]
     out = Path(spec["out"])
     part = out.with_name(out.stem + ".part.mp4")
-    ff += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", "-profile:v", "main",
-           "-g", str(FPS * 5), "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-movflags", "+faststart", "-shortest", str(part)]
+    # 手机经公网那台机器下载只有 0.2～0.8 MB/s，视频越小越快发出去：medium + crf30 + 关键帧 10 秒一个，比 veryfast/crf28
+    # 小 22%，编码不慢，歌词照样清楚（2026-11-07 实测 81 秒那段 3.14 → 2.44 MB）。翻唱本来就是 24 kHz 单声道，声音给 64k 单声道够了
+    ff += ["-c:v", "libx264", "-preset", "medium", "-crf", "30", "-pix_fmt", "yuv420p", "-profile:v", "main",
+           "-g", str(FPS * 10), "-c:a", "aac", "-b:a", "64k", "-ac", "1", "-movflags", "+faststart", "-shortest", str(part)]
     frames = max(1, math.ceil(dur * FPS))
     workers = min(WORKERS, os.cpu_count() or 1, max(1, frames // (FPS * 2)))
     pool = None
