@@ -75,6 +75,31 @@ def test_reload_broadcast_admin_only(client):
     assert f'name="xiaoxin-version" content="{r["version"]}"' in client.get("/").text
 
 
+def test_static_cache(client):
+    """首页给的 ?v= 和文件对得上才长缓存（手机网络卡时省掉 29 个「变了没」）；旧版本号、不带版本号照旧每次确认。"""
+    import re
+
+    page = client.get("/")
+    assert page.headers["cache-control"] == "no-cache"
+    url = re.search(r'static/app\.js\?v=\d+', page.text).group(0)
+    assert "immutable" in client.get(url).headers["cache-control"]
+    assert client.get("static/app.js?v=1").headers["cache-control"] == "no-cache"
+    assert client.get("static/app.js").headers["cache-control"] == "no-cache"
+    assert client.get("static/../main.py?v=1").status_code == 404
+
+
+def test_access_log_hides_key():
+    import logging
+
+    import server.main  # noqa: F401  装上过滤器
+
+    rec = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                            ("127.0.0.1:1", "GET", "/?x=1&k=xd_secret&y=2", "1.1", 303), None)
+    for f in logging.getLogger("uvicorn.access").filters:
+        f.filter(rec)
+    assert "xd_secret" not in rec.getMessage() and "k=***&y=2" in rec.getMessage()
+
+
 def test_reload_not_for_parents(family):
     assert family["爸爸"].post("/api/reload", json={}).status_code == 403
     assert family["女儿"].post("/api/reload", json={}).status_code == 403

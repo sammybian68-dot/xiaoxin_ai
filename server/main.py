@@ -55,6 +55,19 @@ SEARCH_LIMIT_RESULT = (f"已经搜了 {MAX_SEARCHES} 次，到上限了，这次
 log = logging.getLogger("xiaoxin")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
+
+class _HideKey(logging.Filter):
+    """访问日志里的 ?k=（XIAOXIN_KEY、家长 App 的设备 token）换成 ***：日志不该存能直接登录的凭证。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        a = record.args
+        if isinstance(a, tuple) and len(a) >= 3 and isinstance(a[2], str) and "k=" in a[2]:
+            record.args = a[:2] + (re.sub(r"([?&]k=)[^&]*", r"\1***", a[2]),) + a[3:]
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_HideKey())
+
 app = FastAPI(title="xiaoxin", version="0.1.0")
 
 
@@ -190,9 +203,23 @@ async def guard(request: Request, call_next):
     response = await call_next(request)
     # 页面和 static/ 下的 js / css 都要每次跟服务端确认：不然部署后 pad 的 WebView 还拿着旧的 app.js / app.css，
     # 新旧混着用，样式和逻辑对不上（2026-10-30 端侧调试列表就因为旧 css 挤成一团）
-    if response.headers.get("content-type", "").startswith("text/html") or path.startswith("/static/"):
+    # 例外：首页给 js / css 带的 ?v=<修改时间> 和文件对得上，内容就不会再变，一年不用问。手机网络卡的时候每个请求要 3 秒，
+    # 29 个 js / css 每次打开都问一遍「变了没」，光这一步 9 秒（2026-11-07 家长 App 首次打开 30 秒才出画面）
+    if path.startswith("/static/") and _static_current(path, request.query_params.get("v", "")):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif response.headers.get("content-type", "").startswith("text/html") or path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+def _static_current(path: str, v: str) -> bool:
+    if not v.isdigit():
+        return False
+    f = (STATIC / path.removeprefix("/static/")).resolve()
+    try:
+        return STATIC.resolve() in f.parents and str(int(f.stat().st_mtime)) == v
+    except OSError:
+        return False
 
 
 @app.post("/api/logout")
