@@ -404,8 +404,8 @@ function singCard(row, m) {
   const s = m.sing;
   if (!s?.file) return;
   const cover = s.cover ? `api/sing/cover/${encodeURIComponent(s.cover)}` : "";
-  const c = { s, lines: singLrc(s.lrc), idx: -2, off: Number(localGet("sing.off." + (s.mid || s.file)) || 0), audio: null,
-    dragging: false, raf: 0, dur: Number(s.seconds) || 0, el: document.createElement("div"), home: null };
+  const c = { s, mid: m.id, lines: singLrc(s.lrc), idx: -2, off: Number(localGet("sing.off." + (s.mid || s.file)) || 0), audio: null,
+    dragging: false, raf: 0, dur: Number(s.seconds) || 0, el: document.createElement("div"), home: null, ver: "ai", kara: null };
   const el = c.el;
   el.className = "sgc";
   el.innerHTML = `<div class="sgc-bg"${cover ? ` style="background-image:url('${cover}')"` : ""}></div>
@@ -415,7 +415,9 @@ function singCard(row, m) {
       <div class="sgc-meta"><b class="sgc-title">${esc(s.title)}</b>
         <span class="sgc-sub"><em>${esc(s.singer)}</em> 的 AI 翻唱</span>
         <small>原唱 ${esc(s.artist)}${s.album ? ` · ${esc(s.album)}` : ""}</small>
-        ${singWxBridge() ? '<button type="button" class="sgc-wx" data-c="wx">发到微信</button>' : ""}</div>
+        <div class="sgc-ver" role="tablist" aria-label="听哪个版本" hidden></div>
+        <div class="sgc-acts">${navigator.mediaDevices?.getUserMedia ? '<button type="button" class="sgc-me" data-c="k-open">🎤 我来唱</button>' : ""}
+          ${singWxBridge() ? '<button type="button" class="sgc-wx" data-c="wx">发到微信</button>' : ""}</div></div>
       <button type="button" class="sgc-shrink" data-c="full" aria-label="收起">⌄</button>
     </div>
     <div class="sgc-lrc" data-c="lrc"><div class="sgc-lines">${c.lines.length
@@ -430,8 +432,11 @@ function singCard(row, m) {
       <button type="button" class="sgc-skip" data-c="fwd" aria-label="快进 10 秒">+10s</button>
       <button type="button" class="sgc-off" data-c="off+" title="歌词落在歌声后面：点这个往前挪">词快点</button>
     </div>
+    <div class="sgc-kara" hidden><div class="sgk-who"></div><p class="sgk-say"></p>
+      <div class="sgk-btns"><button type="button" class="sgk-x" data-c="k-x">不唱了</button><button type="button" class="sgk-go" data-c="k-go">● 开始唱</button></div></div>
     <div class="sgc-note" hidden></div>`;
   el._sg = c;
+  singVerRender(c);
   el.addEventListener("click", (e) => singCardClick(c, e));
   const seek = el.querySelector(".sgc-seek");
   seek.addEventListener("input", () => { c.dragging = true; singSync(c, seek.value / 10); });
@@ -448,6 +453,7 @@ function singCard(row, m) {
 
 function singCardClick(c, e) {
   const p = e.target.closest(".sgc-lines p[data-i]");
+  if (c.kara && p) { singKaraLine(c, Number(p.dataset.i)); return; }
   if (p) {   // 点一句歌词：从这句开始放
     const t = c.lines[Number(p.dataset.i)].t - c.off;
     singEnsureAudio(c);
@@ -460,6 +466,11 @@ function singCardClick(c, e) {
   if (k === "play") singPlay(c);
   else if (k === "full") singFull(c);
   else if (k === "wx") singShareOpen(c);
+  else if (k === "v-ai" || k === "v-real") singVer(c, k.slice(2));
+  else if (k === "k-open") singKaraOpen(c);
+  else if (k === "k-x") singKaraClose(c);
+  else if (k === "k-go") singKaraGo(c);
+  else if (k === "k-who") { c.kara.who = e.target.closest("[data-who]").dataset.who; singKaraRender(c); }
   else if (k === "back" || k === "fwd") {
     singEnsureAudio(c);
     const t = Math.min(Math.max(0, c.audio.currentTime + (k === "fwd" ? 10 : -10)), c.dur || 1e9);
@@ -482,7 +493,7 @@ function singOffNote(c) {
 
 function singEnsureAudio(c) {
   if (c.audio) return c.audio;
-  const a = new Audio(fileUrl({ id: c.s.file }));
+  const a = new Audio(fileUrl({ id: c.ver === "real" && c.s.real ? c.s.real.file : c.s.file }));
   a.preload = "auto";
   c.audio = a;
   const btn = c.el.querySelector(".sgc-play");
@@ -543,6 +554,7 @@ function singSync(c, t) {
 function singFull(c) {
   const el = c.el;
   if (el.classList.contains("full")) {
+    if (c.kara) singKaraClose(c);
     el.classList.remove("full");
     c.home?.replaceWith(el);
     c.home = null;
@@ -559,6 +571,221 @@ function singFull(c) {
   requestAnimationFrame(() => singSync(c, c.audio?.currentTime || 0));
 }
 
+// ---------------------------------------------------------------- 跟着伴奏唱、AI / 真人对比
+// 「我来唱」：卡片进全屏，放 AI 翻唱那首去掉人声的伴奏（/api/sing/karaoke，和 AI 版一个调）、滚歌词，同时录原声；
+// 唱完传上去（/api/sing/real）对齐混成真人版，和 AI 版同一条时间轴，卡片上「AI 唱 / 亲自唱」切换时停在同一句。
+// 录音不开回声消除：外放的伴奏也录进去，服务端拿它对出延迟（戴耳机也能唱，按常见延迟对）。
+
+const SING_K_RATE = 24000;
+const SING_K_PREROLL = 3;   // 从中间某句开始唱：伴奏提前几秒放，好跟上拍子
+const SING_K_MIN = 5;
+
+function singVerRender(c) {
+  const box = c.el.querySelector(".sgc-ver"), r = c.s.real;
+  box.hidden = !r;
+  if (!r) c.ver = "ai";
+  c.el.querySelector(".sgc-sub").innerHTML = c.ver === "real" ? `<em>${esc(r.singer)}</em> 亲自唱` : `<em>${esc(c.s.singer)}</em> 的 AI 翻唱`;
+  if (!r) { box.innerHTML = ""; return; }
+  box.innerHTML = `<button type="button" role="tab" data-c="v-ai" aria-selected="${c.ver !== "real"}">AI 唱</button>`
+    + `<button type="button" role="tab" data-c="v-real" aria-selected="${c.ver === "real"}">${esc(r.singer)}亲自唱</button>`;
+}
+
+/** 换版本：接着放同一个位置；真人版没唱到的地方，跳到开始唱的那句前面一点。 */
+function singVer(c, v, play) {
+  if ((v === "real" && !c.s.real) || (c.ver === v && c.audio)) return;
+  const old = c.audio, t = old ? old.currentTime : 0, playing = play ?? !!(old && !old.paused);
+  old?.pause();
+  c.audio = null;
+  c.ver = v;
+  singVerRender(c);
+  const r = c.s.real;
+  const to = v === "real" && (t < r.start - 2 || t > r.end) ? Math.max(0, r.start - 1) : t;
+  const a = singEnsureAudio(c);
+  a.currentTime = to;
+  c.idx = -2;
+  singSync(c, to);
+  if (playing) singPlay(c);
+}
+
+window.singCardUpdate = (m) => {
+  for (const el of document.querySelectorAll(".sgc")) {
+    const c = el._sg;
+    if (c?.mid !== m.id || c.kara?.phase === "mix") continue;
+    c.s = m.sing;
+    if (c.ver === "real" && c.audio) { c.audio.pause(); c.audio = null; }   // 真人版换了一份
+    singVerRender(c);
+  }
+};
+
+/** 谁来唱：先是自己（孩子的 pad 用管理员登录：算这个群的孩子），再是 AI 用的那个声音、这个群的孩子。 */
+function singKaraWho(c) {
+  const kid = state.kids?.find((k) => k.id === state.conv?.kid)?.name || "";
+  const me = state.me?.kind === "admin" ? kid : state.kids?.find((k) => k.id === state.me?.id)?.name || state.me?.name || "";
+  return [...new Set([me, c.s.singer, kid].filter(Boolean))];
+}
+
+async function singKaraOpen(c) {
+  c.audio?.pause();
+  if (!c.el.classList.contains("full")) singFull(c);
+  c.el.classList.add("kara");
+  const k = c.kara = { phase: "prep", gen: 0, from: -1, who: singKaraWho(c)[0] || c.s.singer, samples: [], acc: null, rec: null };
+  singKaraRender(c);
+  try {
+    for (;;) {
+      const st = await api("api/sing/karaoke", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: c.s.file }) }).then(json);
+      if (c.kara !== k) return;
+      if (st.state === "ready") { k.url = st.url; break; }
+      if (st.state === "error") throw new Error(st.error || "伴奏没做出来");
+      await singSleep(1000);
+      if (c.kara !== k) return;
+    }
+  } catch (err) {
+    if (c.kara !== k) return;
+    k.phase = "fail"; k.msg = err.message;
+    singKaraRender(c);
+    return;
+  }
+  k.acc = new Audio(new URL(k.url, location.href).href);
+  k.acc.preload = "auto";
+  k.phase = "ready";
+  c.idx = -2;
+  singSync(c, 0);
+  singKaraRender(c);
+}
+
+function singKaraLine(c, i) {
+  const k = c.kara;
+  if (k.phase !== "ready") return;
+  k.from = k.from === i ? -1 : i;
+  c.idx = -2;
+  singSync(c, k.from >= 0 ? Math.max(0, c.lines[i].t - c.off) : 0);
+  singKaraRender(c);
+}
+
+function singKaraRender(c) {
+  const k = c.kara, box = c.el.querySelector(".sgc-kara");
+  box.hidden = !k;
+  if (!k) return;
+  const say = box.querySelector(".sgk-say"), go = box.querySelector(".sgk-go"), who = box.querySelector(".sgk-who");
+  const names = singKaraWho(c);
+  who.hidden = k.phase !== "ready" || names.length < 2;
+  who.innerHTML = names.map((n) => `<button type="button" data-c="k-who" data-who="${esc(n)}" aria-pressed="${n === k.who}">${esc(n)}唱</button>`).join("");
+  box.dataset.phase = k.phase;
+  go.disabled = !["ready", "rec", "fail"].includes(k.phase);
+  go.textContent = k.phase === "rec" ? "■ 唱完了" : k.phase === "fail" ? "再试一次" : "● 开始唱";
+  if (k.phase === "prep") say.textContent = "正在把 AI 唱的人声去掉，做成伴奏…";
+  else if (k.phase === "ready") say.textContent = k.from >= 0
+    ? `从「${c.lines[k.from].text}」开始唱（再点一下这句就从头唱）` : "从头开始唱；点一句歌词，就从那句开始";
+  else if (k.phase === "count") say.textContent = `${k.count}… 准备好`;
+  else if (k.phase === "rec") singKaraClock(c);
+  else if (k.phase === "mix") say.textContent = "正在把你的声音和伴奏合在一起…";
+  else if (k.phase === "fail") say.textContent = k.msg;
+}
+
+function singKaraClock(c) {
+  const k = c.kara, secs = k.rec ? k.rec.seconds() : 0;
+  const say = c.el.querySelector(".sgk-say"), go = c.el.querySelector(".sgk-go");
+  say.textContent = `● 录音中 ${singTime(secs)}　${k.who}跟着伴奏唱，唱到哪儿都可以停`;
+  say.style.setProperty("--lv", String(Math.min(1, (k.peak || 0) * 3)));
+  go.disabled = secs < SING_K_MIN;
+}
+
+async function singKaraGo(c) {
+  const k = c.kara;
+  if (!k) return;
+  if (k.phase === "fail") { singKaraClose(c); singKaraOpen(c); return; }
+  if (k.phase === "rec") { singKaraStop(c); return; }
+  if (k.phase !== "ready") return;
+  const g = ++k.gen;
+  singQuiet();
+  k.phase = "count"; k.count = 3;
+  singKaraRender(c);
+  k.rec = new Recorder((peak) => { k.peak = peak; }, null, { raw: true, rate: SING_K_RATE });
+  try { await k.rec.start(); } catch (err) {
+    k.rec = null;
+    toast("拿不到麦克风：" + err.message);
+    k.phase = "ready"; singKaraRender(c); singResume();
+    return;
+  }
+  const at = k.from >= 0 ? Math.max(0, c.lines[k.from].t - c.off - SING_K_PREROLL) : 0;
+  k.acc.currentTime = at;
+  for (const n of [3, 2, 1]) {   // 麦克风先开着，倒数这段丢掉（开麦要一会儿）
+    if (g !== k.gen) return;
+    k.count = n; singKaraRender(c);
+    await singSleep(800);
+  }
+  if (g !== k.gen || !k.rec) return;
+  k.rec.chunks = []; k.samples = [];
+  k.phase = "rec";
+  singKaraRender(c);
+  try { await k.acc.play(); } catch (err) { toast("伴奏放不了：" + err.message); singKaraClose(c); return; }
+  const from = k.acc.currentTime;
+  k.acc.onended = () => { if (g === k.gen && k.phase === "rec") singKaraStop(c); };
+  const tick = () => {
+    if (g !== k.gen || k.phase !== "rec") return;
+    const t = k.acc.currentTime;
+    if (!k.acc.paused && t > from + 0.3) k.samples.push(t - k.rec.seconds());   // 录音第 0 个点对着歌里第几秒
+    singSync(c, t);
+    singKaraClock(c);
+    k.raf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+async function singKaraStop(c) {
+  const k = c.kara;
+  if (!k?.rec || k.phase !== "rec") return;
+  if (k.rec.seconds() < SING_K_MIN) { toast(`再多唱一会儿，至少 ${SING_K_MIN} 秒`); return; }
+  k.gen++;
+  cancelAnimationFrame(k.raf);
+  k.acc.pause();
+  const rec = k.rec;
+  k.rec = null;
+  const ss = k.samples.slice().sort((x, y) => x - y);
+  let s0 = ss.length ? ss[ss.length >> 1] : 0;
+  if (s0 < 0) {   // 伴奏是从头放的，录音比歌开头还早一点：把多出来的那截去掉
+    let drop = Math.round(-s0 * rec.rate);
+    while (drop > 0 && rec.chunks.length) {
+      const ch = rec.chunks[0];
+      if (ch.length <= drop) { drop -= ch.length; rec.chunks.shift(); } else { rec.chunks[0] = ch.subarray(drop); drop = 0; }
+    }
+    s0 = 0;
+  }
+  const blob = await rec.stop();
+  singResume();
+  k.phase = "mix";
+  singKaraRender(c);
+  try {
+    const q = `file=${encodeURIComponent(c.s.file)}&s0=${s0.toFixed(3)}&singer=${encodeURIComponent(k.who)}`;
+    const r = await api(`api/sing/real?${q}`, { method: "POST", body: blob, headers: { "Content-Type": "audio/wav" } }).then(json);
+    c.s = r.sing;
+    singKaraClose(c);
+    if (c.audio) { c.audio.pause(); c.audio = null; }
+    c.ver = "ai";
+    singVer(c, "real", true);
+    toast("真人版好了，点上面「AI 唱 / 亲自唱」切换着听");
+  } catch (err) {
+    if (c.kara !== k) return;
+    k.phase = "fail"; k.msg = "没合成好：" + err.message;
+    singKaraRender(c);
+  }
+}
+
+function singKaraClose(c) {
+  const k = c.kara;
+  if (!k) return;
+  k.gen++;
+  cancelAnimationFrame(k.raf);
+  k.acc?.pause();
+  if (k.rec) { k.rec.stop().catch(() => {}); k.rec = null; singResume(); }
+  c.kara = null;
+  c.el.classList.remove("kara");
+  singKaraRender(c);
+  c.idx = -2;
+  singSync(c, c.audio?.currentTime || 0);
+}
+
 // ---------------------------------------------------------------- 发到微信
 // 整首或者选一段，服务端做成视频（/api/sing/video：封面 + 转唱片 + 滚动歌词），APK 下载进相册「Movies/小新」再拉起微信发。
 // 选一段：点一句当开头、再点一句当结尾（结尾那句唱完），也可以拖两头。
@@ -566,7 +793,7 @@ function singFull(c) {
 const SING_VIDEO_MAX = 299;   // 微信聊天视频最长 5 分钟，和 server/sing/video.py 的 MAX_S 一样
 const SING_CLIP_MIN = 3;
 const SING_CREDIT = /^[^：:]{0,14}[：:]|^.{0,40} - .{0,40}$/;   // 「词：某某」「泡沫 - 邓紫棋」，同 server/sing/practice.py
-const singShare = { c: null, mode: "all", a: 0, b: 0, dur: 0, pick: -1, gen: 0, audio: null, idx: [] };
+const singShare = { c: null, mode: "all", a: 0, b: 0, dur: 0, pick: -1, gen: 0, audio: null, idx: [], ver: "ai" };
 const singWxBridge = () => { const b = window.XiaoxinNative || window.XiaoxinParent; return b?.shareVideo ? b : null; };
 
 function singShareOpen(c) {
@@ -575,15 +802,32 @@ function singShareOpen(c) {
   sh.dur = c.dur || Number(c.s.seconds) || 0;
   sh.a = 0; sh.b = sh.dur;
   c.audio?.pause();
-  $("sgs-song").textContent = `《${c.s.title}》 · ${c.s.singer} 的 AI 翻唱`;
   sh.idx = c.lines.map((l, i) => i).filter((i) => !SING_CREDIT.test(c.lines[i].text));
   $("sgs-lines").innerHTML = sh.idx.length
     ? sh.idx.map((i) => `<p data-i="${i}"><span>${singTime(singShareT(i))}</span>${esc(c.lines[i].text)}</p>`).join("")
     : '<p class="none">这首没有歌词，拖下面的两头选</p>';
-  for (const id of ["sgs-a", "sgs-b"]) $(id).max = String(Math.round(sh.dur * 10));
   $("sgs-go").disabled = false;
-  singShareMode("all");
+  $("sgs-ver").hidden = !c.s.real;
+  if (c.s.real) $("sgs-ver").querySelector('[data-v="real"]').textContent = `${c.s.real.singer}亲自唱`;
+  sh.mode = "all";
+  singShareVer(c.s.real && c.ver === "real" ? "real" : "ai");
   $("sing-share").showModal();
+}
+
+/** 发 AI 版还是真人版：真人版是从中间唱的，默认只框唱了的那段（前面没唱的只有伴奏）。 */
+function singShareVer(v) {
+  const sh = singShare, c = sh.c, r = c.s.real;
+  sh.ver = v === "real" && r ? "real" : "ai";
+  $("sgs-song").textContent = `《${c.s.title}》 · ${sh.ver === "real" ? `${r.singer} 亲自唱` : `${c.s.singer} 的 AI 翻唱`}`;
+  for (const b of document.querySelectorAll("#sgs-ver [data-v]")) b.setAttribute("aria-selected", String(b.dataset.v === sh.ver));
+  sh.dur = sh.ver === "real" ? r.seconds : c.dur || Number(c.s.seconds) || 0;
+  for (const id of ["sgs-a", "sgs-b"]) $(id).max = String(Math.round(sh.dur * 10));
+  sh.pick = -1;
+  sh.a = 0; sh.b = sh.dur;
+  if (sh.ver === "real" && r.start > 5) {
+    sh.a = Math.max(0, r.start - 1); sh.b = Math.min(sh.dur, r.end + 1);
+    singShareMode("part");
+  } else singShareMode(sh.mode);
 }
 
 /** 第 i 句在 mp3 里的秒（卡片上调过「词快点 / 词慢点」也算上）。 */
@@ -597,7 +841,7 @@ function singShareMode(m) {
   sh.mode = m;
   for (const b of document.querySelectorAll("#sgs-mode [data-m]")) b.setAttribute("aria-selected", String(b.dataset.m === m));
   $("sgs-part").hidden = m !== "part";
-  if (m === "part" && sh.a <= 0 && sh.b >= sh.dur) {   // 刚切过来：先给一段（第一句起 30 秒），再让人改
+  if (m === "part" && sh.a <= 0 && sh.b >= sh.dur && sh.ver === "ai") {   // 刚切过来：先给一段（第一句起 30 秒），再让人改
     sh.a = sh.idx.length ? Math.max(0, singShareT(sh.idx[0]) - 0.3) : 0;
     sh.b = Math.min(sh.dur, sh.a + 30);
   }
@@ -653,7 +897,9 @@ function singShareDrag(which) {
 function singShareTry() {
   const sh = singShare;
   if (sh.audio && !sh.audio.paused) { singShareStopTry(); return; }
-  const a = sh.audio || (sh.audio = new Audio(fileUrl({ id: sh.c.s.file })));
+  const fid = sh.ver === "real" ? sh.c.s.real.file : sh.c.s.file;
+  if (sh.audioFile !== fid) { sh.audio = new Audio(fileUrl({ id: fid })); sh.audioFile = fid; }
+  const a = sh.audio;
   a.ontimeupdate = () => { if (a.currentTime >= sh.b) singShareStopTry(); };
   a.currentTime = sh.mode === "part" ? sh.a : 0;
   stopSpeaking();
@@ -673,13 +919,14 @@ async function singShareGo() {
   const go = $("sgs-go"), note = $("sgs-note");
   go.disabled = true;
   note.textContent = "正在做视频…";
-  const body = JSON.stringify({ file: c.s.file, off: c.off, ...(part ? { start: sh.a, end: sh.b } : {}) });
+  const real = sh.ver === "real" ? c.s.real : null;
+  const body = JSON.stringify({ file: real ? real.file : c.s.file, off: c.off, ...(part ? { start: sh.a, end: sh.b } : {}) });
   try {
     for (;;) {
       const st = await api("api/sing/video", { method: "POST", headers: { "Content-Type": "application/json" }, body }).then(json);
       if (gen !== sh.gen) return;
       if (st.state === "ready") {
-        const name = `${c.s.singer}唱的《${c.s.title}》${part ? "（片段）" : ""}.mp4`;
+        const name = `${real ? real.singer + "亲自唱" : c.s.singer + "唱"}的《${c.s.title}》${part ? "（片段）" : ""}.mp4`;
         note.textContent = "视频好了，正在打开微信…";
         bridge.shareVideo(new URL(st.url, location.href).href, name);
         return;
@@ -708,6 +955,10 @@ window.xiaoxinShareVideo = (e) => {
 $("sgs-mode")?.addEventListener("click", (e) => {
   const m = e.target.closest("[data-m]")?.dataset.m;
   if (m && m !== singShare.mode) singShareMode(m);
+});
+$("sgs-ver")?.addEventListener("click", (e) => {
+  const v = e.target.closest("[data-v]")?.dataset.v;
+  if (v && v !== singShare.ver) { singShareStopTry(); singShareVer(v); }
 });
 $("sgs-lines")?.addEventListener("click", (e) => {
   const p = e.target.closest("p[data-i]");

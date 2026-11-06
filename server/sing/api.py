@@ -1,4 +1,4 @@
-"""翻唱的接口：/api/sing/*。录声音、试听、删；封面；发到微信的视频；QQ 音乐扫码登录（只有家长、管理员）。"""
+"""翻唱的接口：/api/sing/*。录声音、试听、删；封面；发到微信的视频；跟着伴奏唱（伴奏、真人版）；QQ 音乐扫码登录（只有家长、管理员）。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from server import store
-from server.sing import job, practice, qq, video, voices
+from server.sing import job, karaoke, practice, qq, video, voices
 
 router = APIRouter()
 MAX_VOICE_BYTES = 8 * 1024 * 1024
@@ -123,9 +123,10 @@ async def sing_practice_audio(request: Request, sid: str) -> FileResponse:
     return FileResponse(p, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
-# ---------------------------------------------------------------- 发到微信的视频
+# ---------------------------------------------------------------- 发到微信的视频、跟着伴奏唱
 
-def _sing_of(fid: str) -> dict | None:
+def _find(fid: str) -> tuple[str, dict, bool] | None:
+    """这个文件是哪张翻唱卡片的：(线程, 消息, 是不是真人版)。"""
     from server.family import members
 
     for k in members.kids(active_only=False):
@@ -134,22 +135,28 @@ def _sing_of(fid: str) -> dict | None:
         except KeyError:
             continue
         for m in reversed(msgs):
-            if (m.get("sing") or {}).get("file") == fid:
-                return m["sing"]
+            s = m.get("sing") or {}
+            if s.get("file") == fid or (s.get("real") or {}).get("file") == fid:
+                return k["thread"], m, s.get("file") != fid
     return None
 
 
-def _sing_file(request: Request, fid: str):
-    """翻唱的那个 mp3 和它的卡片字段；看不到这个文件（孩子看别人线程里的）一律当没有。"""
+def _sing_file(request: Request, fid: str, real_ok: bool = True):
+    """翻唱（或真人版）的 mp3、卡片字段（真人版换成真人那份）、线程和消息；看不到这个文件（孩子看别人线程里的）一律当没有。"""
     from server.main import _can_file
 
     info = store.file_info(fid)
     if info is None or not info[0].is_file() or not _can_file(_who(request), info[1]):
         raise HTTPException(404, "没有这首歌")
-    sing = _sing_of(fid)
-    if sing is None:
+    found = _find(fid)
+    if found is None or (found[2] and not real_ok):
         raise HTTPException(404, "这不是翻唱的歌")
-    return info[0], sing
+    thread, m, real = found
+    sing = m["sing"]
+    if real:
+        r = sing["real"]
+        sing = {**sing, "file": fid, "singer": r["singer"], "seconds": r["seconds"], "real": True}
+    return info[0], sing, thread, m
 
 
 def _sec(v) -> float | None:
@@ -166,7 +173,7 @@ async def sing_video(request: Request, body: dict = Body(...)) -> dict:
     """要一段分享用的视频：{file, start?, end?, off?}（秒；不给起止就是整首，off 是卡片上调的歌词提前量）。
     做好了 state=ready、带 url；还在做是 state=making + pct，隔一秒再要一次（同一段不会重复做）；error 再要一次就重做。"""
     fid = str(body.get("file") or "")
-    audio, sing = await asyncio.to_thread(_sing_file, request, fid)
+    audio, sing, _, _ = await asyncio.to_thread(_sing_file, request, fid)
     try:
         st = video.ensure(fid, audio, sing, _sec(body.get("start")), _sec(body.get("end")), _sec(body.get("off")) or 0.0)
     except video.VideoError as e:
@@ -186,6 +193,60 @@ def sing_video_file(request: Request, name: str) -> FileResponse:
     if info is None or not _can_file(_who(request), info[1]):
         raise HTTPException(404, "视频还没做好")
     return FileResponse(p, media_type="video/mp4", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.post("/api/sing/karaoke")
+async def sing_karaoke(request: Request, body: dict = Body(...)) -> dict:
+    """AI 翻唱那首去掉人声的伴奏：{file}（AI 版的文件 id）。好了 state=ready、带 url；making 隔一秒再要；error 报一次，再要就重做。"""
+    fid = str(body.get("file") or "")
+    audio, _, _, _ = await asyncio.to_thread(_sing_file, request, fid, False)
+    st = karaoke.ensure(fid, audio)
+    if st["state"] == "ready":
+        st["url"] = f"api/sing/karaoke/{fid}.mp3"
+    return st
+
+
+@router.get("/api/sing/karaoke/{name}")
+def sing_karaoke_file(request: Request, name: str) -> FileResponse:
+    from server.main import _can_file
+
+    fid = name.removesuffix(".mp3")
+    p = karaoke.acc_path(fid)
+    info = store.file_info(fid) if p else None
+    if info is None or not _can_file(_who(request), info[1]):
+        raise HTTPException(404, "伴奏还没好")
+    return FileResponse(p, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.post("/api/sing/real")
+async def sing_real(request: Request, file: str, s0: float, singer: str = "") -> dict:
+    """跟着伴奏唱的录音（wav，原声）：file 是 AI 版的文件 id，s0 是录音第 0 个点对着歌里第几秒（前端拿播放进度估的，
+    真正的延迟这边对出来）。混成真人版挂到这张卡片上（再唱一次就换掉），返回新的 sing 字段。"""
+    w = _who(request)
+    data = await request.body()
+    if len(data) > karaoke.MAX_REC_BYTES:
+        raise HTTPException(413, "录音太大了")
+    _, sing, thread, m = await asyncio.to_thread(_sing_file, request, file, False)
+    acc = karaoke.acc_path(file)
+    if acc is None:
+        raise HTTPException(409, "伴奏还没好")
+    try:
+        mp3, info = await asyncio.to_thread(karaoke.make_real, data, acc, s0)
+    except karaoke.KaraokeError as e:
+        raise HTTPException(400, str(e))
+    who = singer.strip()[:12] or sing["singer"]
+    fid, p = store.allocate()
+    try:
+        p.write_bytes(mp3)
+        meta = store.commit(fid, f"{who}亲自唱《{sing['title']}》.mp3", "audio/mpeg", len(mp3), owner="xiaoxin")
+    except Exception:
+        store.abort(fid)
+        raise
+    old = (sing.get("real") or {}).get("file")
+    real = {"file": fid, "singer": who, "by": w.id, **info}
+    files = [f for f in (m.get("files") or []) if f.get("id") != old] + [meta]
+    out = store.update_message(thread, m["id"], sing={**sing, "real": real}, files=files)
+    return {"sing": out["sing"], "files": out["files"]}
 
 
 # ---------------------------------------------------------------- QQ 音乐登录
