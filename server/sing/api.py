@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from server import store
-from server.sing import job, qq, voices
+from server.sing import job, practice, qq, voices
 
 router = APIRouter()
 MAX_VOICE_BYTES = 8 * 1024 * 1024
@@ -93,6 +93,36 @@ def sing_cover(request: Request, album_mid: str) -> FileResponse:
     return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
 
 
+# ---------------------------------------------------------------- 录声音时跟着唱的歌
+
+@router.get("/api/sing/practice")
+def sing_practice_list(request: Request) -> dict:
+    _who(request)
+    return {"groups": [{"id": g, "name": n} for g, n in practice.GROUPS], "songs": practice.songs(), "listen": qq.usable()}
+
+
+@router.get("/api/sing/practice/{sid}")
+async def sing_practice_song(request: Request, sid: str) -> dict:
+    """这首要唱的那段：lines 的 t 从这段开头算；start / end 是原唱里的秒（听原唱从这儿放到那儿）。"""
+    _who(request)
+    try:
+        d = await asyncio.to_thread(practice.get, sid)
+    except practice.PracticeError as e:
+        raise HTTPException(404, str(e))
+    return {**{k: d[k] for k in ("id", "title", "artist", "start", "end", "lines")}, "listen": qq.usable()}
+
+
+@router.get("/api/sing/practice/{sid}/audio")
+async def sing_practice_audio(request: Request, sid: str) -> FileResponse:
+    """原唱整首（支持 Range，前端直接跳到 start）。要 QQ 音乐登录。"""
+    _who(request)
+    try:
+        p = await asyncio.to_thread(practice.original, sid)
+    except practice.PracticeError as e:
+        raise HTTPException(404, str(e))
+    return FileResponse(p, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
 # ---------------------------------------------------------------- QQ 音乐登录
 
 @router.get("/api/sing/qq")
@@ -103,10 +133,10 @@ def sing_qq_status(request: Request, fresh: int = 0) -> dict:
 
 @router.post("/api/sing/qq/login")
 def sing_qq_login(request: Request, body: dict = Body(default={})) -> dict:
-    """开始扫码：kind = mobile（QQ 音乐 App 扫）| qq（手机 QQ）| wx（微信）。返回会话 id 和二维码。"""
+    """开始扫码：kind = wx（微信）| qq（手机 QQ）。返回会话 id 和二维码。"""
     _need_parent(request)
     try:
-        sid = qq.login_start(str(body.get("kind") or "mobile"))
+        sid = qq.login_start(str(body.get("kind") or "wx"))
     except qq.QQError as e:
         raise HTTPException(400, str(e))
     return {"sid": sid, **qq.login_state(sid)}

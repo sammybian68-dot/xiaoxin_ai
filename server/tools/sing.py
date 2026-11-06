@@ -11,7 +11,7 @@ from server.tools import printer as printer_tools
 SPECS = [
     {"type": "function", "function": {
         "name": "record_singing_voice",
-        "description": "录某个人唱歌的声音（以后能用这个声音唱任何歌）：屏幕上弹出录音界面，30 秒倒计时，提示怎么唱。"
+        "description": "录某个人唱歌的声音（以后能用这个声音唱任何歌）：屏幕上弹出录音界面：挑一首歌（儿歌、流行、老歌）跟着歌词唱、能先听原唱，30 秒倒计时。"
                        "「我是爸爸，录一下我唱歌的声音」「帮妈妈录唱歌的声音」",
         "parameters": {"type": "object", "properties": {
             "singer": {"type": "string", "description": "是谁的声音，用他的称呼（「爸爸」「卞依一」）；说「我」没报名字就不填"},
@@ -84,7 +84,7 @@ def run(name: str, arguments: str) -> str:
             return "失败：不知道是谁的声音，先问一句「你是谁呀」"
         again = "（之前录过，这次录好会换掉旧的）" if voices.find(singer) else ""
         return (f"屏幕上打开了录音界面，录「{singer}」唱歌的声音{again}。[sing-rec:{singer}]\n"
-                f"播报：好的，点屏幕上的「开始录」，随便唱一首你熟悉的歌，唱满三十秒。")
+                f"播报：好的，在屏幕右边挑一首会唱的歌，跟着歌词唱，不会起调可以先听一遍原唱。准备好了点「开始录」，唱满三十秒。")
     song = str(args.get("song") or "").strip().strip("《》")[:40]
     if not song:
         return "失败：没说唱哪首歌，先问一句"

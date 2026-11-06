@@ -122,6 +122,51 @@
 .sgr-btns button.go { border: 0; background: var(--sg); font-weight: 700; box-shadow: 0 8px 22px rgba(49,194,124,.4); }
 .sgr-btns button:disabled { opacity: .45; }
 
+/* 录音：左边圆环和按钮，右边跟着唱的歌（挑歌 / 歌词）；竖屏上下排 */
+.sgr-card:has(.sgr-body) { width: min(1120px, 100%); }
+.sgr-body { width: 100%; display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 28px; align-items: center; }
+.sgr-main { display: grid; justify-items: center; gap: 12px; min-width: 0; }
+.sgr-body .sgr-ring { width: min(210px, 24vw); }
+.sgr-body .sgr-wave { width: 100%; max-width: 440px; }
+.sgr-song { height: min(62vh, 500px); min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 16px 18px;
+  border-radius: 20px; background: rgba(255,255,255,.06); text-align: left; overflow: hidden; }
+.sgr-song h3 { margin: 0; font-size: 18px; font-weight: 600; color: #e9fff4; }
+.sgr-song-wait { margin: auto; color: rgba(255,255,255,.6); font-size: 16px; }
+.sgr-tabs { display: flex; gap: 6px; padding: 4px; border-radius: 14px; background: rgba(0,0,0,.25); align-self: flex-start; }
+.sgr-tabs button { height: 38px; padding: 0 16px; border: 0; border-radius: 10px; background: none; color: rgba(255,255,255,.7); font-size: 15px; }
+.sgr-tabs button[aria-selected="true"] { background: var(--sg); color: #fff; font-weight: 600; }
+.sgr-chips { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  align-content: start; gap: 10px; }
+.sgr-chips button { display: grid; gap: 2px; justify-items: start; padding: 12px 14px; border-radius: 14px; text-align: left;
+  border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.06); color: #fff; }
+.sgr-chips button:active { background: rgba(49,194,124,.25); }
+.sgr-chips b { font-size: 17px; font-weight: 600; }
+.sgr-chips small { font-size: 12px; color: rgba(255,255,255,.55); }
+.sgr-chips button.own { border-style: dashed; }
+.sgr-song .sgr-tips { flex: none; }
+.sgr-link { align-self: flex-start; border: 0; background: none; color: var(--sg); font-size: 15px; padding: 6px 0; }
+.sgr-song-head { display: flex; align-items: center; gap: 10px; }
+.sgr-song-head > div { flex: 1; min-width: 0; display: grid; }
+.sgr-song-head b { font-size: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgr-song-head small { font-size: 13px; color: rgba(255,255,255,.6); }
+.sgr-song-head button { flex: none; height: 38px; padding: 0 14px; border-radius: 19px; border: 1px solid rgba(255,255,255,.2);
+  background: rgba(255,255,255,.08); color: #fff; font-size: 14px; }
+.sgr-song-head #sgr-orig { border: 0; background: rgba(49,194,124,.9); font-weight: 600; }
+.sgr[data-phase="count"] .sgr-song-head button, .sgr[data-phase="rec"] .sgr-song-head button { visibility: hidden; }
+.sgr-ly { position: relative; flex: 1; min-height: 0; overflow-y: auto; padding: 18vh 0; scrollbar-width: none; text-align: center;
+  -webkit-mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent); mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent); }
+.sgr-ly::-webkit-scrollbar { display: none; }
+.sgr-ly p { margin: 0; padding: 8px 4px; font-size: clamp(18px, 2.2vw, 22px); line-height: 1.45; color: rgba(255,255,255,.42);
+  transition: color .25s, transform .25s; cursor: pointer; }
+.sgr-ly p.cur { color: #fff; font-weight: 700; transform: scale(1.1); text-shadow: 0 0 18px rgba(49,194,124,.55); }
+.sgr-ly-tip { margin: 0; font-size: 13px; color: rgba(255,255,255,.5); text-align: center; }
+@media (max-aspect-ratio: 1/1) {
+  .sgr { align-items: start; overflow-y: auto; }
+  .sgr-body { grid-template-columns: 1fr; gap: 14px; }
+  .sgr-body .sgr-ring { width: min(170px, 38vw); }
+  .sgr-song { height: 46vh; }
+}
+
 /* 设置 → 唱歌 */
 .sing-btns { display: inline-flex; gap: 8px; align-items: center; flex: none; }
 .sing-btns button:not(.primary-btn):not(.danger-btn) { height: 38px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); }

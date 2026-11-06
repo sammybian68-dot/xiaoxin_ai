@@ -1,8 +1,8 @@
 """QQ 音乐：小新这边的封装。真正干活的是 qq_cli.py，跑在单独的 .venv-qqmusic 里（为什么分开见那边的说明），
 这里用子进程调它、解析它那一行 JSON。
 
-凭证（DATA/qqmusic/credential.json，600）只在 gpu2 上，靠扫码拿：设置 → 唱歌 → 扫码登录，用 QQ 音乐 App、
-手机 QQ 或微信扫。musickey 有效期 3 天，后台每 6 小时看一次、拿到 20 小时以后刷新，所以只要服务一直开着就不用再扫；
+凭证（DATA/qqmusic/credential.json，600）只在 gpu2 上，靠扫码拿：设置 → 唱歌 → 扫码登录，用微信或手机 QQ 扫
+（帐号登的设备满了会报「登录设备超限」，要在 QQ 音乐 App 的登录设备管理里删掉旧的）。musickey 有效期 3 天，后台每 6 小时看一次、拿到 20 小时以后刷新，所以只要服务一直开着就不用再扫；
 刷不动了（太久没开、在别处退出了）status 里 expired=true，点歌时告诉家长重新扫。
 """
 
@@ -27,7 +27,8 @@ log = logging.getLogger("xiaoxin.qqmusic")
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = Path(__file__).with_name("qq_cli.py")
-KINDS = ("mobile", "qq", "wx")
+# 不用 mobile（QQ 音乐 App 扫）：手机上显示「绑定成功」，gpu2 这边的 MQTT 连接却收不到结果（2026-11-06 实测）
+KINDS = ("wx", "qq")
 REFRESH_EVERY_S = 6 * 3600
 STATUS_TTL_S = 60
 

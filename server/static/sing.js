@@ -1,6 +1,7 @@
 "use strict";
 // 翻唱（server/sing/）：
-//   录唱歌声音：工具 record_singing_voice 的结果带 [sing-rec:名字] → 全屏录音：怎么唱的提示 → 3、2、1 → 30 秒圆环倒计时
+//   录唱歌声音：工具 record_singing_voice 的结果带 [sing-rec:名字] → 全屏录音：右边挑一首跟着唱的歌（出歌词、能先听原唱）
+//   → 3、2、1 → 30 秒圆环倒计时，歌词一句句亮
 //   （10 秒后能提前结束）→ 试听 / 重录 / 存。点「开始录」时小新先闭嘴、自由对话挂断、待命让出麦克风；关掉录音界面恢复待命。
 //   录音用 app.js 的 Recorder（raw：不降噪、不消回声、不自动增益，声卡原生采样率）。
 //   音乐卡片：小新后台发来的 via=sing 消息（m.sing）→ 仿 QQ 音乐：转动的唱片 + 封面、播放 / 暂停、能拖的进度条、
@@ -8,10 +9,12 @@
 //   设置 → 唱歌：唱歌服务开没开、QQ 音乐扫码登录、录过的声音（试听、重录、删）。
 
 const sing = { gen: 0, rec: null, timer: 0, blob: null, url: "", name: "", secs: 0, top: 0, levels: [], wasStandby: false,
-  preview: null, cur: null };
+  preview: null, cur: null,
+  practice: null, grp: "", song: null, orig: null, lyIdx: -1, lyBase: 0, lyRaf: 0 };
 const SING_SECS = 30, SING_MIN = 10;
+const SING_LEAD_S = 0.4;   // 听原唱从第一句前一点放，听得到起音
 const SING_TIPS = [
-  "唱一首你熟悉、有高有低的歌，流行歌最好，儿歌也行",
+  "唱一首你熟悉、有高有低、能拖长音的歌，别选说唱",
   "用平时唱歌的声音，放开唱，大声一点",
   "不用在调上，不用唱准，也不用唱完整",
   "安静的房间，不要放伴奏，离屏幕一臂远",
@@ -29,6 +32,8 @@ function singBusy() {
 function singRecOpen(name) {
   if ($("settings")?.open) $("settings").close();   // 设置是置顶的 dialog，不关会盖住录音界面
   sing.name = name; sing.gen++;
+  sing.song = null; sing.grp = "";
+  singOrigStop();
   singDropTake();
   let el = $("sgr");
   if (!el) {
@@ -41,14 +46,159 @@ function singRecOpen(name) {
   el.innerHTML = `<div class="sgr-card">
     <button type="button" class="sgr-x" data-s="close" aria-label="关闭">✕</button>
     <h2>录「<span>${esc(name)}</span>」唱歌的声音</h2>
-    <div class="sgr-ring"><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="bg" cx="60" cy="60" r="54"/>
-      <circle class="fg" id="sgr-arc" cx="60" cy="60" r="54"/></svg>
-      <div class="sgr-mid"><b id="sgr-num">${SING_SECS}</b><small id="sgr-unit">秒</small></div></div>
-    <canvas id="sgr-wave" class="sgr-wave" width="520" height="56" aria-hidden="true"></canvas>
-    <p class="sgr-say" id="sgr-say" aria-live="polite">准备好了就点「开始录」</p>
-    <ul class="sgr-tips">${SING_TIPS.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
-    <div class="sgr-btns" id="sgr-btns"></div></div>`;
+    <div class="sgr-body">
+      <div class="sgr-main">
+        <div class="sgr-ring"><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="bg" cx="60" cy="60" r="54"/>
+          <circle class="fg" id="sgr-arc" cx="60" cy="60" r="54"/></svg>
+          <div class="sgr-mid"><b id="sgr-num">${SING_SECS}</b><small id="sgr-unit">秒</small></div></div>
+        <canvas id="sgr-wave" class="sgr-wave" width="520" height="56" aria-hidden="true"></canvas>
+        <p class="sgr-say" id="sgr-say" aria-live="polite">准备好了就点「开始录」</p>
+        <div class="sgr-btns" id="sgr-btns"></div>
+      </div>
+      <section class="sgr-song" id="sgr-song" aria-label="跟着唱的歌"></section>
+    </div></div>`;
   singPhase("intro");
+  const last = localGet("sing.song." + name);
+  if (last === "own") singOwn();
+  else if (last && /^[a-z]+$/.test(last)) singLoadSong(last);
+  else singChooser();
+}
+
+// ---------------------------------------------------------------- 跟着唱的歌（server/sing/practice.py）
+// 右边一栏：先挑一首（儿歌 / 流行 / 爸爸妈妈那时候），出这首 30 秒出头的那段歌词；能先听这段原唱找调。
+// 录的时候不放原唱（会混进录音），歌词按原唱的快慢一句句亮；唱快了慢了点一下正在唱的那句就对上。唱完一遍从头再来。
+
+function singGroupFor(name) {
+  return /爸|妈|爷|奶|姥|公|婆|叔|姨|舅|姑|伯/.test(name) ? "pop" : "kids";
+}
+
+async function singChooser() {
+  singOrigStop();
+  sing.song = null;
+  const box = $("sgr-song");
+  if (!box) return;
+  if (!sing.practice) {
+    box.innerHTML = '<p class="sgr-song-wait">歌单拿着呢…</p>';
+    try { sing.practice = await api("api/sing/practice").then(json); } catch (err) {
+      box.innerHTML = `<p class="sgr-song-wait">歌单没拿到：${esc(err.message)}</p>`;
+      return;
+    }
+  }
+  const p = sing.practice;
+  sing.grp = sing.grp || singGroupFor(sing.name);
+  box.innerHTML = `<h3>挑一首会唱的歌，跟着歌词唱</h3>
+    <div class="sgr-tabs" role="tablist">${p.groups.map((g) => `<button type="button" role="tab" data-s="grp" data-g="${g.id}"
+      aria-selected="${g.id === sing.grp}">${esc(g.name)}</button>`).join("")}</div>
+    <div class="sgr-chips">${p.songs.filter((s) => s.group === sing.grp).map((s) => `<button type="button" data-s="song" data-id="${s.id}">
+      <b>${esc(s.title)}</b>${s.artist ? `<small>${esc(s.artist)}</small>` : ""}</button>`).join("")}
+      <button type="button" class="own" data-s="own"><b>🎵 自己唱别的</b><small>不看歌词</small></button></div>`;
+}
+
+function singOwn() {
+  singOrigStop();
+  sing.song = null;
+  localSet("sing.song." + sing.name, "own");
+  const box = $("sgr-song");
+  if (!box) return;
+  box.innerHTML = `<h3>自己挑一首唱</h3><ul class="sgr-tips">${SING_TIPS.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+    <button type="button" class="sgr-link" data-s="pick">← 还是看着歌词唱</button>`;
+}
+
+async function singLoadSong(id) {
+  singOrigStop();
+  const box = $("sgr-song");
+  if (!box) return;
+  const g = sing.gen;
+  box.innerHTML = '<p class="sgr-song-wait">歌词拿着呢…</p>';
+  let d;
+  try { d = await api(`api/sing/practice/${id}`).then(json); } catch (err) {
+    toast(err.message);
+    singChooser();
+    return;
+  }
+  if (g !== sing.gen || !$("sgr-song")) return;
+  sing.song = d;
+  sing.lyIdx = -1;
+  localSet("sing.song." + sing.name, id);
+  box.innerHTML = `<div class="sgr-song-head"><div><b>《${esc(d.title)}》</b><small>${esc(d.artist)}</small></div>
+      ${d.listen ? '<button type="button" data-s="orig" id="sgr-orig">▶ 先听原唱</button>' : ""}
+      <button type="button" data-s="pick">换一首</button></div>
+    <div class="sgr-ly" id="sgr-ly">${d.lines.map((x, i) => `<p data-s="line" data-i="${i}">${esc(x.text)}</p>`).join("")}</div>
+    <p class="sgr-ly-tip">${d.listen ? "不会起调就先听一遍原唱；" : ""}录的时候歌词会一句句亮，唱快了慢了点一下正在唱的那句</p>`;
+  singLyAt(0);
+}
+
+// 亮第几句：t 是从这段开头算的秒
+function singLyAt(t) {
+  const d = sing.song, box = $("sgr-ly");
+  if (!d || !box) return;
+  let i = 0;
+  while (i + 1 < d.lines.length && d.lines[i + 1].t <= t) i++;
+  if (i === sing.lyIdx) return;
+  sing.lyIdx = i;
+  box.querySelectorAll("p.cur").forEach((p) => p.classList.remove("cur"));
+  const p = box.children[i];
+  if (!p) return;
+  p.classList.add("cur");
+  box.scrollTo({ top: p.offsetTop - box.clientHeight / 2 + p.clientHeight / 2, behavior: "smooth" });
+}
+
+// 录音时的歌词时钟：从 base 起算；唱完这段（最后一句再留 4 秒）从头再来
+function singLyStart() {
+  const d = sing.song;
+  cancelAnimationFrame(sing.lyRaf);
+  if (!d?.lines.length) return;
+  sing.lyBase = performance.now();
+  sing.lyIdx = -1;
+  const span = d.lines[d.lines.length - 1].t + 4;
+  const tick = () => {
+    if ($("sgr")?.dataset.phase !== "rec") return;
+    let t = (performance.now() - sing.lyBase) / 1000;
+    if (t >= span) { sing.lyBase = performance.now(); t = 0; }
+    singLyAt(t);
+    sing.lyRaf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+// 点一句：录的时候 = 「我正唱到这句」，歌词时钟对过来；没在录 = 只是亮一下
+function singLyTap(i) {
+  const d = sing.song;
+  if (!d?.lines[i]) return;
+  if ($("sgr")?.dataset.phase === "rec") { sing.lyBase = performance.now() - d.lines[i].t * 1000; sing.lyIdx = -1; }
+  else if (sing.orig && !sing.orig.paused) { sing.orig.currentTime = Math.max(0, d.start + d.lines[i].t - SING_LEAD_S); }
+  else singLyAt(d.lines[i].t);
+}
+
+function singOrig() {
+  const d = sing.song;
+  if (!d) return;
+  if (sing.orig && !sing.orig.paused) { singOrigStop(); return; }
+  if (typeof pracHushXiaoxin === "function") pracHushXiaoxin(); else stopSpeaking();
+  sing.cur?.audio?.pause();
+  const btn = $("sgr-orig");
+  const a = sing.orig = new Audio(`api/sing/practice/${d.id}/audio`);
+  a.preload = "auto";
+  if (btn) btn.textContent = "加载中…";
+  a.addEventListener("loadedmetadata", () => {
+    a.currentTime = Math.max(0, d.start - SING_LEAD_S);
+    a.play().catch((err) => { toast("放不了：" + err.message); singOrigStop(); });
+  }, { once: true });
+  a.addEventListener("playing", () => { if (btn && sing.orig === a) btn.textContent = "❚❚ 停"; });
+  a.addEventListener("timeupdate", () => {
+    if (sing.orig !== a) return;
+    singLyAt(a.currentTime - d.start);
+    if (a.currentTime >= d.end) singOrigStop();
+  });
+  a.addEventListener("error", () => { if (sing.orig === a) { toast("原唱放不了，可能 QQ 音乐登录过期了"); singOrigStop(); } });
+}
+
+function singOrigStop() {
+  const a = sing.orig;
+  sing.orig = null;
+  if (a) { a.pause(); a.removeAttribute("src"); a.load(); }
+  const btn = $("sgr-orig");
+  if (btn) btn.textContent = "▶ 先听原唱";
 }
 
 function singPhase(p) {
@@ -64,6 +214,8 @@ function singPhase(p) {
     saving: '<button type="button" class="go" disabled>存着呢…</button>',
   }[p];
   $("sgr-btns").innerHTML = b;
+  if (p !== "rec") cancelAnimationFrame(sing.lyRaf);
+  if (p === "intro" || p === "count") { sing.lyIdx = -1; singLyAt(0); }
   if (p === "intro") { singRing(0); $("sgr-num").textContent = SING_SECS; $("sgr-unit").textContent = "秒"; }
 }
 
@@ -73,19 +225,27 @@ function singRing(frac) {
 }
 
 async function singRecClick(e) {
-  const s = e.target.closest("[data-s]")?.dataset.s;
+  const b = e.target.closest("[data-s]");
+  const s = b?.dataset.s;
   if (s === "close") singRecClose();
   else if (s === "start") singRecStart();
   else if (s === "again") { await singRecAbort(); singPhase("intro"); $("sgr-say").textContent = "准备好了就点「开始录」"; }
   else if (s === "stop") singRecStop();
   else if (s === "listen") singListen();
   else if (s === "save") singSave();
+  else if (s === "grp") { sing.grp = b.dataset.g; singChooser(); }
+  else if (s === "song") singLoadSong(b.dataset.id);
+  else if (s === "own") singOwn();
+  else if (s === "pick") singChooser();
+  else if (s === "orig") singOrig();
+  else if (s === "line") singLyTap(Number(b.dataset.i));
 }
 
 // 开始录：小新闭嘴、自由对话挂断、待命让出麦克风（来电也是这样，见 app.js 的 call）
 function singQuiet() {
   if (typeof pracHushXiaoxin === "function") pracHushXiaoxin(); else stopSpeaking();
   sing.cur?.audio?.pause();
+  singOrigStop();
   if (talk.on) hangUp(false, true);
   if (standby.on && native?.standby) { sing.wasStandby = true; setStandby(false); }
 }
@@ -118,6 +278,7 @@ async function singRecStart() {
   if (g !== sing.gen || !sing.rec) return;
   sing.rec.chunks = []; sing.levels = [];
   singPhase("rec");
+  singLyStart();
   $("sgr-unit").textContent = "秒";
   const t0 = performance.now();
   clearInterval(sing.timer);
@@ -189,6 +350,7 @@ async function singSave() {
 
 async function singRecClose() {
   await singRecAbort();
+  singOrigStop();
   singDropTake();
   if ($("sgr")) $("sgr").hidden = true;
   singResume();
@@ -397,9 +559,8 @@ function singFull(c) {
 
 // ---------------------------------------------------------------- 设置 → 唱歌
 
-const singQr = { sid: "", timer: 0, kind: "mobile" };
+const singQr = { sid: "", timer: 0, kind: "wx" };
 const SING_QR_TIP = {
-  mobile: "打开 QQ 音乐 App，点首页的「扫一扫」扫这个码",
   qq: "打开手机 QQ，右上角「+」→「扫一扫」，要用开了会员的那个号",
   wx: "打开微信「扫一扫」（QQ 音乐会员要绑在这个微信上）",
 };

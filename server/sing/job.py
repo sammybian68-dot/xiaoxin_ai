@@ -61,8 +61,8 @@ def _norm(s: str) -> str:
     return re.sub(r"[\s·・\-—_（）()《》【】\[\]]+", "", s or "").lower()
 
 
-def pick(song: str, artist: str = "") -> dict:
-    """搜歌挑一首：歌名对得上的优先，伴奏 / DJ / 片段不要（没人声，唱不了），没点名「现场版」就不要现场版。"""
+def candidates(song: str, artist: str = "") -> list[dict]:
+    """搜歌、按合适程度排好：歌名对得上的在前，伴奏 / DJ / 片段不要（没人声，唱不了），没点名「现场版」就不要现场版。"""
     found = qq.search(f"{song} {artist}".strip(), 10)
     want = _norm(song)
     live_ok = bool(_LIVE.search(song))
@@ -70,11 +70,14 @@ def pick(song: str, artist: str = "") -> dict:
     if artist:
         named = [s for s in ok if _norm(artist) in _norm(s["artist"])]
         ok = named or ok
-    exact = [s for s in ok if _norm(s["title"]) == want]
-    best = (exact or ok or [None])[0]
-    if best is None:
+    return [s for s in ok if _norm(s["title"]) == want] + [s for s in ok if _norm(s["title"]) != want]
+
+
+def pick(song: str, artist: str = "") -> dict:
+    found = candidates(song, artist)
+    if not found:
         raise SingError(f"QQ 音乐上没找到《{song}》")
-    return best
+    return found[0]
 
 
 def _original(info: dict) -> Path:
