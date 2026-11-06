@@ -2977,13 +2977,45 @@ function viewerList() {
   return out;
 }
 
+const VGAP = 16;
+const VFLIP_MS = 280;
+const viewer = { list: [], loaded: new Set(), busy: false };
+
+// 翻一张：整条 track 滑过去，滑完再把三张图的内容挪一位、track 归零（看着就是连续的）
 function viewerStep(d) {
+  if (viewer.busy) return;
   const list = viewer.list, i = list.findIndex((x) => x.id === $("viewer-img").dataset.fid);
   const next = list[i + d];
-  if (next) openViewer(next, list);
+  if (!next) { vTrack(0, true); return; }
+  viewer.busy = true;
+  vTrack(-d * ($("viewer-stage").clientWidth + VGAP), true);
+  setTimeout(() => {   // 不用 transitionend：WebView 里偶尔不来
+    viewer.busy = false;
+    if (!$("viewer").open) return;
+    openViewer(next, list);
+    vTrack(0, false);
+  }, VFLIP_MS);
 }
 
-const viewer = { list: [], x0: null };
+function vTrack(dx, anim) {
+  const t = $("viewer-track");
+  t.style.transition = anim ? `transform ${VFLIP_MS}ms cubic-bezier(.2,.7,.2,1)` : "none";
+  t.style.transform = dx ? `translateX(${dx}px)` : "";
+}
+
+// 和微信一样瞬间打开：大图下过就直接放大图；没下过先放已经在缓存里的缩略图（气泡、侧栏刚显示过），大图下完再无缝换上
+function vSrc(el, f) {
+  if (!f) { el.hidden = true; el.removeAttribute("src"); el.dataset.fid = ""; return; }
+  const screen = `api/files/${f.id}?v=screen`;
+  el.hidden = false;
+  el.dataset.fid = f.id;
+  if (viewer.loaded.has(f.id)) { el.src = screen; return; }
+  el.src = `api/files/${f.id}?v=thumb`;
+  const big = new Image();
+  big.onload = () => { viewer.loaded.add(f.id); if ($("viewer").open && el.dataset.fid === f.id) el.src = screen; };
+  big.src = screen;
+}
+
 function openViewer(f, list) {
   viewer.list = list && list.length ? list : viewerList();
   if (!viewer.list.some((x) => x.id === f.id)) viewer.list = [f, ...viewer.list];
@@ -2992,13 +3024,10 @@ function openViewer(f, list) {
   $("viewer-prev").hidden = at <= 0;
   $("viewer-next").hidden = at >= viewer.list.length - 1;
   const o = f.original;
-  const img = $("viewer-img");
-  // 和微信一样瞬间打开：先放已经在缓存里的缩略图（气泡、侧栏刚显示过），大图下完再无缝换上，不出现黑屏等图
-  img.src = `api/files/${f.id}?v=thumb`;
-  const big = new Image();
-  big.onload = () => { if ($("viewer").open && img.dataset.fid === f.id) img.src = big.src; };
-  big.src = `api/files/${f.id}?v=screen`;
-  img.dataset.fid = f.id;
+  vReset();
+  vSrc($("viewer-img"), f);
+  vSrc($("viewer-img-prev"), viewer.list[at - 1]);
+  vSrc($("viewer-img-next"), viewer.list[at + 1]);
   $("viewer-orig").hidden = !(o && o.received >= o.size);
   $("viewer-orig").href = `api/files/${f.id}`;
   $("viewer-orig").textContent = o ? `查看原图（${sizeLabel(o.size)}）` : "查看原图";
@@ -3013,26 +3042,145 @@ $("viewer").addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") { e.preventDefault(); viewerStep(-1); }
   else if (e.key === "ArrowRight") { e.preventDefault(); viewerStep(1); }
 });
-// 手指左右滑翻页：在 pointermove 里就判（滑到一半就翻），不等 pointerup——WebView 把横向拖当成滚动手势，
-// 中途发 pointercancel，pointerup 根本不来（2026-11-02 pad 实测滑动没反应就是这个）。touch-action: none 也一起加上。
-$("viewer").addEventListener("pointerdown", (e) => {
-  if (e.target.closest("button, a")) return;
-  viewer.x0 = e.clientX;
-  viewer.y0 = e.clientY;
-  viewer.done = false;
-});
-$("viewer").addEventListener("pointermove", (e) => {
-  if (viewer.x0 == null || viewer.done) return;
-  const dx = e.clientX - viewer.x0, dy = e.clientY - viewer.y0;
-  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-    viewer.done = true;      // 这一下已经翻了：手指抬起来之前不再翻第二张
-    viewer.x0 = null;
-    viewerStep(dx < 0 ? 1 : -1);
-  }
-});
-for (const ev of ["pointerup", "pointercancel", "pointerleave"]) {
-  $("viewer").addEventListener(ev, () => { viewer.x0 = null; });
+
+// ---------------- 看大图的手势：单指左右拖跟手翻页、双指缩放、放大后单指拖着看、双击放大 / 还原
+// 手指用 touch 事件不用 pointer：WebView 把横向拖当成滚动手势，中途发 pointercancel，pointerup 根本不来
+// （2026-11-02 pad 实测）。鼠标（电脑上）走 pointer，拖动翻页、滚轮缩放、双击放大。
+const VZ_MAX = 5, VZ_TAP = 2.5;
+const vz = { s: 1, x: 0, y: 0 };   // 当前图的缩放和平移，transform-origin 是左上角
+const vg = { mode: "", lastTap: 0 };
+
+function vApply(anim) {
+  const img = $("viewer-img");
+  img.style.transition = anim ? "transform .25s ease-out" : "none";
+  img.style.transform = vz.s === 1 && !vz.x && !vz.y ? "" : `translate(${vz.x}px, ${vz.y}px) scale(${vz.s})`;
 }
+function vReset(anim = false) { vz.s = 1; vz.x = 0; vz.y = 0; vApply(anim); }
+
+// 放大后别拖出边：图比框小的那一边居中，比框大的那一边拖到贴边为止（object-fit: contain 留的黑边不算图）
+function vClamp() {
+  if (vz.s <= 1) { vz.s = 1; vz.x = 0; vz.y = 0; return; }
+  const img = $("viewer-img"), W = img.clientWidth, H = img.clientHeight;
+  const nw = img.naturalWidth || W, nh = img.naturalHeight || H, k = Math.min(W / nw, H / nh);
+  const fit = (t, len, box) => {
+    const o = (box - len) / 2, L = vz.s * len;
+    return L <= box ? (box - L) / 2 - vz.s * o : Math.min(-vz.s * o, Math.max(box - vz.s * (o + len), t));
+  };
+  vz.x = fit(vz.x, nw * k, W);
+  vz.y = fit(vz.y, nh * k, H);
+}
+
+function vZoomAt(px, py, s) {   // 以框里的 (px, py) 为中心缩放到 s：那一点下面的图不动
+  const k = s / vz.s;
+  vz.x = px - (px - vz.x) * k;
+  vz.y = py - (py - vz.y) * k;
+  vz.s = s;
+}
+
+function vPoints(list) {
+  const r = $("viewer-stage").getBoundingClientRect();
+  return [...list].map((t) => ({ x: t.clientX - r.left, y: t.clientY - r.top }));
+}
+const vDist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) || 1;
+const vMid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+function vStart(p) {
+  if (viewer.busy) { vg.mode = ""; return; }
+  vg.z0 = { ...vz };
+  if (p.length >= 2) {
+    vTrack(0, true);   // 拖着翻页时又放下第二根手指：先弹回去，改成捏
+    vg.mode = "pinch";
+    vg.d0 = vDist(p[0], p[1]);
+    vg.m0 = vMid(p[0], p[1]);
+    return;
+  }
+  vg.mode = vz.s > 1 ? "pan" : "swipe";
+  vg.p0 = vg.last = p[0];
+  vg.t0 = vg.tl = performance.now();
+  vg.dx = vg.vx = 0;
+  vg.axis = "";
+}
+
+function vMove(p) {
+  if (vg.mode === "pinch" && p.length >= 2) {
+    const s = Math.min(VZ_MAX, Math.max(0.6, vg.z0.s * vDist(p[0], p[1]) / vg.d0)), m = vMid(p[0], p[1]);
+    vz.x = m.x - (vg.m0.x - vg.z0.x) * (s / vg.z0.s);
+    vz.y = m.y - (vg.m0.y - vg.z0.y) * (s / vg.z0.s);
+    vz.s = s;
+    vApply(false);
+    return;
+  }
+  if (!p.length) return;
+  const dx = p[0].x - vg.p0.x, dy = p[0].y - vg.p0.y;
+  if (vg.mode === "pan") {
+    vz.x = vg.z0.x + dx;
+    vz.y = vg.z0.y + dy;
+    vClamp();
+    vApply(false);
+  } else if (vg.mode === "swipe") {
+    if (!vg.axis && Math.hypot(dx, dy) > 8) vg.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    if (vg.axis !== "x") return;
+    const at = viewer.list.findIndex((x) => x.id === $("viewer-img").dataset.fid);
+    const edge = (dx > 0 && at <= 0) || (dx < 0 && at >= viewer.list.length - 1);
+    const now = performance.now();
+    vg.vx = (p[0].x - vg.last.x) / Math.max(1, now - vg.tl);
+    vg.last = p[0];
+    vg.tl = now;
+    vg.dx = edge ? dx * 0.3 : dx;   // 到头了：拉得动但有阻力，松手弹回
+    vTrack(vg.dx, false);
+  }
+}
+
+// rest：还按着的手指（双指松开一根，剩下那根接着拖）；p：松开那一下的位置（判双击用）
+function vEnd(rest, p) {
+  if (vg.mode === "pinch") {
+    if (rest.length === 1 && vz.s > 1) { vStart(rest); return; }
+    if (rest.length) return;
+    if (vz.s < 1.05) vReset(true); else { vClamp(); vApply(true); }
+    vg.mode = "";
+    return;
+  }
+  if (rest.length) return;
+  if (vg.mode === "swipe" && vg.axis === "x") {
+    const W = $("viewer-stage").clientWidth;
+    if (Math.abs(vg.dx) > W * 0.18 || (Math.abs(vg.vx) > 0.45 && Math.abs(vg.dx) > 24)) viewerStep(vg.dx < 0 ? 1 : -1);
+    else vTrack(0, true);
+  } else if ((vg.mode === "swipe" || vg.mode === "pan") && !vg.axis && p && Math.hypot(p.x - vg.p0.x, p.y - vg.p0.y) < 10
+             && performance.now() - vg.t0 < 300) {
+    const now = performance.now();
+    if (now - vg.lastTap < 320) { vg.lastTap = 0; vToggleZoom(p); } else vg.lastTap = now;
+  }
+  vg.mode = "";
+}
+
+function vToggleZoom(p) {
+  if (vz.s > 1) { vReset(true); return; }
+  vZoomAt(p.x, p.y, VZ_TAP);
+  vClamp();
+  vApply(true);
+}
+
+const vStage = $("viewer-stage");
+vStage.addEventListener("touchstart", (e) => vStart(vPoints(e.touches)), { passive: true });
+vStage.addEventListener("touchmove", (e) => { e.preventDefault(); vMove(vPoints(e.touches)); }, { passive: false });
+vStage.addEventListener("touchend", (e) => vEnd(vPoints(e.touches), vPoints(e.changedTouches)[0]));
+vStage.addEventListener("touchcancel", () => { vEnd([], null); vTrack(0, true); });
+vStage.addEventListener("pointerdown", (e) => {
+  if (e.pointerType !== "mouse" || e.button !== 0) return;
+  vStage.setPointerCapture(e.pointerId);
+  vStart(vPoints([e]));
+});
+vStage.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" && vg.mode) vMove(vPoints([e])); });
+vStage.addEventListener("pointerup", (e) => { if (e.pointerType === "mouse" && vg.mode) vEnd([], vPoints([e])[0]); });
+vStage.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const p = vPoints([e])[0];
+  vZoomAt(p.x, p.y, Math.min(VZ_MAX, Math.max(1, vz.s * Math.exp(-e.deltaY / 300))));
+  vClamp();
+  vApply(false);
+}, { passive: false });
+$("viewer").addEventListener("close", () => { viewer.busy = false; vg.mode = ""; vReset(); vTrack(0, false); });
+window.addEventListener("resize", () => { if ($("viewer").open) vReset(); });
 // 保存：有原图存原图，没有存 2048 的大图。APK 里交给原生写进系统相册（Pictures/小新），浏览器里就是下载
 $("viewer-save").addEventListener("click", async () => {
   const fid = $("viewer-img").dataset.fid;

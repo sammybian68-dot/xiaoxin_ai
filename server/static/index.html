@@ -209,7 +209,13 @@
 
 <!-- 看大图：点气泡里的缩略图、侧栏的文件。不跳页（APK 里跳出去就回不来了） -->
 <dialog id="viewer" class="viewer" aria-label="看图">
-  <img id="viewer-img" alt="">
+  <div id="viewer-stage" class="viewer-stage">
+    <div id="viewer-track" class="viewer-track">
+      <img id="viewer-img-prev" class="viewer-side" alt="" draggable="false" hidden>
+      <img id="viewer-img" alt="" draggable="false">
+      <img id="viewer-img-next" class="viewer-side" alt="" draggable="false" hidden>
+    </div>
+  </div>
   <button type="button" id="viewer-prev" class="viewer-nav prev" aria-label="上一张">‹</button>
   <button type="button" id="viewer-next" class="viewer-nav next" aria-label="下一张">›</button>
   <div class="viewer-bar">
