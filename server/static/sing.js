@@ -368,6 +368,12 @@ function singAction(row, a) {
     bubble.insertBefore(chip, at);
     return true;
   }
+  if (a.name === "sing_list") {
+    const m = /\[sing-list:([^\]]*)\]/.exec(a.result || "");
+    if (!m) return false;
+    singListCard(row, m[1]);
+    return true;
+  }
   if (a.name === "record_singing_voice") {
     const name = /\[sing-rec:([^\]]+)\]/.exec(a.result || "")?.[1];
     if (!name) return false;
@@ -401,8 +407,13 @@ function singLrc(text) {
 }
 
 function singCard(row, m) {
-  const s = m.sing;
-  if (!s?.file) return;
+  if (!m.sing?.file) return;
+  const c = singCardEl(m.sing);
+  row.querySelector(".bubble").insertBefore(c.el, row.querySelector(".bubble .text"));
+  requestAnimationFrame(() => { singSync(c, 0); if (typeof revealRow === "function") revealRow(row); });
+}
+
+function singCardEl(s) {
   const cover = s.cover ? `api/sing/cover/${encodeURIComponent(s.cover)}` : "";
   const c = { s, lines: singLrc(s.lrc), idx: -2, off: Number(localGet("sing.off." + (s.mid || s.file)) || 0), audio: null,
     dragging: false, raf: 0, dur: Number(s.seconds) || 0, el: document.createElement("div"), home: null };
@@ -443,8 +454,57 @@ function singCard(row, m) {
     singSync(c, seek.value / 10);
   });
   singOffNote(c);
-  row.querySelector(".bubble").insertBefore(el, row.querySelector(".bubble .text"));
-  requestAnimationFrame(() => { singSync(c, 0); if (typeof revealRow === "function") revealRow(row); });
+  return c;
+}
+
+// ---------------------------------------------------------------- 歌单（sing_list 工具 → 聊天里一张卡）
+// 上面按声音分（全部 / 爸爸 / 卞依一），下面一首一行，多了在卡片里上下翻；点一首：列表上面出那首的音乐卡片接着放
+// （歌词、循环、全屏、发到微信都是同一张卡）。歌词只在点的时候拿（/api/sing/songs/{file}），列表不带
+async function singListCard(row, who) {
+  let d;
+  try { d = await api("api/sing/songs").then(json); } catch (e) { return; }
+  const box = document.createElement("div");
+  box.className = "sgl";
+  const pick = d.singers.some((x) => x.name === who) ? who : "";
+  box.innerHTML = `<div class="sgl-head"><b>🎤 AI 翻唱歌单</b><small>${d.songs.length} 首</small></div>
+    ${d.singers.length > 1 ? `<div class="sgl-tabs" role="tablist"><button type="button" data-who="" class="${pick ? "" : "on"}">全部 ${d.songs.length}</button>${d.singers
+      .map((x) => `<button type="button" data-who="${esc(x.name)}" class="${x.name === pick ? "on" : ""}">${esc(x.name)} ${x.n}</button>`).join("")}</div>` : ""}
+    <div class="sgl-now"></div>
+    <div class="sgl-list">${d.songs.length ? d.songs.map((s) => `<button type="button" class="sgl-row" data-f="${esc(s.file)}" data-who="${esc(s.singer)}">
+      ${s.cover ? `<img src="api/sing/cover/${encodeURIComponent(s.cover)}" alt="" loading="lazy">` : '<span class="sgl-noart">🎵</span>'}
+      <span class="sgl-t"><b>${esc(s.title)}</b><small>${esc(s.singer)} · 原唱 ${esc(s.artist)}</small></span>
+      <i>${singTime(s.seconds || 0)}</i><em aria-hidden="true">▶</em></button>`).join("")
+      : '<p class="sgl-none">还没有翻唱过的歌，说「用爸爸的声音唱江南」就能唱一首</p>'}</div>`;
+  const filter = (name) => {
+    for (const b of box.querySelectorAll(".sgl-tabs button")) b.classList.toggle("on", b.dataset.who === name);
+    for (const r of box.querySelectorAll(".sgl-row")) r.hidden = !!name && r.dataset.who !== name;
+    box.querySelector(".sgl-list").scrollTop = 0;
+  };
+  box.addEventListener("click", (e) => {
+    const tab = e.target.closest(".sgl-tabs button");
+    if (tab) { filter(tab.dataset.who); return; }
+    const r = e.target.closest(".sgl-row");
+    if (r) singListPlay(box, r);
+  });
+  if (pick) filter(pick);
+  row.querySelector(".bubble").insertBefore(box, row.querySelector(".bubble .text"));
+  requestAnimationFrame(() => typeof revealRow === "function" && revealRow(row));
+}
+
+async function singListPlay(box, r) {
+  const slot = box.querySelector(".sgl-now");
+  const old = slot.firstElementChild?._sg;
+  if (old && slot.dataset.f === r.dataset.f) { singPlay(old); return; }   // 点正在放的那首：暂停 / 接着放
+  let s;
+  try { s = await api(`api/sing/songs/${encodeURIComponent(r.dataset.f)}`).then(json); } catch (e) { toast(e.message); return; }
+  if (old) { old.audio?.pause(); if (old.el.classList.contains("full")) singFull(old); }
+  const c = singCardEl(s);
+  slot.replaceChildren(c.el);
+  slot.dataset.f = r.dataset.f;
+  for (const x of box.querySelectorAll(".sgl-row.cur")) x.classList.remove("cur");
+  r.classList.add("cur");
+  requestAnimationFrame(() => singSync(c, 0));
+  singPlay(c);
 }
 
 function singCardClick(c, e) {

@@ -104,7 +104,7 @@ def test_voice_must_be_a_real_recording(home):
 # ---------------------------------------------------------------- 工具
 
 def test_tools_are_registered():
-    assert {"record_singing_voice", "sing_song"} <= set(registry.LOCAL)
+    assert {"record_singing_voice", "sing_song", "sing_list"} <= set(registry.LOCAL)
     assert "sing" in prompts.ORDER
 
 
@@ -214,6 +214,60 @@ def test_kid_can_record_but_not_delete_others_or_touch_qq_login(client, home):
         assert client.delete(f"/api/sing/voices/{dads['id']}").status_code == 200
     finally:
         pad.__exit__(None, None, None)
+
+
+def _cover(thread, singer, title, mid, at):
+    """线程里放一首唱好的歌（和 job._work 发的一样的字段），返回文件 id。"""
+    fid, p = store.allocate()
+    p.write_bytes(b"\xff\xfb" + b"\0" * 100)
+    meta = store.commit(fid, f"{singer}唱《{title}》.mp3", "audio/mpeg", 102, owner="xiaoxin")
+    store.append(thread, {"role": "assistant", "via": "sing", "files": [meta], "text": "做好了", "created": at,
+                          "sing": {"file": fid, "title": title, "artist": "原唱", "album": "", "cover": "", "singer": singer,
+                                   "voice": "v_" + singer, "mid": mid, "lrc": "[00:01.00]第一句", "seconds": 200.0}})
+    return fid
+
+
+def test_sing_list_groups_by_voice_and_keeps_newest_retake(client, home):
+    t = home["kid"]["thread"]
+    _cover(t, "爸爸", "江南", "m1", 1)
+    retake = _cover(t, "爸爸", "江南", "m1", 3)
+    _cover(t, "爸爸", "泡沫", "m2", 2)
+    _cover(t, "卞依一", "江南", "m1", 4)          # 同一首，不同的声音：两首都留
+    gone = _cover(t, "爸爸", "洋葱", "m3", 5)
+    store.abort(gone)
+    songs = job.library([t])
+    assert [(s["singer"], s["title"]) for s in songs] == [("卞依一", "江南"), ("爸爸", "江南"), ("爸爸", "泡沫")]
+    assert songs[1]["file"] == retake and "lrc" not in songs[0]
+
+    out = _run("sing_list")
+    assert "[sing-list:]" in out and "爸爸 2 首：江南、泡沫" in out and "播报：" in out
+    assert "[sing-list:爸爸]" in _run("sing_list", singer="爸爸") and "爸爸翻唱的 2 首" in _run("sing_list", singer="爸爸")
+    assert "[sing-list:卞依一]" in _run("sing_list", singer="我")   # 「我唱过哪些歌」：这台 pad 的主人
+    assert "[sing-list:]" in _run("sing_list", singer="妈妈") and "还没有" in _run("sing_list", singer="妈妈")
+
+    d = client.get("/api/sing/songs").json()
+    assert d["singers"] == [{"name": "卞依一", "n": 1}, {"name": "爸爸", "n": 2}] and len(d["songs"]) == 3
+    one = client.get(f"/api/sing/songs/{retake}").json()
+    assert one["lrc"] == "[00:01.00]第一句" and one["title"] == "江南"
+
+
+def test_sing_list_kid_sees_only_own_thread(client, home):
+    son = client.post("/api/members", json={"role": "kid", "name": "儿子"}).json()
+    mine = _cover(home["kid"]["thread"], "爸爸", "江南", "m1", 1)
+    his = _cover(members.get(son["id"])["thread"], "爸爸", "孤勇者", "m9", 2)
+    assert len(client.get("/api/sing/songs").json()["songs"]) == 2          # 家长看全家
+    pad = _device(client, home["kid"]["id"])
+    try:
+        assert [s["file"] for s in pad.get("/api/sing/songs").json()["songs"]] == [mine]
+        assert pad.get(f"/api/sing/songs/{his}").status_code == 404
+    finally:
+        pad.__exit__(None, None, None)
+    assert "孤勇者" not in _run("sing_list")                                 # 孩子说的：只数自己线程里的
+    tok = printer_tools.ctx.set({**printer_tools.ctx.get(), "by": home["dad"]["id"]})
+    try:
+        assert "孤勇者" in _run("sing_list")                                 # 爸爸说的：全家
+    finally:
+        printer_tools.ctx.reset(tok)
 
 
 def test_cover_rejects_odd_names(client):

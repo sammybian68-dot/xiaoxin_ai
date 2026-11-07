@@ -650,7 +650,7 @@ function showAction(row, a) {
   // 英语小剧场（english_scene.js）：课程卡片、做新场景、看板
   if (a.name.startsWith("english_scene") && typeof ensAction === "function" && ensAction(row, a)) return;
   // 翻唱（sing.js）：录唱歌声音的入口、「在唱了」
-  if ((a.name === "record_singing_voice" || a.name === "sing_song") && typeof singAction === "function" && singAction(row, a)) return;
+  if (["record_singing_voice", "sing_song", "sing_list"].includes(a.name) && typeof singAction === "function" && singAction(row, a)) return;
   if (a.name === "make_exercise" || a.name === "make_worksheet") {
     const wid = /w_([0-9a-f]{16})/.exec(a.result || "")?.[1];
     if (wid) { worksheetCard(row, wid); return; }

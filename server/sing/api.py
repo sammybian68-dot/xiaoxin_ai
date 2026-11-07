@@ -124,6 +124,35 @@ async def sing_practice_audio(request: Request, sid: str) -> FileResponse:
     return FileResponse(p, media_type="audio/mpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
+# ---------------------------------------------------------------- 歌单（聊天里的 sing_list 卡片）
+
+def visible_threads(w) -> list[str]:
+    """家长、管理员看全家孩子线程里唱的；孩子只看自己线程里的。"""
+    from server.family import members
+
+    if w.at_least("parent"):
+        return [k["thread"] for k in members.kids(active_only=False) if k.get("thread")]
+    t = w.member.get("thread") if w.member else None
+    return [t] if t else []
+
+
+@router.get("/api/sing/songs")
+def sing_songs(request: Request) -> dict:
+    """唱好的歌（新的在前）和按声音分的人数，卡片自己按人筛。"""
+    songs = job.library(visible_threads(_who(request)))
+    singers: dict[str, int] = {}
+    for s in songs:
+        singers[s["singer"]] = singers.get(s["singer"], 0) + 1
+    return {"songs": songs, "singers": [{"name": n, "n": c} for n, c in singers.items()]}
+
+
+@router.get("/api/sing/songs/{fid}")
+def sing_song(request: Request, fid: str) -> dict:
+    """点歌单里的一首：整张音乐卡片要的字段（带歌词）。"""
+    _, sing = _sing_file(request, fid)
+    return sing
+
+
 # ---------------------------------------------------------------- 发到微信的视频
 
 def _sing_of(fid: str) -> dict | None:

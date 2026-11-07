@@ -27,8 +27,17 @@ SPECS = [
             "artist": {"type": "string", "description": "原唱，说了才填（「林俊杰的江南」填 林俊杰）"},
         }, "required": ["song"]},
     }},
+    {"type": "function", "function": {
+        "name": "sing_list",
+        "description": "AI 翻唱过的歌：聊天里出一张歌单卡片（按谁的声音分开，点一首就放，歌多了能上下翻）。"
+                       "「把爸爸翻唱的歌都列出来」「我唱过哪些歌」「打开歌单」都用这个，不要自己翻聊天记录数。",
+        "parameters": {"type": "object", "properties": {
+            "singer": {"type": "string", "description": "只看谁的声音唱的（「爸爸」；「我唱过的」填 我）；看全部不填"},
+        }},
+    }},
 ]
-NAMES = {"record_singing_voice", "sing_song"}
+NAMES = {"record_singing_voice", "sing_song", "sing_list"}
+LIST_SAY = 8   # 工具结果里给模型念的歌名最多几首
 _ME = {"", "我", "自己", "我自己", "我的"}
 
 
@@ -68,6 +77,35 @@ def _kid() -> dict:
         return {"name": c.get("kid_name", "")}
 
 
+def _threads(thread: str) -> list[str]:
+    """和 /api/sing/songs 一样的范围：家长、管理员说的看全家，孩子看自己这条线程。"""
+    from server.family import members
+
+    by = _ctx().get("by")
+    if by == "admin" or (_speaker() or {}).get("role") == "parent":
+        return [k["thread"] for k in members.kids(active_only=False) if k.get("thread")] or [thread]
+    return [thread]
+
+
+def _list(thread: str, singer: str) -> str:
+    songs = job.library(_threads(thread))
+    if not songs:
+        return "还没有唱好的歌。[sing-list:]\n播报：还没有翻唱过的歌呢，说「用爸爸的声音唱江南」就能唱一首。"
+    by: dict[str, list[str]] = {}
+    for s in songs:
+        by.setdefault(s["singer"], []).append(s["title"])
+    pick = singer if singer in by else ""
+    sums = "；".join(f"{n} {len(t)} 首：{'、'.join(t[:LIST_SAY])}{' 等' if len(t) > LIST_SAY else ''}" for n, t in by.items())
+    if singer and not pick:
+        head = f"「{singer}」还没有唱过的歌，卡片上列的是全部。"
+        say = f"{singer}还没有翻唱过的歌，我把全部的列出来了，点一首就能听。"
+    else:
+        n = len(by[pick]) if pick else len(songs)
+        head = f"歌单卡片已经发在聊天里（{'只看' + pick if pick else '全部'}，{n} 首）。"
+        say = f"{pick + '翻唱的' if pick else '翻唱过的'} {n} 首歌都列在屏幕上了，点一首就能听。"
+    return f"{head}{sums}。[sing-list:{pick}]\n播报：{say}"
+
+
 def run(name: str, arguments: str) -> str:
     try:
         args = json.loads(arguments or "{}") or {}
@@ -78,7 +116,10 @@ def run(name: str, arguments: str) -> str:
     thread = _ctx().get("thread", "")
     if not thread:
         return "失败：这里不能唱歌（不在聊天里）"
-    singer = _who(str(args.get("singer") or ""))
+    raw = str(args.get("singer") or "").strip()
+    if name == "sing_list":
+        return _list(thread, _who(raw) if raw else "")
+    singer = _who(raw)
     if name == "record_singing_voice":
         if not singer:
             return "失败：不知道是谁的声音，先问一句「你是谁呀」"

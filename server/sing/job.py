@@ -50,6 +50,31 @@ def cover_path(album_mid: str) -> Path | None:
     return store.DATA / "sing" / "covers" / f"{album_mid}.jpg"
 
 
+LIST_FIELDS = ("file", "title", "artist", "album", "cover", "singer", "voice", "mid", "seconds")
+
+
+def library(threads: list[str]) -> list[dict]:
+    """这几条线程里唱好的歌，新的在前。同一个声音唱同一首（重唱过）只留最新的；文件没了的不列。"""
+    out, seen = [], set()
+    for tid in threads:
+        try:
+            msgs = store.get(tid)["messages"]
+        except KeyError:
+            continue
+        for m in msgs:
+            s = m.get("sing") or {}
+            if s.get("file") and store.file_info(s["file"]) is not None:
+                out.append({**{k: s.get(k) for k in LIST_FIELDS}, "created": m.get("created", 0)})
+    out.sort(key=lambda x: -x["created"])
+    keep = []
+    for s in out:
+        k = (s["voice"] or s["singer"], s["mid"] or s["title"])
+        if k not in seen:
+            seen.add(k)
+            keep.append(s)
+    return keep
+
+
 def service_up() -> bool:
     try:
         return requests.get(f"{SVC}/health", timeout=3).json().get("ok") is True
