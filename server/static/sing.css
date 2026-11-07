@@ -76,6 +76,12 @@
 .sgc-seek::-moz-range-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,.22); }
 .sgc-seek::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--sg); }
 .sgc-seek::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; }
+.sgc-loop { flex: none; display: grid; place-items: center; width: 32px; height: 32px; margin-right: -6px; border: 0; border-radius: 50%;
+  padding: 0; background: none; color: rgba(255,255,255,.8); transition: color .15s, background .15s; }
+.sgc-loop svg { width: 20px; height: 20px; fill: currentColor; }
+.sgc-loop.on { color: var(--sg); background: rgba(49,194,124,.22); box-shadow: 0 0 0 1px rgba(49,194,124,.55) inset; }
+.sgc.full .sgc-loop { width: 42px; height: 42px; }
+.sgc.full .sgc-loop svg { width: 26px; height: 26px; }
 
 .sgc-ctl { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 6px 14px 16px; }
 .sgc-ctl button { border: 0; background: none; color: rgba(255,255,255,.78); }

@@ -422,7 +422,8 @@ function singCard(row, m) {
       ? c.lines.map((l, i) => `<p data-i="${i}">${esc(l.text)}</p>`).join("") : '<p class="none">这首没有歌词，安心听吧</p>'}</div></div>
     <div class="sgc-bar"><span class="sgc-cur">0:00</span>
       <input type="range" class="sgc-seek" min="0" max="${Math.max(1, Math.round(c.dur * 10))}" value="0" step="1" aria-label="播放进度">
-      <span class="sgc-dur">${singTime(c.dur)}</span></div>
+      <span class="sgc-dur">${singTime(c.dur)}</span>
+      <button type="button" class="sgc-loop${singLoopOn() ? " on" : ""}" data-c="loop" aria-pressed="${singLoopOn()}" aria-label="单曲循环" title="单曲循环"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z"/></svg></button></div>
     <div class="sgc-ctl">
       <button type="button" class="sgc-off" data-c="off-" title="歌词跑在歌声前面：点这个往后挪">词慢点</button>
       <button type="button" class="sgc-skip" data-c="back" aria-label="后退 10 秒">−10s</button>
@@ -460,6 +461,7 @@ function singCardClick(c, e) {
   if (k === "play") singPlay(c);
   else if (k === "full") singFull(c);
   else if (k === "wx") singShareOpen(c);
+  else if (k === "loop") singLoopSet(!singLoopOn());
   else if (k === "back" || k === "fwd") {
     singEnsureAudio(c);
     const t = Math.min(Math.max(0, c.audio.currentTime + (k === "fwd" ? 10 : -10)), c.dur || 1e9);
@@ -474,6 +476,20 @@ function singCardClick(c, e) {
   }
 }
 
+// 单曲循环：每台设备记一个开关（孩子喜欢一首就反复听），所有卡片一起变；发到微信的试听不跟着循环
+const singLoopOn = () => localGet("sing.loop") === "1";
+
+function singLoopSet(on) {
+  localSet("sing.loop", on ? "1" : "0");
+  for (const el of document.querySelectorAll(".sgc")) {
+    const b = el.querySelector(".sgc-loop");
+    b?.classList.toggle("on", on);
+    b?.setAttribute("aria-pressed", String(on));
+    if (el._sg?.audio && el._sg.audio !== singShare.audio) el._sg.audio.loop = on;
+  }
+  toast(on ? "单曲循环开了：放完从头再放" : "单曲循环关了");
+}
+
 function singOffNote(c) {
   const n = c.el.querySelector(".sgc-note");
   n.hidden = !c.off;
@@ -484,6 +500,7 @@ function singEnsureAudio(c) {
   if (c.audio) return c.audio;
   const a = new Audio(fileUrl({ id: c.s.file }));
   a.preload = "auto";
+  a.loop = singLoopOn();
   c.audio = a;
   const btn = c.el.querySelector(".sgc-play");
   a.addEventListener("loadedmetadata", () => {
@@ -665,6 +682,7 @@ function singShareAudio() {
   const sh = singShare;
   if (!sh.audio) {
     const a = sh.audio = singEnsureAudio(sh.c);
+    a.loop = false;
     a.ontimeupdate = () => { if (!sh.drag && sh.mode === "part" && a.currentTime >= sh.b) singShareStopTry(); };
     a.onended = () => singShareStopTry();
   }
@@ -676,6 +694,7 @@ function singShareRelease() {
   if (!a) return;
   a.pause();
   a.ontimeupdate = a.onended = null;   // 卡片接着用这个播放器：别再按选段停
+  a.loop = singLoopOn();
   singShare.audio = null;
 }
 
