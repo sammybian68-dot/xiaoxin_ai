@@ -157,8 +157,10 @@ def _asr(pcm: bytes) -> str:
 
 def recheck_missing(r: dict, pcm: bytes, heard: str | None, assess) -> dict:
     """讯飞有时把读了的词判成漏读：「Yes, it is」里连读的 is 像 yes，它把那段音当成多读了一遍 yes，it、is 对不上音
-    （2026-11-07 家长自己读 6 次 5 次这样）。ASR 也听到了的那几个词，把前后对上了的词中间那段音切出来、只拿这几个词
-    再评一次（没有 yes 来抢），用这次的分；ASR 也没听到、中间不到 0.2 秒、再评还是漏读的，照旧算漏读。"""
+    （2026-11-07 家长自己读 6 次 5 次这样）；连读里的短词（Look at the 的 at、See you 的 you）标准配音都会被判漏读。
+    ASR 也听到了的那几个词：把前后对上了的词中间那段音切出来、只拿这几个词再评一次（没有 yes 来抢），用这次的分；
+    中间那段太短（不到 0.4 秒）就连着前后各一个词一起切、一起评。再评还是漏读的不算漏读、不打分（score None）。
+    ASR 也没听到的照旧算漏读。"""
     words = [dict(w) for w in r.get("words") or []]
     miss = [k for k, w in enumerate(words) if w["err"] == "漏读"]
     if not miss or not heard:
@@ -170,28 +172,34 @@ def recheck_missing(r: dict, pcm: bytes, heard: str | None, assess) -> dict:
             runs[-1].append(k)
         else:
             runs.append([k])
-    frames = len(pcm) // 320
-    fixed = False
-    for run in runs:
-        ok = lambda j: words[j]["err"] != "漏读" and words[j].get("end")
-        a = max((words[j]["end"] for j in range(run[0]) if ok(j)), default=0)
-        b = min((words[j]["beg"] for j in range(run[-1] + 1, len(words)) if ok(j)), default=frames)
-        if b - a < 20:
-            continue
-        try:
-            sub = assess(" ".join(words[k]["word"] for k in run), pcm[a * 320: b * 320])
-        except Exception:  # noqa: BLE001 再评没成：照旧
-            continue
-        sw = sub.get("words") or []
-        if len(sw) != len(run):
-            continue
-        for k, x in zip(run, sw):
-            if x["err"] != "漏读":
-                words[k].update(score=x["score"], err=x["err"])
-                fixed = True
-    if not fixed:
+    if not runs:
         return r
-    scores = [w["score"] or 0 for w in words]
+    frames = len(pcm) // 320
+    oks = [j for j, w in enumerate(words) if w["err"] != "漏读" and w.get("end")]
+    for run in runs:
+        p = max((j for j in oks if j < run[0]), default=None)
+        q = min((j for j in oks if j > run[-1]), default=None)
+        a = words[p]["end"] if p is not None else 0
+        b = words[q]["beg"] if q is not None else frames
+        lo, hi = run[0], run[-1]
+        if b - a < 40:
+            if p is not None:
+                a, lo = words[p]["beg"], p
+            if q is not None:
+                b, hi = words[q]["end"], q
+        span = list(range(lo, hi + 1))
+        try:
+            sw = assess(" ".join(words[k]["word"] for k in span), pcm[a * 320: b * 320]).get("words") or []
+        except Exception:  # noqa: BLE001 再评没成：当评不出
+            sw = []
+        if len(sw) == len(span):
+            for k, x in zip(span, sw):
+                if k in run and x["err"] != "漏读":
+                    words[k].update(score=x["score"], err=x["err"])
+        for k in run:
+            if words[k]["err"] == "漏读":
+                words[k].update(score=None, err="")
+    scores = [w["score"] for w in words if w["score"] is not None] or [0]
     return {**r, "words": words, "integrity": round(100 * sum(w["err"] != "漏读" for w in words) / len(words), 1),
             "total": max(r.get("total") or 0, round(sum(scores) / len(scores), 1)), "heard": heard}
 

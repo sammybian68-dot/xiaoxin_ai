@@ -147,8 +147,8 @@ function ensRenderTurn(l, r) {
   const line = ws.map((w) => {
     const key = ensKey(w), s = scored.find((x, j) => j >= k && x.w === key);
     if (s) k = scored.indexOf(s) + 1;
-    const v = s?.s, cls = !s ? "" : s.e === "漏读" || v < 60 ? "bad" : v < 80 ? "ok" : "good";
-    return `<button type="button" class="w ${cls}" data-e="word" data-w="${esc(key)}" title="点一下单练这个词">${esc(w)}${s ? `<small>${s.e || Math.round(v)}</small>` : ""}</button>`;
+    const v = s?.s, cls = !s ? "" : s.e === "漏读" || v < 60 ? "bad" : v == null || v < 80 ? "ok" : "good";   // null：听到了、没评出分
+    return `<button type="button" class="w ${cls}" data-e="word" data-w="${esc(key)}" title="点一下单练这个词">${esc(w)}${s && (s.e || v != null) ? `<small>${s.e || Math.round(v)}</small>` : ""}</button>`;
   }).join(" ");
   const meRole = ens.L.roles.find((x) => x.id === ens.me);
   t.innerHTML = `<div class="say"><b>轮到你啦</b>你是 ${esc(meRole?.name || "")}，读这句：</div>

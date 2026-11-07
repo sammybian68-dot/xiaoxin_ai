@@ -391,6 +391,23 @@ def test_missing_words_rechecked_when_asr_heard_them():
     assert [w["err"] for w in r["words"]][1:3] == ["漏读", "漏读"] and "heard" not in r   # ASR 也没听到：真漏读
 
 
+def test_short_linked_word_rechecked_with_neighbours():
+    """「Look at the」的 at 被连读吞了：前后空当不到 0.4 秒，连着 look、the 一起切、一起评；再评也评不出就不算漏读、不打分。"""
+    pcm = b"\x00\x10" * 16000 * 3
+    first = {"total": 75.2, "integrity": 83.3, "words": [
+        {"word": "look", "score": 90.0, "err": "", "beg": 50, "end": 80}, {"word": "at", "score": 0.0, "err": "漏读", "beg": 80, "end": 80},
+        {"word": "the", "score": 88.0, "err": "", "beg": 90, "end": 100}, {"word": "elephant", "score": 92.0, "err": "", "beg": 100, "end": 160}]}
+    seen = []
+
+    def again(text, seg):
+        seen.append((text, len(seg) // 320))
+        return {"words": [{"word": w, "score": 80.0, "err": ""} for w in text.split()]}
+    r = drill.recheck_missing(first, pcm, "Look at the elephant.", again)
+    assert seen == [("look at the", 50)] and r["words"][1]["score"] == 80.0 and r["words"][0]["score"] == 90.0
+    r = drill.recheck_missing(first, pcm, "Look at the elephant.", lambda t, s: {"words": [{"word": w, "score": 0.0, "err": "漏读"} for w in t.split()]})
+    assert r["words"][1] == {**first["words"][1], "score": None, "err": ""} and r["integrity"] == 100.0
+
+
 def test_score_line_uses_asr_only_when_words_missing():
     _lesson("hello")
     L = json.loads((drill.root() / "lessons" / "hello" / "lesson.json").read_text())
