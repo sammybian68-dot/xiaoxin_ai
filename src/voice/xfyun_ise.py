@@ -122,8 +122,7 @@ def parse(xml: str) -> dict:
         content = w.get("content", "")
         if not content or content in ("sil", "fil") or w.get("dp_message") == "32":   # 静音、填充词、多读的不算
             continue
-        words.append({"word": content, "score": f(sc(w, "total_score")), "err": DP.get(w.get("dp_message") or "0", ""),
-                      "beg": int(w.get("beg_pos") or 0), "end": int(w.get("end_pos") or 0)})   # 帧（10 ms）
+        words.append({"word": content, "score": f(sc(w, "total_score")), "err": DP.get(w.get("dp_message") or "0", "")})
     return {"total": f(total), "accuracy": f(sc(node, "accuracy_score")), "fluency": f(sc(node, "fluency_score")),
             "integrity": f(sc(node, "integrity_score")), "words": words, "raw": xml}
 

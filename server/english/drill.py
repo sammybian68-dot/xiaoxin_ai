@@ -155,53 +155,29 @@ def _asr(pcm: bytes) -> str:
     return doubao.asr(pcm, timeout=8).text
 
 
-def recheck_missing(r: dict, pcm: bytes, heard: str | None, assess) -> dict:
-    """讯飞有时把读了的词判成漏读：「Yes, it is」里连读的 is 像 yes，它把那段音当成多读了一遍 yes，it、is 对不上音
-    （2026-11-07 家长自己读 6 次 5 次这样）；连读里的短词（Look at the 的 at、See you 的 you）标准配音都会被判漏读。
-    ASR 也听到了的那几个词：把前后对上了的词中间那段音切出来、只拿这几个词再评一次（没有 yes 来抢），用这次的分；
-    中间那段太短（不到 0.4 秒）就连着前后各一个词一起切、一起评。再评还是漏读的不算漏读、不打分（score None）。
-    ASR 也没听到的照旧算漏读。"""
+def recheck_missing(r: dict, heard: str | None) -> dict:
+    """讯飞把读了的词判成漏读：「Yes, it is」连读的 is 像 yes，它把那段音当成又读了一遍 yes（增读），it、is 没音可对
+    （2026-11-07 家长自己读 6 次 5 次这样）；连读里的短词（Look at the 的 at、See you 的 you）标准配音也会被判漏读。
+    讯飞英文没有调松严、关增读检测的参数（check_type / group / grade 都只支持中文），只能在结果上核对：
+    ASR 也听到了的词不算漏读、不打分（score None，讯飞那段对齐本来就错了，给不出可信的分）；
+    完整度按讯飞自己的算法还回去，总分照文档「总分 = … × 完整度 / 100」跟着还。ASR 也没听到的照旧算漏读。"""
     words = [dict(w) for w in r.get("words") or []]
     miss = [k for k, w in enumerate(words) if w["err"] == "漏读"]
     if not miss or not heard:
         return r
     got = _heard([w["word"] for w in words], heard)
-    runs: list[list[int]] = []
-    for k in (k for k in miss if k in got):
-        if runs and runs[-1][-1] == k - 1:
-            runs[-1].append(k)
-        else:
-            runs.append([k])
-    if not runs:
+    fix = [k for k in miss if k in got]
+    if not fix:
         return r
-    frames = len(pcm) // 320
-    oks = [j for j, w in enumerate(words) if w["err"] != "漏读" and w.get("end")]
-    for run in runs:
-        p = max((j for j in oks if j < run[0]), default=None)
-        q = min((j for j in oks if j > run[-1]), default=None)
-        a = words[p]["end"] if p is not None else 0
-        b = words[q]["beg"] if q is not None else frames
-        lo, hi = run[0], run[-1]
-        if b - a < 40:
-            if p is not None:
-                a, lo = words[p]["beg"], p
-            if q is not None:
-                b, hi = words[q]["end"], q
-        span = list(range(lo, hi + 1))
-        try:
-            sw = assess(" ".join(words[k]["word"] for k in span), pcm[a * 320: b * 320]).get("words") or []
-        except Exception:  # noqa: BLE001 再评没成：当评不出
-            sw = []
-        if len(sw) == len(span):
-            for k, x in zip(span, sw):
-                if k in run and x["err"] != "漏读":
-                    words[k].update(score=x["score"], err=x["err"])
-        for k in run:
-            if words[k]["err"] == "漏读":
-                words[k].update(score=None, err="")
-    scores = [w["score"] for w in words if w["score"] is not None] or [0]
-    return {**r, "words": words, "integrity": round(100 * sum(w["err"] != "漏读" for w in words) / len(words), 1),
-            "total": max(r.get("total") or 0, round(sum(scores) / len(scores), 1)), "heard": heard}
+    for k in fix:
+        words[k].update(score=None, err="")
+    integ0, total = r.get("integrity"), r.get("total")
+    integ = integ0
+    if integ0:
+        integ = min(100.0, round(integ0 + (100 - integ0) * len(fix) / len(miss), 1))
+        if total is not None:
+            total = min(100.0, round(total * integ / integ0, 1))
+    return {**r, "words": words, "integrity": integ, "total": total, "heard": heard}
 
 
 def score_line(sid: str, kid: str, i: int, wav: bytes, assess=None, hear=None) -> dict:
@@ -230,14 +206,13 @@ def score_line(sid: str, kid: str, i: int, wav: bytes, assess=None, hear=None) -
 
         _pool = ThreadPoolExecutor(2, thread_name_prefix="ens-asr")
     fut = _pool.submit(hear, pcm) if hear else None
-    assess = assess or xfyun_ise.assess
-    r = assess(L["lines"][i]["en"], pcm)
+    r = (assess or xfyun_ise.assess)(L["lines"][i]["en"], pcm)
     if fut and any(w["err"] == "漏读" for w in r.get("words") or []):
         try:
             heard = fut.result(timeout=10)
         except Exception:  # noqa: BLE001 ASR 没听成：就按讯飞的
             heard = None
-        r = recheck_missing(r, pcm, heard, assess)
+        r = recheck_missing(r, heard)
     tries = s["lines"].setdefault(str(i), [])
     n = len(tries) + 1
     adir = root() / "sessions" / sid
