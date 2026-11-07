@@ -78,6 +78,8 @@ public class TalkActivity extends Activity {
     private final android.os.Handler idle = new android.os.Handler(android.os.Looper.getMainLooper());
     private byte[] pinnedSha256;
     private ValueCallback<Uri[]> pendingFiles;
+    private WebChromeClient.FileChooserParams pendingChooser;  // 「拍照」等相机权限时记着，不给就退回相册
+    private Uri pendingShot;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -1230,20 +1232,83 @@ public class TalkActivity extends Activity {
             });
         }
 
-        /** 网页里的「＋ 图片 / 文件」。 */
+        /** 网页里的「＋ 图片 / 文件」；带 capture 的（「拍照」、练习「拍一页」）直接开相机。 */
         @Override
         public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
             if (pendingFiles != null) {
                 pendingFiles.onReceiveValue(null);
             }
             pendingFiles = callback;
-            try {
-                startActivityForResult(params.createIntent(), 2);
-            } catch (Exception e) {
-                pendingFiles = null;
-                return false;
+            if (wantsCamera(params)) {
+                if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    pendingChooser = params;
+                    requestPermissions(new String[] {Manifest.permission.CAMERA}, 4);
+                    return true;
+                }
+                if (openCamera()) {
+                    return true;
+                }
             }
+            if (openPicker(params)) {
+                return true;
+            }
+            pendingFiles = null;
+            return false;
+        }
+    }
+
+    /**
+     * createIntent() 不管 capture，「拍照」也打开相册（2026-11-07 pad、手机都是）。图片 + capture 就自己开相机。
+     * App 声明了 CAMERA 权限却没给时，系统相机会拒绝（SecurityException），所以先要权限，不给就退回相册。
+     */
+    private static boolean wantsCamera(WebChromeClient.FileChooserParams p) {
+        if (!p.isCaptureEnabled()) {
+            return false;
+        }
+        for (String t : p.getAcceptTypes()) {
+            if (t == null || t.isEmpty() || t.startsWith("image/")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean openCamera() {
+        Uri out = CameraFiles.newShot(this);
+        Intent it = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                .putExtra(android.provider.MediaStore.EXTRA_OUTPUT, out)
+                .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        it.setClipData(android.content.ClipData.newRawUri("", out));   // 有的系统只按 ClipData 给相机写权限
+        try {
+            startActivityForResult(it, 4);
+        } catch (Exception e) {
+            android.util.Log.w("XxCamera", "camera: " + e);
+            return false;
+        }
+        pendingShot = out;
+        return true;
+    }
+
+    private boolean openPicker(WebChromeClient.FileChooserParams p) {
+        try {
+            startActivityForResult(p.createIntent(), 2);
             return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == 4 && pendingChooser != null && pendingFiles != null) {
+            WebChromeClient.FileChooserParams p = pendingChooser;
+            pendingChooser = null;
+            boolean ok = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED && openCamera();
+            if (!ok && !openPicker(p)) {
+                pendingFiles.onReceiveValue(null);
+                pendingFiles = null;
+            }
         }
     }
 
@@ -1271,6 +1336,17 @@ public class TalkActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == 2 && pendingFiles != null) {
             pendingFiles.onReceiveValue(pickedUris(resultCode, data));
+            pendingFiles = null;
+        } else if (requestCode == 4 && pendingFiles != null) {
+            Uri shot = pendingShot;
+            pendingShot = null;
+            boolean ok = false;
+            try {
+                ok = resultCode == RESULT_OK && shot != null && CameraFiles.file(this, shot).length() > 0;
+            } catch (java.io.FileNotFoundException e) {
+                android.util.Log.w("XxCamera", "shot: " + e);
+            }
+            pendingFiles.onReceiveValue(ok ? new Uri[] {shot} : null);
             pendingFiles = null;
         }
     }

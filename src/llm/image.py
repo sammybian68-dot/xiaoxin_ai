@@ -8,8 +8,7 @@ gpt-image-2 出一张 high 质量的图要几分钟，超时默认 600 秒。
 from __future__ import annotations
 
 import base64
-import subprocess
-import tempfile
+import io
 import time
 from pathlib import Path
 
@@ -21,15 +20,17 @@ DEFAULT_IMAGE_MODEL = "gpt-image-2"
 
 
 def _shrink(src: Path, longest: int = 1024) -> bytes:
-    """macOS 用 sips 转 PNG 并缩放；没有 sips 就原样上传。"""
-    with tempfile.TemporaryDirectory() as d:
-        out = Path(d) / "ref.png"
-        try:
-            subprocess.run(["sips", "-s", "format", "png", "-Z", str(longest), str(src), "--out", str(out)],
-                           check=True, capture_output=True)
-            return out.read_bytes()
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            return src.read_bytes()
+    """转 PNG、按 EXIF 摆正、最长边缩到 longest。gpu2 是 Linux 没有 sips，以前就原样传了几 MB 的原图。"""
+    from PIL import Image, ImageOps
+
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im)
+        im.thumbnail((longest, longest))
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return buf.getvalue()
 
 
 def _post(base: str, key: str, body: dict, refs: list, timeout: float) -> requests.Response:

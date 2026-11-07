@@ -82,5 +82,11 @@
                 <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
             </intent-filter>
         </receiver>
+        <!-- 网页「拍照」：系统相机把照片写进 cache/camera（CameraFiles.java） -->
+        <provider
+            android:name=".CameraFiles"
+            android:authorities="com.xiaoxin.app.camera"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

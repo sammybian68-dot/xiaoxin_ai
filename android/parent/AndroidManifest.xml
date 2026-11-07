@@ -40,5 +40,11 @@
                 <data android:scheme="content" android:mimeType="*/*" />
             </intent-filter>
         </activity>
+        <!-- 网页「拍照」：系统相机把照片写进 cache/camera（CameraFiles.java） -->
+        <provider
+            android:name=".CameraFiles"
+            android:authorities="com.xiaoxin.parent.camera"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

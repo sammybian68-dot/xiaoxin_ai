@@ -1,5 +1,5 @@
 """画图工具：默认 grok、失败换 gpt；点名 gpt 先用 gpt；都失败发一条说明；同时最多画两张；
-画好的图存成普通图片文件，以小新的身份发进这条线程。"""
+画好的图存成普通图片文件，以小新的身份发进这条线程；照图改画（ref）只认这条线程里的图、只用 gpt。"""
 
 from __future__ import annotations
 
@@ -32,10 +32,11 @@ def thread():
 @pytest.fixture
 def gen(monkeypatch):
     """假的出图：fail 里的模型报错，其他写一张 PNG；记下调了哪些模型。跑完等后台线程结束。"""
-    st = {"calls": [], "fail": set(), "gate": None}
+    st = {"calls": [], "fail": set(), "gate": None, "refs": []}
 
-    def fake(prompt, model, out):
+    def fake(prompt, model, out, ref=None):
         st["calls"].append(model)
+        st["refs"].append(ref)
         if st["gate"]:
             st["gate"].wait(5)
         if model in st["fail"]:
@@ -95,7 +96,7 @@ def test_both_fail_says_so_and_cleans_up(thread, gen):
 
 
 def test_not_an_image_counts_as_failure(thread, gen, monkeypatch):
-    def html(prompt, model, out):
+    def html(prompt, model, out, ref=None):
         gen["calls"].append(model)
         out.write_bytes(b"<html>quota</html>" if model == "grok-imagine-image-2.0" else _png())
     monkeypatch.setattr(draw, "_generate", html)
@@ -113,6 +114,61 @@ def test_at_most_two_at_once(thread, gen):
     _wait()
     assert draw.run("draw_image", json.dumps({"prompt": "四"})).startswith("已开始")  # 画完名额还回来了
     _wait()
+
+
+def _photo(tid, role="user", name="照片.jpg"):
+    fid, p = store.allocate()
+    p.write_bytes(_png())
+    meta = store.commit(fid, name, "image/png", p.stat().st_size, owner="kid1")
+    store.append(tid, {"role": role, "text": "看", "files": [meta]})
+    return fid
+
+
+def test_ref_latest_uses_newest_image_and_gpt_only(thread, gen):
+    _photo(thread, name="旧.jpg")
+    new = _photo(thread, name="新.jpg")
+    store.append(thread, {"role": "user", "text": "小新，把这张图里的人变成飞起来的样子"})
+    out = draw.run("draw_image", json.dumps({"prompt": "图里的人飞在天上", "ref": "latest"}))
+    assert out.startswith("已开始画（gpt-image-2）")
+    _wait()
+    assert gen["calls"] == ["gpt-image-2"]  # grok 改图不通，不换
+    assert gen["refs"][0] == store.best_image(new)
+    m = _last(thread)
+    assert m["ref"] == new and m["files"]
+
+
+def test_ref_can_be_a_drawn_picture(thread, gen):
+    draw.run("draw_image", json.dumps({"prompt": "小猫"}))
+    _wait()
+    drawn = _last(thread)["files"][0]["id"]
+    draw.run("draw_image", json.dumps({"prompt": "背景改成晚上", "ref": "latest"}))
+    _wait()
+    assert gen["refs"][-1] == store.best_image(drawn) and _last(thread)["ref"] == drawn
+
+
+def test_ref_by_id_and_not_in_thread(thread, gen):
+    fid = _photo(thread)
+    _photo(thread)
+    draw.run("draw_image", json.dumps({"prompt": "变卡通", "ref": "f_" + fid}))
+    _wait()
+    assert gen["refs"][-1] == store.best_image(fid)
+    other = store.create_thread("kid2")
+    stranger = _photo(other)
+    assert draw.run("draw_image", json.dumps({"prompt": "x", "ref": "f_" + stranger})).startswith("失败：这段对话里最近没有这张图")
+
+
+def test_ref_without_any_image(thread, gen):
+    out = draw.run("draw_image", json.dumps({"prompt": "飞起来", "ref": "latest"}))
+    assert out.startswith("失败：这段对话里还没有图片") and gen["calls"] == []
+
+
+def test_shrink_ref_with_pil(tmp_path):
+    from src.llm import image
+
+    src = tmp_path / "big.jpg"
+    Image.new("RGB", (3000, 1500), (10, 200, 30)).save(src, "JPEG")
+    with Image.open(io.BytesIO(image._shrink(src))) as im:
+        assert im.format == "PNG" and im.size == (1024, 512)
 
 
 def test_bad_args():
