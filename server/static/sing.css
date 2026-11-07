@@ -114,9 +114,15 @@
 .sgl-list { display: grid; gap: 4px; max-height: min(52vh, 420px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px;
   scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.35) transparent; }
 .sgl-list::-webkit-scrollbar { width: 6px; } .sgl-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.35); border-radius: 3px; }
-.sgl-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px; border: 0; border-radius: 12px; background: none; color: inherit; text-align: left; }
+.sgl-row { display: flex; align-items: center; border-radius: 12px; }
 .sgl-row[hidden] { display: none; }
-.sgl-row:active, .sgl-row.cur { background: rgba(49,194,124,.16); }
+.sgl-row:has(.sgl-go:active), .sgl-row.cur { background: rgba(49,194,124,.16); }
+.sgl-go { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 8px; border: 0; background: none; color: inherit; text-align: left; }
+.sgl-del { flex: none; width: 40px; height: 40px; margin-right: 2px; border: 0; border-radius: 50%; background: none; color: rgba(255,255,255,.38);
+  display: grid; place-items: center; }
+.sgl-del svg { width: 20px; height: 20px; fill: currentColor; }
+.sgl-del:active, .sgl-del:hover { color: #ff6b6b; background: rgba(255,107,107,.12); }
+.sgl-del:disabled { opacity: .4; }
 .sgl-row img, .sgl-noart { flex: none; width: 48px; height: 48px; border-radius: 8px; object-fit: cover; background: #2a3039; display: grid; place-items: center; font-size: 22px; }
 .sgl-t { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .sgl-t b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

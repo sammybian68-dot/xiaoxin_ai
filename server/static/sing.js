@@ -470,23 +470,26 @@ async function singListCard(row, who) {
     ${d.singers.length > 1 ? `<div class="sgl-tabs" role="tablist"><button type="button" data-who="" class="${pick ? "" : "on"}">全部 ${d.songs.length}</button>${d.singers
       .map((x) => `<button type="button" data-who="${esc(x.name)}" class="${x.name === pick ? "on" : ""}">${esc(x.name)} ${x.n}</button>`).join("")}</div>` : ""}
     <div class="sgl-now"></div>
-    <div class="sgl-list">${d.songs.length ? d.songs.map((s) => `<button type="button" class="sgl-row" data-f="${esc(s.file)}" data-who="${esc(s.singer)}">
-      ${s.cover ? `<img src="api/sing/cover/${encodeURIComponent(s.cover)}" alt="" loading="lazy">` : '<span class="sgl-noart">🎵</span>'}
+    <div class="sgl-list">${d.songs.length ? d.songs.map((s) => `<div class="sgl-row" data-f="${esc(s.file)}" data-who="${esc(s.singer)}">
+      <button type="button" class="sgl-go">${s.cover ? `<img src="api/sing/cover/${encodeURIComponent(s.cover)}" alt="" loading="lazy">` : '<span class="sgl-noart">🎵</span>'}
       <span class="sgl-t"><b>${esc(s.title)}</b><small>${esc(s.singer)} · 原唱 ${esc(s.artist)}</small></span>
-      <i>${singTime(s.seconds || 0)}</i><em aria-hidden="true">▶</em></button>`).join("")
-      : '<p class="sgl-none">还没有翻唱过的歌，说「用爸爸的声音唱江南」就能唱一首</p>'}</div>`;
-  const filter = (name) => {
+      <i>${singTime(s.seconds || 0)}</i><em aria-hidden="true">▶</em></button>
+      <button type="button" class="sgl-del" aria-label="删掉${esc(s.singer)}唱的《${esc(s.title)}》" title="删掉这首">${SING_TRASH}</button></div>`).join("")
+      : ""}</div>`;
+  box._filter = (name) => {
     for (const b of box.querySelectorAll(".sgl-tabs button")) b.classList.toggle("on", b.dataset.who === name);
     for (const r of box.querySelectorAll(".sgl-row")) r.hidden = !!name && r.dataset.who !== name;
     box.querySelector(".sgl-list").scrollTop = 0;
   };
   box.addEventListener("click", (e) => {
     const tab = e.target.closest(".sgl-tabs button");
-    if (tab) { filter(tab.dataset.who); return; }
+    if (tab) { box._filter(tab.dataset.who); return; }
     const r = e.target.closest(".sgl-row");
-    if (r) singListPlay(box, r);
+    if (r && e.target.closest(".sgl-del")) singListDelete(r);
+    else if (r) singListPlay(box, r);
   });
-  if (pick) filter(pick);
+  singListCount(box);
+  if (pick) box._filter(pick);
   row.querySelector(".bubble").insertBefore(box, row.querySelector(".bubble .text"));
   requestAnimationFrame(() => typeof revealRow === "function" && revealRow(row));
 }
@@ -506,6 +509,73 @@ async function singListPlay(box, r) {
   requestAnimationFrame(() => singSync(c, 0));
   singPlay(c);
 }
+
+const SING_TRASH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm4 2v8h1.5v-8H10zm3.5 0v8H15v-8h-1.5z"/></svg>';
+
+/** 歌单里的首数、各人的标签跟着删剩下的行改；谁一首都不剩，标签去掉。 */
+function singListCount(box) {
+  const rows = [...box.querySelectorAll(".sgl-row")];
+  box.querySelector(".sgl-head small").textContent = `${rows.length} 首`;
+  for (const b of box.querySelectorAll(".sgl-tabs button")) {
+    const n = b.dataset.who ? rows.filter((r) => r.dataset.who === b.dataset.who).length : rows.length;
+    if (!n && b.dataset.who) {
+      if (b.classList.contains("on")) box._filter("");
+      b.remove();
+    } else b.textContent = `${b.dataset.who || "全部"} ${n}`;
+  }
+  const list = box.querySelector(".sgl-list");
+  if (!rows.length && !list.querySelector(".sgl-none"))
+    list.innerHTML = '<p class="sgl-none">还没有翻唱过的歌，说「用爸爸的声音唱江南」就能唱一首</p>';
+}
+
+async function singListDelete(r) {
+  const t = r.querySelector(".sgl-t b").textContent, who = r.dataset.who;
+  if (!confirm(`彻底删掉${who}唱的《${t}》？\n聊天里那张卡片、做过的分享视频都一起删，删了找不回来。`)) return;
+  const btn = r.querySelector(".sgl-del");
+  btn.disabled = true;
+  try {
+    const d = await api(`api/sing/songs/${encodeURIComponent(r.dataset.f)}`, { method: "DELETE" }).then(json);
+    singForget(d.files || [r.dataset.f]);
+    toast(`《${t}》删掉了`);
+  } catch (e) {
+    btn.disabled = false;
+    toast("没删成：" + e.message);
+  }
+}
+
+// 一首翻唱被删了（这台点的，或者 hub 推来的 sing.delete）：正在放的停掉、顶栏收起，聊天里的卡片、歌单里那行去掉，
+// 这首的歌词偏移设置清掉；mp3 带了一天的浏览器缓存，重新要一次（拿到 404）把缓存里那份冲掉
+function singForget(files) {
+  const gone = new Set(files);
+  if (!gone.size) return;
+  const drop = (c) => {
+    if (!c?.audio) return;
+    c.audio.pause();
+    c.audio.removeAttribute("src");
+    c.audio.load();
+  };
+  if (sing.cur && gone.has(sing.cur.s.file)) { drop(sing.cur); sing.cur = null; singNowSync(); }
+  if (singShare.c && gone.has(singShare.c.s.file) && $("sing-share")?.open) $("sing-share").close();
+  for (const el of [...document.querySelectorAll(".sgc")]) {
+    const c = el._sg;
+    if (!c || !gone.has(c.s.file)) continue;
+    if (el.classList.contains("full")) singFull(c);
+    drop(c);
+    const slot = el.closest(".sgl-now");
+    if (slot) { delete slot.dataset.f; slot.closest(".sgl")?.querySelector(".sgl-row.cur")?.classList.remove("cur"); }
+    el.remove();
+  }
+  for (const box of document.querySelectorAll(".sgl")) {
+    let hit = false;
+    for (const r of [...box.querySelectorAll(".sgl-row")]) if (gone.has(r.dataset.f)) { r.remove(); hit = true; }
+    if (hit) singListCount(box);
+  }
+  for (const f of gone) {
+    try { localStorage.removeItem("xiaoxin.sing.off." + f); } catch (_) { /* 无痕模式 */ }
+    fetch(fileUrl({ id: f }), { cache: "reload", credentials: "same-origin" }).catch(() => {});
+  }
+}
+window.singForget = singForget;
 
 function singCardClick(c, e) {
   const p = e.target.closest(".sgc-lines p[data-i]");
@@ -596,7 +666,7 @@ function singPlay(c) {
   sing.cur = c;
   sing.nowClosed = false;
   stopSpeaking();   // 小新正在念「做好了」：先停
-  a.play().catch((err) => toast("放不了：" + err.message));
+  a.play().catch((err) => { if (err.name !== "AbortError") toast("放不了：" + err.message); });   // 还没响就被停了不算放不了
 }
 
 // 顶栏「正在放」：放着或者放到一半停着都显示（卡片翻上去了、聊天重画了卡片没了，声音还在，从这儿也能停）；

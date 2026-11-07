@@ -153,6 +153,18 @@ def sing_song(request: Request, fid: str) -> dict:
     return sing
 
 
+@router.delete("/api/sing/songs/{fid}")
+async def sing_song_delete(request: Request, fid: str) -> dict:
+    """歌单里删一首（彻底删，见 job.delete）。家长删全家的；孩子只删得到自己线程里的。"""
+    from server.main import _audit
+
+    r = await asyncio.to_thread(job.delete, fid, visible_threads(_who(request)))
+    if r is None:
+        raise HTTPException(404, "没有这首歌")
+    _audit(request, "sing.delete", title=r["title"], singer=r["singer"], files=r["files"])
+    return {"ok": True, **r}
+
+
 # ---------------------------------------------------------------- 发到微信的视频
 
 def _sing_of(fid: str) -> dict | None:

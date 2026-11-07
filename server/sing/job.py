@@ -68,11 +68,78 @@ def library(threads: list[str]) -> list[dict]:
     out.sort(key=lambda x: -x["created"])
     keep = []
     for s in out:
-        k = (s["voice"] or s["singer"], s["mid"] or s["title"])
+        k = _same(s)
         if k not in seen:
             seen.add(k)
             keep.append(s)
     return keep
+
+
+def _same(s: dict) -> tuple:
+    """歌单里算「同一首」：同一个声音唱的同一首歌（重唱过的几版）。"""
+    return (s.get("voice") or s.get("singer"), s.get("mid") or s.get("title"))
+
+
+def _all_threads() -> list[str]:
+    from server.family import members
+
+    return [k["thread"] for k in members.kids(active_only=False) if k.get("thread")]
+
+
+def _sings(threads: list[str]):
+    for tid in threads:
+        try:
+            msgs = store.get(tid)["messages"]
+        except KeyError:
+            continue
+        for m in msgs:
+            yield tid, m
+
+
+def delete(fid: str, threads: list[str]) -> dict | None:
+    """彻底删歌单里的一首：这几条线程里同一个声音唱的这首（每一版）——聊天里那条消息、mp3、分享视频；
+    原曲、歌词、封面缓存没有别的翻唱再用也删。别处消息里带着这几个文件的，把文件摘掉。
+    返回 {"files": [删掉的文件 id], "messages": 删了几条}；这几条线程里没有这首返回 None。"""
+    sings = [(tid, m) for tid, m in _sings(threads) if (m.get("sing") or {}).get("file")]
+    target = next((m["sing"] for _, m in sings if m["sing"]["file"] == fid), None)
+    if target is None:
+        return None
+    gone = [(tid, m) for tid, m in sings if _same(m["sing"]) == _same(target)]
+    fids = {m["sing"]["file"] for _, m in gone} | {f["id"] for _, m in gone for f in m.get("files") or [] if f.get("id")}
+    by: dict[str, list[str]] = {}
+    for tid, m in gone:
+        by.setdefault(tid, []).append(m["id"])
+    n = sum(store.delete_messages(tid, ids) for tid, ids in by.items())
+    everywhere = list(dict.fromkeys([*_all_threads(), *threads]))
+    for tid, m in list(_sings(everywhere)):
+        files = m.get("files") or []
+        left = [f for f in files if f.get("id") not in fids]
+        if len(left) == len(files):
+            continue
+        if left or (m.get("text") or "").strip():
+            store.update_message(tid, m["id"], files=left)
+        else:
+            n += store.delete_messages(tid, [m["id"]])
+    for f in fids:
+        video.purge(f)
+        store.delete_file(f)
+    still = [m["sing"] for _, m in _sings(everywhere) if (m.get("sing") or {}).get("file")]
+    mid, album = target.get("mid"), target.get("cover")
+    if mid and re.fullmatch(r"[0-9A-Za-z]{1,40}", mid) and not any(x.get("mid") == mid for x in still):
+        for ext in (".mp3", ".lrc"):
+            (songs_dir() / f"{mid}{ext}").unlink(missing_ok=True)
+    p = cover_path(album or "")
+    if p and not any(x.get("cover") == album for x in still):
+        p.unlink(missing_ok=True)
+    try:
+        from server.family import hub
+
+        for tid in by:
+            hub.publish(tid, {"type": "sing.delete", "files": sorted(fids)})
+    except Exception:  # noqa: BLE001 推送失败：别的设备下次打开就没有了
+        pass
+    log.info("sing delete %s: %d files, %d messages", fid, len(fids), n)
+    return {"files": sorted(fids), "messages": n, "title": target.get("title", ""), "singer": target.get("singer", "")}
 
 
 def service_up() -> bool:

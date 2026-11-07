@@ -138,6 +138,8 @@ function hubConnect() {
     if (ev.type === "ping") { ws.send('{"type":"pong"}'); return; }
     if (ev.type === "msg" && document.body.classList.contains("in-chats")) hubMessage(ev.message, ev.type);
     else if ((ev.type === "msg" || ev.type === "msg.update") && ev.thread === state.conv?.id) hubMessage(ev.message, ev.type);
+    if (ev.type === "msg.delete" && ev.thread === state.conv?.id) hubDelete(ev.ids || []);
+    if (ev.type === "sing.delete") window.singForget?.(ev.files || []);
     if (ev.type === "presence") { state.online = new Set(ev.online); renderSide(); }
     if (ev.type === "print") onPrintEvent(ev.job);
     if (ev.type?.startsWith("call.")) onCallEvent(ev);
@@ -288,6 +290,18 @@ function hubMessage(m, kind) {
   // 孩子的 pad：爸爸妈妈发来的话，用他们设的声音读一遍（docs/architecture.md 6.2 的 speak）
   if (m.role === "user" && m.text && m.speak !== false && state.me?.role !== "parent"
       && state.people?.[m.from]?.role === "parent" && prefs.autoread && !window.pracBusy?.()) sayLater(m, row);
+}
+
+// 服务端删了几条（比如歌单里删了一首翻唱）：气泡、侧栏「文件」里的都去掉
+function hubDelete(ids) {
+  const gone = new Set(ids);
+  if (!gone.size || !state.conv) return;
+  state.conv.messages = state.conv.messages.filter((m) => !gone.has(m.id));
+  for (const id of gone) $("messages").querySelector(`[data-mid="${CSS.escape(id)}"]`)?.remove();
+  if (state.threadFiles?.some((f) => gone.has(f.msg))) {
+    state.threadFiles = state.threadFiles.filter((f) => !gone.has(f.msg));
+    renderSide();
+  }
 }
 
 // 读家长消息：小新正在说、在自由对话里、正在发消息，就等它说完再读，不打断

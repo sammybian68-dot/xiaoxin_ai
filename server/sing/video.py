@@ -148,6 +148,8 @@ def _run(k: str, spec: dict) -> None:
             ok, err = False, str(e)
         finally:
             sp.unlink(missing_ok=True)
+    if ok and not Path(spec["audio"]).exists():   # 做的时候这首被删了：做好的也不留
+        Path(spec["out"]).unlink(missing_ok=True)
     with _lock:
         if ok:
             _jobs.pop(k, None)
@@ -162,6 +164,22 @@ def _prune() -> None:
     vids = sorted(videos_dir().glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
     for p in vids[KEEP:]:
         p.unlink(missing_ok=True)
+
+
+def purge(fid: str) -> int:
+    """这首歌做过的分享视频（整首、各段、调过歌词的）全删，返回删了几个文件。正在做的那个做完自己会删（_run）。"""
+    if not re.fullmatch(r"[0-9a-f]{6,40}", fid or ""):
+        return 0
+    n = 0
+    for p in videos_dir().glob(f"{fid}*"):
+        if p.name.split(".")[0] == fid or p.name.startswith(fid + "_"):
+            p.unlink(missing_ok=True)
+            n += 1
+    with _lock:
+        for k in [k for k in _jobs if k == fid or k.startswith(fid + "_")]:
+            if _jobs[k].get("state") != "making":
+                _jobs.pop(k)
+    return n
 
 
 # ---------------------------------------------------------------- 画（子进程里跑）

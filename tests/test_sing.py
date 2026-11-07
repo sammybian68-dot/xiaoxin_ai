@@ -270,6 +270,63 @@ def test_sing_list_kid_sees_only_own_thread(client, home):
         printer_tools.ctx.reset(tok)
 
 
+def test_sing_delete_removes_every_trace(client, home, monkeypatch):
+    from server.family import hub
+
+    events = []
+    monkeypatch.setattr(hub, "publish", lambda tid, ev: events.append((tid, ev)))
+    t = home["kid"]["thread"]
+    old = _cover(t, "爸爸", "江南", "m1", 1)
+    new = _cover(t, "爸爸", "江南", "m1", 3)                 # 重唱过：两版一起删，不然删完老的又冒出来
+    hers = _cover(t, "卞依一", "江南", "m1", 4)              # 同一首别的声音：留着，原曲缓存也留着
+    pao = _cover(t, "爸爸", "泡沫", "m2", 2)
+    msgs = store.get(t)["messages"]
+    store.update_message(t, next(m["id"] for m in msgs if (m.get("sing") or {}).get("file") == pao), sing={
+        **next(m["sing"] for m in msgs if (m.get("sing") or {}).get("file") == pao), "cover": "alb2alb2X"})
+    fwd = store.append(t, {"role": "user", "text": "听这个", "files": [store.file_info(new)[1], store.file_info(hers)[1]]})
+    songs, vids = job.songs_dir(), video.videos_dir()
+    songs.mkdir(parents=True, exist_ok=True)
+    vids.mkdir(parents=True, exist_ok=True)
+    for name in ("m1.mp3", "m1.lrc", "m2.mp3", "m2.lrc"):
+        (songs / name).write_bytes(b"x")
+    job.cover_path("alb2alb2X").parent.mkdir(parents=True, exist_ok=True)
+    job.cover_path("alb2alb2X").write_bytes(b"\xff\xd8")
+    for name in (f"{old}.mp4", f"{new}.mp4", f"{new}_10_200.mp4", f"{new}_o5.mp4", f"{hers}.mp4"):
+        (vids / name).write_bytes(b"v")
+
+    r = client.delete(f"/api/sing/songs/{new}").json()
+    assert r["ok"] and sorted(r["files"]) == sorted([old, new]) and r["messages"] == 2
+    assert store.file_info(old) is None and store.file_info(new) is None and store.file_info(hers) is not None
+    assert sorted(p.name for p in vids.iterdir()) == [f"{hers}.mp4"]
+    assert (songs / "m1.mp3").exists()
+    left = store.get(t)["messages"]
+    assert not [m for m in left if (m.get("sing") or {}).get("file") in (old, new)]
+    assert [f["id"] for f in next(m for m in left if m["id"] == fwd["id"])["files"]] == [hers]
+    assert [(s["singer"], s["title"]) for s in client.get("/api/sing/songs").json()["songs"]] == [("卞依一", "江南"), ("爸爸", "泡沫")]
+    kinds = [ev["type"] for _, ev in events]
+    assert "msg.delete" in kinds and ("sing.delete" in kinds) and all(tid == t for tid, _ in events)
+    assert client.get(f"/api/files/{new}").status_code == 404
+    assert '"sing.delete"' in (store.DATA / "audit.jsonl").read_text(encoding="utf-8")
+
+    client.delete(f"/api/sing/songs/{pao}")
+    assert not (songs / "m2.mp3").exists() and not (songs / "m2.lrc").exists() and not job.cover_path("alb2alb2X").exists()
+    assert client.delete(f"/api/sing/songs/{pao}").status_code == 404
+
+
+def test_sing_delete_kid_only_own_thread(client, home):
+    son = client.post("/api/members", json={"role": "kid", "name": "儿子"}).json()
+    mine = _cover(home["kid"]["thread"], "爸爸", "江南", "m1", 1)
+    his = _cover(members.get(son["id"])["thread"], "爸爸", "孤勇者", "m9", 2)
+    pad = _device(client, home["kid"]["id"])
+    try:
+        assert pad.delete(f"/api/sing/songs/{his}").status_code == 404
+        assert store.file_info(his) is not None
+        assert pad.delete(f"/api/sing/songs/{mine}").json()["ok"]
+    finally:
+        pad.__exit__(None, None, None)
+    assert store.file_info(mine) is None
+
+
 def test_cover_rejects_odd_names(client):
     assert client.get("/api/sing/cover/..%2F..%2Fmembers").status_code == 404
     assert client.get("/api/sing/cover/000y5gq7449K9I").status_code == 404   # 没下过

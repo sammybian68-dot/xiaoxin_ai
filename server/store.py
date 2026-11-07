@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -294,6 +295,26 @@ def update_message(cid: str, mid: str, **fields) -> dict | None:
     return m
 
 
+def delete_messages(cid: str, ids: list[str]) -> int:
+    """从对话里拿掉这几条（在线设备收到 msg.delete 把气泡也去掉），返回删了几条。"""
+    drop = set(ids)
+    with _lock:
+        conv = get(cid)
+        keep = [m for m in conv["messages"] if m["id"] not in drop]
+        n = len(conv["messages"]) - len(keep)
+        if n:
+            conv["messages"] = keep
+            _write_json(CONV / f"{cid}.json", conv)
+    if n:
+        try:
+            from server.family import hub
+
+            hub.publish(cid, {"type": "msg.delete", "ids": sorted(drop)})
+        except Exception:
+            pass
+    return n
+
+
 # ---------------------------------------------------------------- 附件
 
 def _kind(name: str, mime: str, size: int) -> str:
@@ -338,6 +359,15 @@ def abort(fid: str) -> None:
     for p in d.glob("*"):
         p.unlink(missing_ok=True)
     d.rmdir()
+
+
+def delete_file(fid: str) -> bool:
+    """整个文件目录（原件、thumb / screen、meta）删掉。没有返回 False。"""
+    d = FILES / _check(fid)
+    if not d.is_dir():
+        return False
+    shutil.rmtree(d, ignore_errors=True)
+    return True
 
 
 # ---- 图片分档（docs/architecture.md 6.5）：ECS 只有 5 Mbps，所以发送端先在本地压出小图先发，原图后台慢慢传。
