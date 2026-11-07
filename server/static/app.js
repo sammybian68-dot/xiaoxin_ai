@@ -1258,11 +1258,19 @@ class Recorder {
   constructor(onLevel, onChunk, opts = {}) {
     this.onLevel = onLevel; this.onChunk = onChunk; this.chunks = []; this.rate = 16000; this.raw = !!opts.raw;
   }
-  async start() {
+  start() {
+    this.starting = this.open();
+    return this.starting;
+  }
+  async open() {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("这个页面拿不到麦克风（要 https）");
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: this.raw
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: this.raw
       ? { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
       : { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    // 麦克风还没开好就 stop 了（按住说话 pointercancel、上滑取消走的 abortHold 不等 start）：原来 stop 时
+    // stream 还是空的，开好以后没人关，麦克风一直开着、系统停在通话模式（2026-11-07 pad 上一开 7 个半小时）
+    if (this.stopped) { stream.getTracks().forEach((t) => t.stop()); return; }
+    this.stream = stream;
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (this.raw) this.rate = this.ctx.sampleRate;
     const src = this.ctx.createMediaStreamSource(this.stream);
@@ -1289,9 +1297,11 @@ class Recorder {
   }
   seconds() { return this.chunks.reduce((a, c) => a + c.length, 0) / this.rate; }
   async stop() {
+    this.stopped = true;
+    await this.starting?.catch(() => {});
     this.node?.disconnect();
     this.stream?.getTracks().forEach((t) => t.stop());
-    await this.ctx?.close();
+    if (this.ctx && this.ctx.state !== "closed") await this.ctx.close();
     return wav(this.chunks, this.rate);
   }
 }
