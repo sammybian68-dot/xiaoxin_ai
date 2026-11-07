@@ -137,6 +137,23 @@ def test_ref_latest_uses_newest_image_and_gpt_only(thread, gen):
     assert m["ref"] == new and m["files"]
 
 
+def test_ref_retries_gpt_once(thread, gen, monkeypatch):
+    _photo(thread)
+    n = {"k": 0}
+
+    def flaky(prompt, model, out, ref=None):
+        gen["calls"].append(model)
+        n["k"] += 1
+        if n["k"] == 1:
+            raise RuntimeError("502")
+        out.write_bytes(_png())
+    monkeypatch.setattr(draw, "_generate", flaky)
+    draw.run("draw_image", json.dumps({"prompt": "飞起来", "ref": "latest"}))
+    _wait()
+    m = _last(thread)
+    assert gen["calls"] == ["gpt-image-2", "gpt-image-2"] and m["files"] and m["text"] == "卞依一，图片画好了，请看。"
+
+
 def test_ref_can_be_a_drawn_picture(thread, gen):
     draw.run("draw_image", json.dumps({"prompt": "小猫"}))
     _wait()

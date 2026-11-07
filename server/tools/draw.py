@@ -44,7 +44,7 @@ SPECS = [{"type": "function", "function": {
     }, "required": ["prompt"]},
 }}]
 NAMES = {"draw_image"}
-REF_MODELS = [GPT]
+REF_MODELS = [GPT, GPT]   # 只有 gpt 能照图画，代理偶尔 502（2026-11-07 连着两次一败一成），再来一次
 RECENT = 12   # ref=latest 往回找几张图
 
 _busy = threading.BoundedSemaphore(MAX_BUSY)
