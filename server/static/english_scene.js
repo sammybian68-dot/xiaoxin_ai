@@ -124,7 +124,7 @@ async function ensSpeak(i, slow = false) {
   const wt = ws.map((w) => ensKey(w.textContent).length + 2), tot = wt.reduce((a, c) => a + c, 0);
   let acc = 0;
   ws.forEach((w, n) => { setTimeout(() => { if (my === ens.gen) w.classList.add("on"); }, 120 + (acc / tot) * dur * 0.92); acc += wt[n]; });
-  await ensPlay(`api/english/asset/${ens.L.id}/l${i}${slow ? "_slow" : ""}.mp3`);
+  await ensPlay(`api/english/asset/${ens.L.id}/l${i}${slow ? "_slow" : ""}.mp3?v=${ens.L.audio_v || 0}`);
   if (my !== ens.gen) return;
   ws.forEach((w) => w.classList.add("on"));
   ensActors(null);

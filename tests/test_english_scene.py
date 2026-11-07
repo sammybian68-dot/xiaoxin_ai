@@ -336,3 +336,31 @@ def test_quit_early(family):
     assert c.get(f"/api/english/lesson/{lid}").json()["history"] == []
     assert (drill.progress(kid).get(lid) or {}).get("times", 0) == 0
     assert drill.current(kid) is None                                   # 结束了就不再是「暂停着」
+
+
+def test_revoice_redoes_lines_whose_text_changed(family, monkeypatch):
+    """剧本重写过（第 0 句换了词），l0.mp3 还是老的那句：对不上的重配，对得上的复用；网址带 audio_v 冲掉缓存。"""
+    from server.english import build
+
+    made = []
+    monkeypatch.setattr(build, "_tts", lambda t, v, **kw: made.append((t, kw.get("speech_rate"))) or type("S", (), {"pcm": b"\x00\x10" * 24000})())
+    monkeypatch.setattr(build, "mp3", lambda pcm, out: out.write_bytes(b"ID3" + str(len(made)).encode()))
+    L = _lesson()
+    d = drill.root() / "lessons" / L["id"]
+    for i in range(len(L["lines"])):
+        for s in ("", "_slow"):
+            (d / f"l{i}{s}.mp3").write_bytes(b"ID3old")          # 老课：没有 .txt，不知道配的是哪句
+    out = build.revoice(L["id"])
+    assert len(made) == 8 and out["audio_v"] and drill.lesson(L["id"])["audio_v"] == out["audio_v"]
+    assert out["lines"][0]["dur_s"] == 1.0
+    assert (d / "l0.txt").read_text(encoding="utf-8").endswith("|normal|Hello! I'm Mr. Bear.")
+
+    made.clear()
+    build.revoice(L["id"])
+    assert made == []                                              # 都对得上：一段不重配
+
+    L2 = json.loads((d / "lesson.json").read_text(encoding="utf-8"))
+    L2["lines"][0]["en"] = "Hello, Lily! Look at the elephant!"
+    (d / "lesson.json").write_text(json.dumps(L2, ensure_ascii=False))
+    build.revoice(L["id"])
+    assert made == [("Hello, Lily! Look at the elephant!", 0), ("Hello, Lily! Look at the elephant!", -35)]

@@ -204,7 +204,11 @@ def _tts(text: str, voice: str, **kw):
 
 
 def say(text: str, voice: str, out: Path, slow: bool = False) -> float:
-    if out.is_file() and out.stat().st_size:
+    """配一句音。l<i>.mp3 按第几句起名，重写过剧本的课第 i 句换了词：旁边的 .txt 记着这段是照哪句、哪个声音、
+    快慢配的，对得上才复用，对不上（或者老文件没有 .txt）就重配。"""
+    stamp = out.with_suffix(".txt")
+    want = f"{voice}|{'slow' if slow else 'normal'}|{text}"
+    if out.is_file() and out.stat().st_size and stamp.is_file() and stamp.read_text(encoding="utf-8") == want:
         import wave
         try:
             with wave.open(str(out)) as w:
@@ -213,7 +217,29 @@ def say(text: str, voice: str, out: Path, slow: bool = False) -> float:
             return round(out.stat().st_size / 8000, 2)
     s = _tts(text, voice, speech_rate=-35 if slow else 0)
     mp3(s.pcm, out)
+    stamp.write_text(want, encoding="utf-8")
     return round(len(s.pcm) / 48000, 2)
+
+
+def voice_lines(d: Path, lines: list[dict]) -> int:
+    """给剧本每句配快、慢两段音（对得上的复用），把时长写回 lines；返回 audio_v（配音文件最新的修改时间，
+    前端拼在网址后面：重配过的句子不会放浏览器缓存里的旧录音）。"""
+    jobs = [(i, l, slow) for i, l in enumerate(lines) for slow in (False, True)]
+    with ThreadPoolExecutor(6) as ex:
+        durs = list(ex.map(lambda j: say(j[1]["en"], LOOK[j[1]["role"]][2], d / f"l{j[0]}{'_slow' if j[2] else ''}.mp3", j[2]), jobs))
+    for (i, l, slow), sec in zip(jobs, durs):
+        l["slow_s" if slow else "dur_s"] = sec
+    return int(max((d / f"l{i}{'_slow' if slow else ''}.mp3").stat().st_mtime for i, _, slow in jobs))
+
+
+def revoice(lid: str) -> dict:
+    """已经做好的课重新对一遍配音（剧本、画都不动）：对不上的句子重配，时长、audio_v 写回 lesson.json。"""
+    d = root() / "lessons" / lid
+    p = d / "lesson.json"
+    L = json.loads(p.read_text(encoding="utf-8"))
+    L["audio_v"] = voice_lines(d, L["lines"])
+    p.write_text(json.dumps(L, ensure_ascii=False, indent=1), encoding="utf-8")
+    return L
 
 
 def word_audio(w: str) -> None:
@@ -240,18 +266,18 @@ def build(lesson: tuple, *, force: bool = False) -> dict:
         fb.result()
         for f in fc:
             f.result()
-    jobs = [(i, l, slow) for i, l in enumerate(script["lines"]) for slow in (False, True)]
     words = sorted({word_key(w) for l in script["lines"] for w in l["en"].split()} - {""})
+    audio_v = voice_lines(d, script["lines"])
     with ThreadPoolExecutor(6) as ex:
-        durs = list(ex.map(lambda j: say(j[1]["en"], LOOK[j[1]["role"]][2], d / f"l{j[0]}{'_slow' if j[2] else ''}.mp3", j[2]), jobs))
         list(ex.map(word_audio, words))
-    for (i, l, slow), sec in zip(jobs, durs):
-        l["slow_s" if slow else "dur_s"] = sec
+    for n in range(len(script["lines"]), 40):   # 老剧本比新的长：多出来的那几句的配音删掉
+        for name in (f"l{n}.mp3", f"l{n}_slow.mp3", f"l{n}.txt", f"l{n}_slow.txt"):
+            (d / name).unlink(missing_ok=True)
     order = [x[0] for x in LESSONS].index(lid) if lid in [x[0] for x in LESSONS] else 1000
     out = {"id": lid, "name": name, "zh": zh, "unit": unit, "order": order,
            "roles": [{"id": r, "name": display(r), "zh": LOOK[r][1]} for r in roles],
            "lines": script["lines"], "new_words": script.get("new_words", [])[:3], "target": target,
-           "built": time.time(), "build_s": round(time.time() - t0)}
+           "built": time.time(), "build_s": round(time.time() - t0), "audio_v": audio_v}
     meta.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     log.info("lesson %s built in %ds", lid, out["build_s"])
     return out
@@ -381,4 +407,10 @@ def _safe(l, force):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    if sys.argv[1:2] == ["--revoice"]:   # python -m server.english.build --revoice [课 id…]：只对配音
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+        for lid in sys.argv[2:] or sorted(p.parent.name for p in (root() / "lessons").glob("*/lesson.json")):
+            revoice(lid)
+            print(lid, "OK", flush=True)
+    else:
+        main(sys.argv[1:])
