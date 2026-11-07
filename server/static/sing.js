@@ -569,6 +569,7 @@ function singEnsureAudio(c) {
     c.el.querySelector(".sgc-seek").max = String(Math.round(c.dur * 10));
     c.el.querySelector(".sgc-dur").textContent = singTime(c.dur);
   });
+  for (const ev of ["play", "pause", "emptied"]) a.addEventListener(ev, singNowSync);
   a.addEventListener("play", () => {
     c.el.classList.add("on");
     btn.textContent = "❚❚"; btn.setAttribute("aria-label", "暂停");
@@ -583,7 +584,7 @@ function singEnsureAudio(c) {
   });
   a.addEventListener("waiting", () => c.el.classList.add("buf"));
   a.addEventListener("playing", () => c.el.classList.remove("buf"));
-  a.addEventListener("ended", () => { a.currentTime = 0; singSync(c, 0); });
+  a.addEventListener("ended", () => { a.currentTime = 0; singSync(c, 0); singNowSync(); });
   a.addEventListener("error", () => { c.el.classList.remove("on", "buf"); toast("这首歌放不了，可能文件没了"); });
   return a;
 }
@@ -593,9 +594,40 @@ function singPlay(c) {
   if (!a.paused) { a.pause(); return; }
   if (sing.cur && sing.cur !== c) sing.cur.audio?.pause();
   sing.cur = c;
+  sing.nowClosed = false;
   stopSpeaking();   // 小新正在念「做好了」：先停
   a.play().catch((err) => toast("放不了：" + err.message));
 }
+
+// 顶栏「正在放」：放着或者放到一半停着都显示（卡片翻上去了、聊天重画了卡片没了，声音还在，从这儿也能停）；
+// 放完（ended 后回到 0）、点 ✕ 就收起
+function singNowSync() {
+  const box = $("sing-now");
+  if (!box) return;
+  const c = sing.cur, a = c?.audio;
+  box.hidden = !a || sing.nowClosed || (a.paused && !a.currentTime);
+  if (box.hidden) return;
+  box.querySelector("b").textContent = c.s.title;
+  box.querySelector("small").textContent = c.s.singer;
+  box.classList.toggle("on", !a.paused);
+  const btn = box.querySelector(".sn-play");
+  btn.textContent = a.paused ? "▶" : "❚❚";
+  btn.setAttribute("aria-label", a.paused ? "接着放" : "暂停");
+}
+
+$("sing-now")?.addEventListener("click", (e) => {
+  const k = e.target.closest("[data-n]")?.dataset.n, c = sing.cur;
+  if (!k || !c) return;
+  if (k === "play") singPlay(c);
+  else if (k === "stop") { c.audio?.pause(); sing.nowClosed = true; singNowSync(); }
+  else if (k === "go") {
+    if (c.el.classList.contains("full")) return;
+    if (!document.body.contains(c.el)) { toast("那张卡片不在这个聊天里了，在这儿也能暂停"); return; }
+    c.el.scrollIntoView({ behavior: "smooth", block: "center" });
+    c.el.classList.remove("flash");
+    requestAnimationFrame(() => c.el.classList.add("flash"));
+  }
+});
 
 function singSync(c, t) {
   const el = c.el;

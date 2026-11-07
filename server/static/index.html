@@ -88,6 +88,12 @@
         <img src="static/icon.png" alt="" class="avatar sm only-narrow">
         <span id="conv-title">小新</span>
       </div>
+      <!-- 正在放的翻唱（sing.js singNowSync）：点歌名回到那张卡片，点按钮暂停 / 接着放，✕ 停掉 -->
+      <div id="sing-now" class="sing-now" role="status" aria-live="polite" hidden>
+        <button type="button" class="sn-go" data-n="go" title="回到这首歌的卡片"><span class="sn-eq" aria-hidden="true"><i></i><i></i><i></i></span><b></b><small></small></button>
+        <button type="button" class="sn-play" data-n="play" aria-label="暂停">❚❚</button>
+        <button type="button" class="sn-x" data-n="stop" aria-label="停掉">✕</button>
+      </div>
       <!-- 原来的模型下拉挪到设置 →「模型」。这里放待命 / 通话状态（原来在输入栏上方，占对话的高度） -->
       <div id="talk-bar" class="talk-bar" role="status" aria-live="polite" hidden>
         <span class="talk-dot" aria-hidden="true"></span>

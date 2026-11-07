@@ -83,6 +83,26 @@
 .sgc.full .sgc-loop { width: 42px; height: 42px; }
 .sgc.full .sgc-loop svg { width: 26px; height: 26px; }
 
+/* 顶栏「正在放」#sing-now（index.html 的 .top 里）：放着时跳动的三根条，停着时不跳 */
+.sing-now { flex: none; display: flex; align-items: center; gap: 2px; height: 38px; max-width: 320px; padding: 0 4px 0 4px; border-radius: 19px;
+  background: rgba(49,194,124,.14); border: 1px solid rgba(49,194,124,.45); color: var(--text); }
+.sing-now[hidden] { display: none; }
+.sing-now button { border: 0; background: none; color: inherit; }
+.sn-go { min-width: 0; display: flex; align-items: center; gap: 7px; height: 100%; padding: 0 6px 0 8px; }
+.sn-go b { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sn-go small { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.sn-play { flex: none; width: 30px; height: 30px; border-radius: 50%; background: #31c27c !important; color: #fff !important; font-size: 12px; display: grid; place-items: center; }
+.sn-x { flex: none; width: 26px; height: 30px; font-size: 13px; color: var(--muted) !important; }
+.sn-eq { flex: none; display: flex; align-items: flex-end; gap: 2px; width: 14px; height: 14px; }
+.sn-eq i { width: 3px; height: 30%; border-radius: 1px; background: #31c27c; }
+.sing-now.on .sn-eq i { animation: sn-eq .9s ease-in-out infinite; }
+.sing-now.on .sn-eq i:nth-child(2) { animation-delay: -.3s; } .sing-now.on .sn-eq i:nth-child(3) { animation-delay: -.6s; }
+@keyframes sn-eq { 0%, 100% { height: 25%; } 50% { height: 100%; } }
+@media (max-width: 820px) { .sing-now { max-width: 44vw; } .sn-go small { display: none; } }
+@media (prefers-reduced-motion: reduce) { .sing-now.on .sn-eq i { animation: none; height: 70%; } }
+.sgc.flash { animation: sgc-flash 1.2s ease-out; }
+@keyframes sgc-flash { 0%, 40% { box-shadow: 0 0 0 4px #31c27c, 0 10px 30px rgba(0,0,0,.35); } 100% { box-shadow: 0 10px 30px rgba(0,0,0,.35); } }
+
 /* 歌单 .sgl（sing_list）：按人分的标签 + 一首一行，多了在卡片里滚；点的那首在列表上面出 .sgc */
 .sgl { --sg: #31c27c; width: min(520px, 100%); margin: 2px 0 10px; padding: 14px; border-radius: 20px; background: #1b1f26; color: #fff;
   box-shadow: 0 10px 30px rgba(0,0,0,.35); display: grid; gap: 10px; }
@@ -110,7 +130,7 @@
 
 .sgc-ctl { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 6px 14px 16px; }
 .sgc-ctl button { border: 0; background: none; color: rgba(255,255,255,.78); }
-.sgc-off { font-size: 12px; padding: 6px 8px; border-radius: 12px; background: rgba(255,255,255,.08) !important; }
+.sgc-off { white-space: nowrap; font-size: 12px; padding: 6px 8px; border-radius: 12px; background: rgba(255,255,255,.08) !important; }
 .sgc-skip { font-size: 14px; padding: 6px 4px; font-variant-numeric: tabular-nums; }
 .sgc-play { width: 56px; height: 56px; border-radius: 50%; background: var(--sg) !important; color: #fff !important; font-size: 20px;
   display: grid; place-items: center; box-shadow: 0 6px 16px rgba(49,194,124,.45); transition: transform .12s; }
