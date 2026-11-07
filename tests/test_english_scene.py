@@ -363,4 +363,41 @@ def test_revoice_redoes_lines_whose_text_changed(family, monkeypatch):
     L2["lines"][0]["en"] = "Hello, Lily! Look at the elephant!"
     (d / "lesson.json").write_text(json.dumps(L2, ensure_ascii=False))
     build.revoice(L["id"])
-    assert made == [("Hello, Lily! Look at the elephant!", 0), ("Hello, Lily! Look at the elephant!", -35)]
+    assert sorted(made) == [("Hello, Lily! Look at the elephant!", -35), ("Hello, Lily! Look at the elephant!", 0)]
+
+
+def _yes_it_is(text, pcm):
+    """讯飞把「Yes, it is」里的 it is 当成又读了一遍 yes：it、is 漏读、时长 0；只评「it is」那段就评得出来。"""
+    if text == "it is":
+        assert len(pcm) == (294 - 124) * 320                    # 切的是 yes 之后、thank 之前那段
+        return {"total": 88, "words": [{"word": "it", "score": 90.0, "err": ""}, {"word": "is", "score": 86.0, "err": ""}]}
+    return {"total": 62.6, "fluency": 85, "integrity": 71.4, "words": [
+        {"word": "yes", "score": 98.9, "err": "", "beg": 60, "end": 124},
+        {"word": "it", "score": 0.0, "err": "漏读", "beg": 231, "end": 231},
+        {"word": "is", "score": 0.0, "err": "漏读", "beg": 231, "end": 231},
+        {"word": "thank", "score": 94.9, "err": "", "beg": 294, "end": 338},
+        {"word": "you", "score": 93.7, "err": "", "beg": 338, "end": 358},
+        {"word": "tom", "score": 85.2, "err": "", "beg": 358, "end": 410}]}
+
+
+def test_missing_words_rechecked_when_asr_heard_them():
+    pcm = b"\x00\x10" * 16000 * 5
+    r = drill.recheck_missing(_yes_it_is("Yes, it is. Thank you, Tom.", pcm), pcm, "Yes, it is. Thank you, Tom.", _yes_it_is)
+    assert [(w["word"], w["score"], w["err"]) for w in r["words"]][1:3] == [("it", 90.0, ""), ("is", 86.0, "")]
+    assert r["integrity"] == 100.0 and r["total"] > 85 and r["heard"]
+    r = drill.recheck_missing(_yes_it_is("x", pcm), pcm, "Yes, it's yes. Thank you, Tom.", _yes_it_is)
+    assert not any(w["err"] for w in r["words"])                    # ASR 写成 it's 也算听到了
+    r = drill.recheck_missing(_yes_it_is("x", pcm), pcm, "Yes. Thank you, Tom.", _yes_it_is)
+    assert [w["err"] for w in r["words"]][1:3] == ["漏读", "漏读"] and "heard" not in r   # ASR 也没听到：真漏读
+
+
+def test_score_line_uses_asr_only_when_words_missing():
+    _lesson("hello")
+    L = json.loads((drill.root() / "lessons" / "hello" / "lesson.json").read_text())
+    L["lines"][3]["en"] = "Yes, it is. Thank you, Tom."
+    (drill.root() / "lessons" / "hello" / "lesson.json").write_text(json.dumps(L))
+    s = drill.start("k1", "hello", "lily")
+    r = drill.score_line(s["id"], "k1", 3, _wav(5), assess=_yes_it_is, hear=lambda pcm: "Yes, it is. Thank you, Tom.")
+    assert r["pass"] and not [w for w in r["words"] if w["e"]] and r["heard"]
+    r = drill.score_line(s["id"], "k1", 3, _wav(5), assess=_yes_it_is, hear=lambda pcm: "Yes. Thank you, Tom.")
+    assert not r["pass"] and "没读出来" in r["msg"]

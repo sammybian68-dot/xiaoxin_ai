@@ -127,8 +127,78 @@ def mine(L: dict, role: str) -> list[int]:
     return [i for i, l in enumerate(L["lines"]) if l["role"] == role]
 
 
-def score_line(sid: str, kid: str, i: int, wav: bytes, assess=None) -> dict:
-    """她读第 i 句：存录音、送讯飞评测、记分。返回这一次的结果（给界面标词、给星）。"""
+_CONTRACT = {"it's": "it is", "i'm": "i am", "you're": "you are", "we're": "we are", "they're": "they are", "he's": "he is",
+             "she's": "she is", "that's": "that is", "what's": "what is", "here's": "here is", "there's": "there is",
+             "let's": "let us", "isn't": "is not", "don't": "do not", "can't": "can not", "i'll": "i will", "i'd": "i would"}
+_pool = None
+
+
+def _toks(s: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", (s or "").lower().replace("’", "'"))
+
+
+def _heard(ref: list[str], heard: str) -> set[int]:
+    """ASR 听到的话里按顺序对得上的参考词（下标）。缩写原样、展开各对一遍。"""
+    import difflib
+
+    raw = _toks(heard)
+    got: set[int] = set()
+    for hyp in (raw, " ".join(_CONTRACT.get(t, t) for t in raw).split()):
+        for a, _, n in difflib.SequenceMatcher(None, ref, hyp, autojunk=False).get_matching_blocks():
+            got.update(range(a, a + n))
+    return got
+
+
+def _asr(pcm: bytes) -> str:
+    from src.voice import doubao
+
+    return doubao.asr(pcm, timeout=8).text
+
+
+def recheck_missing(r: dict, pcm: bytes, heard: str | None, assess) -> dict:
+    """讯飞有时把读了的词判成漏读：「Yes, it is」里连读的 is 像 yes，它把那段音当成多读了一遍 yes，it、is 对不上音
+    （2026-11-07 家长自己读 6 次 5 次这样）。ASR 也听到了的那几个词，把前后对上了的词中间那段音切出来、只拿这几个词
+    再评一次（没有 yes 来抢），用这次的分；ASR 也没听到、中间不到 0.2 秒、再评还是漏读的，照旧算漏读。"""
+    words = [dict(w) for w in r.get("words") or []]
+    miss = [k for k, w in enumerate(words) if w["err"] == "漏读"]
+    if not miss or not heard:
+        return r
+    got = _heard([w["word"] for w in words], heard)
+    runs: list[list[int]] = []
+    for k in (k for k in miss if k in got):
+        if runs and runs[-1][-1] == k - 1:
+            runs[-1].append(k)
+        else:
+            runs.append([k])
+    frames = len(pcm) // 320
+    fixed = False
+    for run in runs:
+        ok = lambda j: words[j]["err"] != "漏读" and words[j].get("end")
+        a = max((words[j]["end"] for j in range(run[0]) if ok(j)), default=0)
+        b = min((words[j]["beg"] for j in range(run[-1] + 1, len(words)) if ok(j)), default=frames)
+        if b - a < 20:
+            continue
+        try:
+            sub = assess(" ".join(words[k]["word"] for k in run), pcm[a * 320: b * 320])
+        except Exception:  # noqa: BLE001 再评没成：照旧
+            continue
+        sw = sub.get("words") or []
+        if len(sw) != len(run):
+            continue
+        for k, x in zip(run, sw):
+            if x["err"] != "漏读":
+                words[k].update(score=x["score"], err=x["err"])
+                fixed = True
+    if not fixed:
+        return r
+    scores = [w["score"] or 0 for w in words]
+    return {**r, "words": words, "integrity": round(100 * sum(w["err"] != "漏读" for w in words) / len(words), 1),
+            "total": max(r.get("total") or 0, round(sum(scores) / len(scores), 1)), "heard": heard}
+
+
+def score_line(sid: str, kid: str, i: int, wav: bytes, assess=None, hear=None) -> dict:
+    """她读第 i 句：存录音、送讯飞评测、记分。返回这一次的结果（给界面标词、给星）。
+    同时让 ASR 听一遍（hear，测试里不给就不听）：讯飞判了漏读时拿来核对（recheck_missing）。"""
     from src.voice import xfyun_ise
 
     s = get(sid)
@@ -145,7 +215,21 @@ def score_line(sid: str, kid: str, i: int, wav: bytes, assess=None) -> dict:
     a = array.array("h", pcm)
     if max(abs(x) for x in a[::8]) < 300:   # 全是静音（麦克风没声音 / 没说话）：不送讯飞，不扣评测次数
         raise ValueError("没听到声音，靠近一点、大声说")
-    r = (assess or xfyun_ise.assess)(L["lines"][i]["en"], pcm)
+    global _pool
+    hear = hear or (None if assess else _asr)
+    if hear and _pool is None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _pool = ThreadPoolExecutor(2, thread_name_prefix="ens-asr")
+    fut = _pool.submit(hear, pcm) if hear else None
+    assess = assess or xfyun_ise.assess
+    r = assess(L["lines"][i]["en"], pcm)
+    if fut and any(w["err"] == "漏读" for w in r.get("words") or []):
+        try:
+            heard = fut.result(timeout=10)
+        except Exception:  # noqa: BLE001 ASR 没听成：就按讯飞的
+            heard = None
+        r = recheck_missing(r, pcm, heard, assess)
     tries = s["lines"].setdefault(str(i), [])
     n = len(tries) + 1
     adir = root() / "sessions" / sid
@@ -155,6 +239,8 @@ def score_line(sid: str, kid: str, i: int, wav: bytes, assess=None) -> dict:
     words = r.get("words") or []
     rec = {"n": n, "at": time.time(), "total": total, "stars": stars(total), "fluency": r.get("fluency"),
            "integrity": r.get("integrity"), "words": [{"w": w["word"], "s": w["score"], "e": w["err"]} for w in words]}
+    if r.get("heard"):
+        rec["heard"] = r["heard"]
     with _lock:
         s = get(sid)
         s["lines"].setdefault(str(i), []).append(rec)
