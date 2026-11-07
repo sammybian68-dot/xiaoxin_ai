@@ -669,6 +669,21 @@ function singPlay(c) {
   a.play().catch((err) => { if (err.name !== "AbortError") toast("放不了：" + err.message); });   // 还没响就被停了不算放不了
 }
 
+// 让一下：开麦克风（按住说话、自由对话、录唱歌、小剧场跟读）、小新开口、放别的声音（语音、单词读音、闹钟、来电）时，
+// 正在放的翻唱停在那儿（不然录进去的是歌、说话盖在歌上），不自己接着放：顶栏「正在放」点 ▶ 接着放
+function singYield() {
+  const a = sing.cur?.audio;
+  if (a && !a.paused) a.pause();
+}
+window.singYield = singYield;
+{
+  const play = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function (...args) {
+    if (this !== sing.cur?.audio) singYield();
+    return play.apply(this, args);
+  };
+}
+
 // 顶栏「正在放」：放着或者放到一半停着都显示（卡片翻上去了、聊天重画了卡片没了，声音还在，从这儿也能停）；
 // 放完（ended 后回到 0）、点 ✕ 就收起
 function singNowSync() {

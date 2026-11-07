@@ -336,6 +336,7 @@ function showRing(r) {
   clk.ringing = r;
   $("ring").hidden = !r;
   if (!r) { stopBeep(); return; }
+  window.singYield?.();   // pad 上是原生在响，不经过网页的声音
   $("night").hidden = true;
   $("ring-time").textContent = r.kind === "alarm" ? r.title : "时间到";
   $("ring-what").textContent = r.sub;

@@ -837,6 +837,7 @@ class PcmStream {
     src.start(at);
     if (!this.started) {  // 第一块真正出声的时刻（performance.now 时间轴），首响计时用
       this.started = true;
+      window.singYield?.();   // 小新开口：翻唱先停
       this.onStart?.(performance.now() + (at - this.ctx.currentTime) * 1000);
     }
     this.next = at + buf.duration;
@@ -1273,6 +1274,7 @@ class Recorder {
     this.onLevel = onLevel; this.onChunk = onChunk; this.chunks = []; this.rate = 16000; this.raw = !!opts.raw;
   }
   start() {
+    window.singYield?.();   // 开麦克风：正在放的翻唱先停（不然录进去的是歌）
     this.starting = this.open();
     return this.starting;
   }
@@ -1541,6 +1543,7 @@ function talkStatus(s) { $("talk-status").textContent = s; }
 async function startTalk() {
   if (talk.on) return;
   stopSpeaking();
+  window.singYield?.();   // pad 上自由对话走原生录音，不经过 Recorder
   talk.on = true;
   talkUi(true);
   talkStatus("连接中…");
@@ -3404,6 +3407,7 @@ async function enterCallRoom(c) {
   if (standby.on) { call.wasStandby = true; await setStandby(false); }  // 家长那边（或没响铃直接接）：也让出麦克风
   if (talk.on) hangUp();
   stopSpeaking();
+  window.singYield?.();
   $("call-frame").src = callUrl(c);
   showCall("talk");
 }
@@ -3418,6 +3422,7 @@ function onCallEvent(ev) {
     $("call-title").textContent = `${c.caller_name}来电`;
     if (talk.on) hangUp();  // 正在和小新自由对话：先打断
     stopSpeaking();
+    window.singYield?.();
     if (standby.on) { call.wasStandby = true; setStandby(false); }  // 一响就停待命：不然唤醒监听占着麦克风，铃声里说的话还会被当成唤醒
     showCall("ring");
     native?.wakeScreen?.();
